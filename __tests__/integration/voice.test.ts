@@ -1,12 +1,13 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { NextRequest } from 'next/server';
 import { http, HttpResponse } from 'msw';
-import { setupHandlers } from '../mocks/server';
+import { server, setupHandlers } from '../mocks/server';
 
 const dbMock = await vi.hoisted(async () => (await import('./setup')).createDbMock());
 vi.mock('@/db', () => dbMock.mock);
 
 import { resetClient } from '@/lib/ai';
+import { expectActiveModel } from '../mocks/active-models';
 import { GET as getProfile, PUT as putProfile } from '@/app/api/voice/profile/route';
 import { POST as extractProfile } from '@/app/api/voice/profile/extract/route';
 import { GET as listSamples, POST as createSample } from '@/app/api/voice/samples/route';
@@ -330,9 +331,20 @@ describe('POST /api/voice/profile/extract', () => {
   });
 
   it('extracts profile with 3+ samples', async () => {
+    let requestedModel: unknown;
+    server.use(
+      http.post('https://api.anthropic.com/v1/messages', async ({ request }) => {
+        requestedModel = ((await request.json()) as { model?: unknown }).model;
+        return new HttpResponse(sseProfile(PROFILE_TEXT), {
+          headers: { 'Content-Type': 'text/event-stream' },
+        });
+      }),
+    );
+
     await seedSamples(3);
     const res = await extractProfile(jsonReq('POST', '/api/voice/profile/extract', {}));
     expect(res.status).toBe(200);
+    expectActiveModel(requestedModel);
     const body = await res.json();
     expect(body.profile.profile).toContain('## Rhythm & Sentence Structure');
     expect(typeof body.tokensUsed).toBe('number');

@@ -7,6 +7,7 @@ import { logger } from '@/lib/logger';
 import { ExternalServiceError, ValidationError } from '@/lib/errors';
 import { getConfig } from '@/lib/settings';
 import { trackAiCall } from '@/lib/ai-usage';
+import { DEFAULT_FEATURE_MODEL } from '@/lib/models';
 import type { ThesisSuggestion, HighlightSuggestion, ThesisHighlightRole } from '@/types';
 import type { TrackingContext } from '@/lib/ai-usage';
 
@@ -116,7 +117,7 @@ export const AI_CLEAN_PROMPT =
 export type ExplainMode = keyof typeof EXPLAIN_MODES;
 
 /** Claude model to use for all AI features */
-const MODEL = 'claude-sonnet-4-20250514';
+const MODEL = DEFAULT_FEATURE_MODEL;
 
 /** Default request timeout in milliseconds. */
 const TIMEOUT_MS = 30_000;

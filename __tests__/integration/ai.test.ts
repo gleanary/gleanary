@@ -7,6 +7,7 @@ const dbMock = await vi.hoisted(async () => (await import('./setup')).createDbMo
 vi.mock('@/db', () => dbMock.mock);
 
 import { resetClient } from '@/lib/ai';
+import { expectActiveModel } from '../mocks/active-models';
 import { POST as createArticle } from '@/app/api/articles/route';
 import { POST as createHighlight } from '@/app/api/highlights/route';
 import { POST as summarize } from '@/app/api/ai/summarize/route';
@@ -70,8 +71,30 @@ describe('AI Features API', () => {
 
   describe('POST /api/ai/summarize', () => {
     it('summarizes an article and stores result', async () => {
+      let requestedModel: unknown;
+      server.use(
+        http.post('https://api.anthropic.com/v1/messages', async ({ request }) => {
+          requestedModel = ((await request.json()) as { model?: unknown }).model;
+          return HttpResponse.json({
+            id: 'msg_mock',
+            type: 'message',
+            role: 'assistant',
+            content: [
+              {
+                type: 'text',
+                text: 'This article discusses testing patterns for modern web applications.',
+              },
+            ],
+            model: 'claude-sonnet-4-20250514',
+            stop_reason: 'end_turn',
+            usage: { input_tokens: 100, output_tokens: 20 },
+          });
+        }),
+      );
+
       const res = await summarize(jsonReq('POST', '/api/ai/summarize', { articleId }));
       expect(res.status).toBe(200);
+      expectActiveModel(requestedModel);
 
       const body = await res.json();
       expect(body.summary).toBeTruthy();
@@ -147,8 +170,10 @@ describe('AI Features API', () => {
 
   describe('POST /api/ai/tag', () => {
     it('auto-tags an article', async () => {
+      let requestedModel: unknown;
       server.use(
-        http.post('https://api.anthropic.com/v1/messages', () => {
+        http.post('https://api.anthropic.com/v1/messages', async ({ request }) => {
+          requestedModel = ((await request.json()) as { model?: unknown }).model;
           return HttpResponse.json({
             id: 'msg_tag',
             type: 'message',
@@ -163,6 +188,7 @@ describe('AI Features API', () => {
 
       const res = await autoTag(jsonReq('POST', '/api/ai/tag', { articleId }));
       expect(res.status).toBe(200);
+      expectActiveModel(requestedModel);
 
       const body = await res.json();
       expect(body.tags).toBeInstanceOf(Array);

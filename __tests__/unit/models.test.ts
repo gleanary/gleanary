@@ -3,6 +3,7 @@ import {
   CLAUDE_PRICING,
   ANTHROPIC_MODELS,
   DEFAULT_CHAT_MODEL,
+  DEFAULT_FEATURE_MODEL,
   DRAFT_MODEL_IDS,
   DEFAULT_DRAFT_MODEL,
   DRAFT_MODELS,
@@ -10,6 +11,7 @@ import {
   getModelBudget,
 } from '@/lib/models';
 import { computeCost } from '@/lib/pricing';
+import { expectActiveModel } from '../mocks/active-models';
 
 /**
  * A model id is priced when the production cost path resolves it — computeCost
@@ -89,6 +91,16 @@ describe('model selectors', () => {
     expect(DRAFT_MODEL_IDS).toContain(DEFAULT_DRAFT_MODEL);
     expect(ANTHROPIC_MODELS.map((m) => m.id)).toContain(UTILITY_MODEL);
     expect(isPriced(UTILITY_MODEL)).toBe(true);
+  });
+});
+
+describe('DEFAULT_FEATURE_MODEL', () => {
+  it('resolves to an active (selectable) registry model, not a retired historical one', () => {
+    expectActiveModel(DEFAULT_FEATURE_MODEL);
+  });
+
+  it('is priced through the production cost path', () => {
+    expect(isPriced(DEFAULT_FEATURE_MODEL)).toBe(true);
   });
 });
 
