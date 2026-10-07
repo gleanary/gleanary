@@ -1,0 +1,629 @@
+@import 'tailwindcss';
+@import 'tw-animate-css';
+@import 'shadcn/tailwind.css';
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+@theme inline {
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+  --radius-2xl: calc(var(--radius) + 8px);
+  --radius-3xl: calc(var(--radius) + 12px);
+  --radius-4xl: calc(var(--radius) + 16px);
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+  /* Solid semantic accents */
+  --color-success: var(--success);
+  --color-success-foreground: var(--success-foreground);
+  --color-warning: var(--warning);
+  --color-warning-foreground: var(--warning-foreground);
+  --color-info: var(--info);
+  --color-info-foreground: var(--info-foreground);
+  /* Soft status/role tint scale (paired bg + fg) */
+  --color-tint-slate: var(--tint-slate);
+  --color-tint-slate-fg: var(--tint-slate-fg);
+  --color-tint-amber: var(--tint-amber);
+  --color-tint-amber-fg: var(--tint-amber-fg);
+  --color-tint-blue: var(--tint-blue);
+  --color-tint-blue-fg: var(--tint-blue-fg);
+  --color-tint-purple: var(--tint-purple);
+  --color-tint-purple-fg: var(--tint-purple-fg);
+  --color-tint-green: var(--tint-green);
+  --color-tint-green-fg: var(--tint-green-fg);
+  --color-tint-red: var(--tint-red);
+  --color-tint-red-fg: var(--tint-red-fg);
+  --color-tint-orange: var(--tint-orange);
+  --color-tint-orange-fg: var(--tint-orange-fg);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+}
+
+:root {
+  --radius: 0.625rem;
+  --reader-text: 26, 26, 26;
+  --background: oklch(0.982 0.005 90);
+  --reader-bg: var(--background);
+  --foreground: oklch(0.145 0 0);
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.145 0 0);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.145 0 0);
+  --primary: oklch(0.205 0 0);
+  --primary-foreground: oklch(0.985 0 0);
+  --secondary: oklch(0.97 0 0);
+  --secondary-foreground: oklch(0.205 0 0);
+  --muted: oklch(0.97 0 0);
+  --muted-foreground: oklch(0.556 0 0);
+  --accent: oklch(0.97 0 0);
+  --accent-foreground: oklch(0.205 0 0);
+  --destructive: oklch(0.577 0.245 27.325);
+  --border: oklch(0.922 0 0);
+  --input: oklch(0.922 0 0);
+  --ring: oklch(0.708 0 0);
+  --chart-1: oklch(0.646 0.222 41.116);
+  --chart-2: oklch(0.6 0.118 184.704);
+  --chart-3: oklch(0.398 0.07 227.392);
+  --chart-4: oklch(0.828 0.189 84.429);
+  --chart-5: oklch(0.769 0.188 70.08);
+  --sidebar: oklch(0.985 0 0);
+  --sidebar-foreground: oklch(0.145 0 0);
+  --sidebar-primary: oklch(0.205 0 0);
+  --sidebar-primary-foreground: oklch(0.985 0 0);
+  --sidebar-accent: oklch(0.97 0 0);
+  --sidebar-accent-foreground: oklch(0.205 0 0);
+  --sidebar-border: oklch(0.922 0 0);
+  --sidebar-ring: oklch(0.708 0 0);
+
+  /* Semantic accents — shared L≈0.58 / C≈0.15, hue varies */
+  --success: oklch(0.58 0.14 150);
+  --success-foreground: oklch(0.985 0 0);
+  --warning: oklch(0.66 0.14 75);
+  --warning-foreground: oklch(0.205 0 0);
+  --info: oklch(0.55 0.16 245);
+  --info-foreground: oklch(0.985 0 0);
+
+  /* Soft tint scale — one ramp: bg ≈ L0.94 C0.045, fg ≈ L0.48 C0.13, hue varies.
+     Status/role enums map onto these so every badge reads as one family. */
+  --tint-slate: oklch(0.95 0.01 265);
+  --tint-slate-fg: oklch(0.44 0.03 265);
+  --tint-amber: oklch(0.94 0.05 80);
+  --tint-amber-fg: oklch(0.5 0.12 80);
+  --tint-blue: oklch(0.93 0.045 245);
+  --tint-blue-fg: oklch(0.48 0.15 245);
+  --tint-purple: oklch(0.94 0.045 300);
+  --tint-purple-fg: oklch(0.48 0.15 300);
+  --tint-green: oklch(0.94 0.05 150);
+  --tint-green-fg: oklch(0.46 0.13 150);
+  --tint-red: oklch(0.94 0.045 25);
+  --tint-red-fg: oklch(0.5 0.18 25);
+  --tint-orange: oklch(0.95 0.05 55);
+  --tint-orange-fg: oklch(0.5 0.14 55);
+}
+
+:root.dark {
+  --background: oklch(0.1739 0.0041 285.9);
+  --foreground: oklch(0.929 0.005 90);
+  --card: oklch(0.2105 0.0125 248.4);
+  --card-foreground: oklch(0.985 0 0);
+  --popover: oklch(0.205 0 0);
+  --popover-foreground: oklch(0.985 0 0);
+  --primary: oklch(0.922 0 0);
+  --primary-foreground: oklch(0.205 0 0);
+  --secondary: oklch(0.269 0 0);
+  --secondary-foreground: oklch(0.985 0 0);
+  --muted: oklch(0.269 0 0);
+  --muted-foreground: oklch(0.708 0 0);
+  --accent: oklch(0.269 0 0);
+  --accent-foreground: oklch(0.985 0 0);
+  --destructive: oklch(0.704 0.191 22.216);
+  --border: oklch(1 0 0 / 10%);
+  --input: oklch(1 0 0 / 15%);
+  --ring: oklch(0.556 0 0);
+  --chart-1: oklch(0.488 0.243 264.376);
+  --chart-2: oklch(0.696 0.17 162.48);
+  --chart-3: oklch(0.769 0.188 70.08);
+  --chart-4: oklch(0.627 0.265 303.9);
+  --chart-5: oklch(0.645 0.246 16.439);
+  --sidebar: oklch(0.1505 0.0043 285.8);
+  --sidebar-foreground: oklch(0.985 0 0);
+  --sidebar-primary: oklch(0.488 0.243 264.376);
+  --sidebar-primary-foreground: oklch(0.985 0 0);
+  --sidebar-accent: oklch(0.269 0 0);
+  --sidebar-accent-foreground: oklch(0.985 0 0);
+  --sidebar-border: oklch(1 0 0 / 10%);
+  --sidebar-ring: oklch(0.556 0 0);
+  --reader-text: 232, 230, 227;
+  --reader-bg: var(--background);
+
+  /* Semantic accents — shared L≈0.72 / C≈0.13, hue varies */
+  --success: oklch(0.72 0.13 150);
+  --success-foreground: oklch(0.205 0 0);
+  --warning: oklch(0.8 0.13 80);
+  --warning-foreground: oklch(0.205 0 0);
+  --info: oklch(0.7 0.13 245);
+  --info-foreground: oklch(0.205 0 0);
+
+  /* Soft tint scale (dark) — bg ≈ L0.27 C0.065, fg ≈ L0.83 C0.10, hue varies */
+  --tint-slate: oklch(0.27 0.015 265);
+  --tint-slate-fg: oklch(0.8 0.025 265);
+  --tint-amber: oklch(0.27 0.06 80);
+  --tint-amber-fg: oklch(0.84 0.1 80);
+  --tint-blue: oklch(0.27 0.07 245);
+  --tint-blue-fg: oklch(0.82 0.1 245);
+  --tint-purple: oklch(0.27 0.07 300);
+  --tint-purple-fg: oklch(0.82 0.1 300);
+  --tint-green: oklch(0.27 0.06 150);
+  --tint-green-fg: oklch(0.84 0.1 150);
+  --tint-red: oklch(0.27 0.07 25);
+  --tint-red-fg: oklch(0.83 0.12 25);
+  --tint-orange: oklch(0.28 0.06 55);
+  --tint-orange-fg: oklch(0.85 0.1 55);
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    @apply bg-background text-foreground;
+  }
+}
+
+/* Chat Message Content Typography */
+.chat-content {
+  font-size: 0.875rem;
+  line-height: 1.6;
+}
+
+.chat-content p {
+  margin-bottom: 0.75em;
+}
+.chat-content p:last-child {
+  margin-bottom: 0;
+}
+
+.chat-content h1,
+.chat-content h2,
+.chat-content h3,
+.chat-content h4,
+.chat-content h5,
+.chat-content h6 {
+  font-weight: 700;
+  line-height: 1.3;
+  margin-top: 1.25em;
+  margin-bottom: 0.4em;
+}
+.chat-content h1:first-child,
+.chat-content h2:first-child,
+.chat-content h3:first-child {
+  margin-top: 0;
+}
+.chat-content h1 {
+  font-size: 1.25em;
+}
+.chat-content h2 {
+  font-size: 1.125em;
+}
+.chat-content h3 {
+  font-size: 1em;
+}
+
+.chat-content ul,
+.chat-content ol {
+  margin: 0.5em 0 0.75em;
+  padding-left: 1.5em;
+}
+.chat-content ul {
+  list-style-type: disc;
+}
+.chat-content ol {
+  list-style-type: decimal;
+}
+.chat-content li {
+  margin-bottom: 0.25em;
+}
+
+.chat-content code {
+  font-family: ui-monospace, 'Cascadia Code', 'Source Code Pro', Menlo, monospace;
+  font-size: 0.875em;
+  background: oklch(0 0 0 / 0.07);
+  padding: 0.1em 0.3em;
+  border-radius: 0.25rem;
+}
+.dark .chat-content code {
+  background: oklch(1 0 0 / 0.1);
+}
+
+.chat-content pre {
+  background: oklch(0 0 0 / 0.05);
+  border-radius: 0.375rem;
+  padding: 0.75em 1em;
+  overflow-x: auto;
+  margin: 0.75em 0;
+}
+.dark .chat-content pre {
+  background: oklch(1 0 0 / 0.07);
+}
+.chat-content pre code {
+  background: none;
+  padding: 0;
+}
+
+.chat-content blockquote {
+  border-left: 3px solid oklch(0 0 0 / 0.15);
+  padding-left: 0.75em;
+  margin: 0.75em 0;
+  color: oklch(0.45 0 0);
+}
+.dark .chat-content blockquote {
+  border-left-color: oklch(1 0 0 / 0.2);
+  color: oklch(0.7 0 0);
+}
+
+.chat-content strong {
+  font-weight: 600;
+}
+.chat-content em {
+  font-style: italic;
+}
+
+.chat-content hr {
+  border: none;
+  border-top: 1px solid oklch(0 0 0 / 0.1);
+  margin: 1em 0;
+}
+.dark .chat-content hr {
+  border-top-color: oklch(1 0 0 / 0.1);
+}
+
+/* Reader View — Article Content Typography
+ * Uses --reader-text (R,G,B) and --reader-bg CSS custom properties
+ * defined in :root / dark :root above for automatic dark mode. */
+.article-content {
+  font-family: Georgia, Charter, 'Libre Baskerville', serif;
+  font-size: 1.125rem;
+  line-height: 1.7;
+  color: #616c77;
+  touch-action: manipulation;
+}
+.dark .article-content {
+  color: #c1c7ce;
+}
+
+.article-content p {
+  margin-bottom: 1.25em;
+  overflow-wrap: break-word;
+}
+
+.article-content h1,
+.article-content h2,
+.article-content h3,
+.article-content h4,
+.article-content h5,
+.article-content h6 {
+  font-family:
+    system-ui,
+    -apple-system,
+    sans-serif;
+  font-weight: 700;
+  line-height: 1.3;
+  margin-top: 1.75em;
+  margin-bottom: 0.75em;
+  color: rgb(var(--reader-text));
+}
+
+.article-content h1 {
+  font-size: 1.75em;
+}
+.article-content h2 {
+  font-size: 1.5em;
+}
+.article-content h3 {
+  font-size: 1.25em;
+}
+
+.article-content a {
+  color: rgb(var(--reader-text));
+  text-decoration: underline;
+  text-decoration-color: rgba(var(--reader-text), 0.3);
+  text-underline-offset: 2px;
+  transition: text-decoration-color 0.15s;
+}
+
+.article-content a:hover {
+  text-decoration-color: rgba(var(--reader-text), 0.8);
+}
+
+.article-content img {
+  max-width: 100%;
+  height: auto;
+  border-radius: 0.375rem;
+  margin: 1.5em 0;
+  margin-left: auto;
+  margin-right: auto;
+}
+
+.article-content blockquote {
+  border-left: 3px solid rgba(var(--reader-text), 0.2);
+  padding-left: 1em;
+  margin: 1.5em 0;
+  font-style: italic;
+  color: rgba(var(--reader-text), 0.7);
+}
+
+.article-content pre {
+  background: rgba(var(--reader-text), 0.05);
+  border-radius: 0.375rem;
+  padding: 1em;
+  overflow-x: auto;
+  margin: 1.5em 0;
+  font-family: ui-monospace, 'Cascadia Code', 'Source Code Pro', Menlo, monospace;
+  font-size: 0.875em;
+  line-height: 1.5;
+}
+
+.article-content code {
+  font-family: ui-monospace, 'Cascadia Code', 'Source Code Pro', Menlo, monospace;
+  font-size: 0.875em;
+  background: rgba(var(--reader-text), 0.05);
+  padding: 0.15em 0.3em;
+  border-radius: 0.25rem;
+}
+
+.article-content pre code {
+  background: none;
+  padding: 0;
+}
+
+.article-content ul,
+.article-content ol {
+  margin: 1.25em 0;
+  padding-left: 1.5em;
+}
+
+.article-content li {
+  margin-bottom: 0.5em;
+}
+.article-content ul {
+  list-style-type: disc;
+}
+.article-content ol {
+  list-style-type: decimal;
+}
+
+.article-content hr {
+  border: none;
+  border-top: 1px solid rgba(var(--reader-text), 0.15);
+  margin: 2em 0;
+}
+
+.article-content .katex-error {
+  overflow-wrap: break-word;
+}
+
+.article-content .katex-display {
+  overflow-x: auto;
+  overflow-y: hidden;
+  -webkit-overflow-scrolling: touch;
+  padding-bottom: 0.25em; /* prevent scrollbar from clipping descenders */
+}
+
+.article-content .table-scroll-wrapper {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  margin: 1.5em 0;
+}
+
+.article-content table {
+  min-width: 100%;
+  border-collapse: collapse;
+  margin: 0;
+  font-size: 0.9em;
+}
+
+/* All tables get borders — layout tables are unwrapped by postProcessHtml before storage. */
+.article-content td,
+.article-content th {
+  border: 1px solid rgba(var(--reader-text), 0.15);
+  padding: 0.5em 0.75em;
+  text-align: left;
+}
+
+.article-content th {
+  font-weight: 600;
+  background: rgba(var(--reader-text), 0.03);
+}
+
+.article-content figure {
+  margin: 1.5em 0;
+}
+
+.article-content figcaption {
+  font-size: 0.875em;
+  color: rgba(var(--reader-text), 0.5);
+  text-align: center;
+  margin-top: 0.5em;
+}
+
+.article-content .image-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+  gap: 1rem;
+  align-items: center;
+  margin-bottom: 1.25em;
+}
+
+.article-content .image-grid img {
+  max-width: 100%;
+  height: auto;
+  margin: 0 auto;
+}
+
+/* Yellow selection color matching highlight color */
+.article-content ::selection {
+  background-color: rgba(253, 224, 71, 0.4);
+  color: inherit;
+}
+.dark .article-content ::selection {
+  background-color: rgba(253, 224, 71, 0.25);
+  color: inherit;
+}
+
+/* Highlight marks in article content */
+mark.highlight {
+  cursor: pointer;
+  border-radius: 2px;
+  padding: 0 1px;
+  color: #000;
+}
+.dark mark.highlight {
+  color: #fff;
+}
+
+mark.highlight-yellow {
+  background-color: rgba(253, 224, 71, 0.4);
+}
+
+.dark mark.highlight-yellow {
+  background-color: rgba(253, 224, 71, 0.25);
+}
+
+/* Selection handles for adjusting highlight boundaries */
+.selection-handle {
+  position: fixed;
+  z-index: 60;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  touch-action: none;
+  cursor: col-resize;
+  pointer-events: auto;
+  /* Width includes touch target padding */
+  width: 28px;
+  /* Transform to center handle horizontally on the caret position */
+  transform: translateX(-14px);
+}
+/* Vertical line connecting to the text baseline */
+.selection-handle-line {
+  width: 2px;
+  height: 100%;
+  background-color: #eab308;
+  border-radius: 1px;
+}
+
+/* Circular grip at the bottom of the handle */
+.selection-handle-grip {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background-color: #eab308;
+  margin-top: -1px;
+  flex-shrink: 0;
+}
+
+/* Start handle: grip at the top, line goes down */
+.selection-handle-start {
+  flex-direction: column-reverse;
+}
+.selection-handle-start .selection-handle-grip {
+  margin-top: 0;
+  margin-bottom: -1px;
+}
+
+/* Expand touch target on mobile */
+@media (pointer: coarse) {
+  .selection-handle {
+    width: 44px;
+    transform: translateX(-22px);
+  }
+  .selection-handle-grip {
+    width: 16px;
+    height: 16px;
+  }
+}
+
+.dark .selection-handle-line {
+  background-color: #facc15;
+}
+.dark .selection-handle-grip {
+  background-color: #facc15;
+}
+
+/* TTS word-by-word highlighting */
+.tts-active-word {
+  background-color: rgba(59, 130, 246, 0.25);
+  border-radius: 2px;
+  transition: background-color 100ms ease;
+}
+.dark .tts-active-word {
+  background-color: rgba(96, 165, 250, 0.3);
+}
+
+/* Thesis status track colors */
+.thesis-status-current {
+  background-color: oklch(0.55 0.18 250);
+  color: #fff;
+}
+.thesis-status-done {
+  background-color: oklch(0.55 0.18 250 / 0.25);
+  color: oklch(0.55 0.18 250);
+}
+.thesis-status-pending {
+  background-color: oklch(0.5 0 0 / 0.08);
+  color: oklch(0.5 0 0);
+}
+.dark .thesis-status-current {
+  background-color: oklch(0.65 0.18 250);
+  color: #fff;
+}
+.dark .thesis-status-done {
+  background-color: oklch(0.65 0.18 250 / 0.25);
+  color: oklch(0.65 0.18 250);
+}
+.dark .thesis-status-pending {
+  background-color: oklch(0.5 0 0 / 0.15);
+  color: oklch(0.7 0 0);
+}
+
+/* Search deep-link: brief emphasis pulse on the target highlight mark */
+@keyframes highlight-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+.highlight-pulse {
+  animation: highlight-pulse 0.55s ease 2;
+}

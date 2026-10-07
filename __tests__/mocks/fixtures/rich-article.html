@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Understanding Modern Web Architecture</title>
+    <meta name="author" content="Jane Smith" />
+    <meta property="article:published_time" content="2024-06-15T10:30:00Z" />
+    <meta property="og:image" content="https://example.com/images/hero.jpg" />
+    <meta property="og:site_name" content="Tech Blog" />
+    <meta name="description" content="A comprehensive guide to modern web architecture patterns." />
+    <script>
+      alert('xss');
+    </script>
+    <style>
+      .evil {
+        display: none;
+      }
+    </style>
+  </head>
+  <body>
+    <nav>Navigation links here</nav>
+    <article>
+      <h1>Understanding Modern Web Architecture</h1>
+      <p class="byline">By Jane Smith | Published June 15, 2024</p>
+      <img src="/images/hero.jpg" alt="Hero image" />
+      <p>
+        Modern web applications have evolved significantly over the past decade. The shift from
+        monolithic server-rendered applications to distributed, component-based architectures has
+        fundamentally changed how we build software for the web.
+      </p>
+      <p>
+        In this article, we will explore the key patterns that define modern web architecture,
+        including server-side rendering, static site generation, and the increasingly popular island
+        architecture pattern.
+      </p>
+      <h2>Server-Side Rendering</h2>
+      <p>
+        Server-side rendering (SSR) remains a cornerstone of web development. Frameworks like
+        Next.js and Nuxt have made SSR more accessible than ever, providing excellent developer
+        experience while delivering fast initial page loads.
+      </p>
+      <p>
+        The key benefit of SSR is that the server sends fully-rendered HTML to the browser, which
+        means users see content immediately without waiting for JavaScript to download and execute.
+        This is particularly important for content-heavy sites and for search engine optimization.
+      </p>
+      <a href="/about">About the author</a>
+      <h2>Static Site Generation</h2>
+      <p>
+        Static site generation (SSG) takes a different approach by pre-rendering pages at build
+        time. This results in extremely fast page loads since the content is served from a CDN as
+        plain HTML files. Tools like Astro and Eleventy have popularized this approach.
+      </p>
+      <p>
+        SSG works best for content that does not change frequently, such as blogs, documentation
+        sites, and marketing pages. For dynamic content, SSG can be combined with client-side data
+        fetching or incremental static regeneration.
+      </p>
+      <img src="/images/ssr-diagram.png" alt="SSR diagram" />
+      <img src="diagrams/architecture.png" alt="Architecture diagram" />
+      <h2>Conclusion</h2>
+      <p>
+        Choosing the right architecture depends on your specific needs. Consider factors like
+        content freshness requirements, interactivity needs, and team expertise when making your
+        decision.
+      </p>
+      <p>
+        The web platform continues to evolve, and staying informed about these patterns will help
+        you make better architectural decisions for your projects.
+      </p>
+      <script>
+        document.write('injected');
+      </script>
+    </article>
+    <footer>Footer content</footer>
+  </body>
+</html>

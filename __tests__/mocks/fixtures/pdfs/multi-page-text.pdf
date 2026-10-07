@@ -1,0 +1,81 @@
+%PDF-1.4
+%ÄÅÇÉ
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R 5 0 R 7 0 R] /Count 3 >>
+endobj
+4 0 obj
+<< /Length 388 >>
+stream
+BT
+/F1 12 Tf
+1 0 0 1 72 720 Tm
+(Chapter one introduces the fundamental concepts of distributed systems) Tj
+1 0 0 1 72 700 Tm
+(and their trade-offs. The CAP theorem states that a) Tj
+1 0 0 1 72 680 Tm
+(distributed system cannot simultaneously guarantee consistency, availability, and partition) Tj
+1 0 0 1 72 660 Tm
+(tolerance. Engineers must choose which properties to prioritize.) Tj
+ET
+endstream
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> >> >> >>
+endobj
+6 0 obj
+<< /Length 368 >>
+stream
+BT
+/F1 12 Tf
+1 0 0 1 72 720 Tm
+(Chapter two covers consensus algorithms including Paxos and Raft used) Tj
+1 0 0 1 72 700 Tm
+(in distributed databases. These algorithms ensure that all nodes in) Tj
+1 0 0 1 72 680 Tm
+(a cluster agree on the same value even in the) Tj
+1 0 0 1 72 660 Tm
+(presence of network partitions and node failures in production deployments.) Tj
+ET
+endstream
+endobj
+5 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 6 0 R /Resources << /Font << /F1 << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> >> >> >>
+endobj
+8 0 obj
+<< /Length 391 >>
+stream
+BT
+/F1 12 Tf
+1 0 0 1 72 720 Tm
+(Chapter three examines practical patterns for building resilient microservices) Tj
+1 0 0 1 72 700 Tm
+(architectures. Circuit breakers, bulkheads, and retry policies help services) Tj
+1 0 0 1 72 680 Tm
+(gracefully degrade under load. Observability through metrics, logs, and) Tj
+1 0 0 1 72 660 Tm
+(traces is essential for operating distributed systems.) Tj
+ET
+endstream
+endobj
+7 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 8 0 R /Resources << /Font << /F1 << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> >> >> >>
+endobj
+xref
+0 9
+0000000000 65535 f
+0000000015 00000 n
+0000000064 00000 n
+0000000571 00000 n
+0000000133 00000 n
+0000001164 00000 n
+0000000746 00000 n
+0000001780 00000 n
+0000001339 00000 n
+trailer
+<< /Size 9 /Root 1 0 R >>
+startxref
+1955
+%%EOF

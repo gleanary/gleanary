@@ -1,0 +1,1 @@
+ALTER TABLE `articles` ADD `ai_index` text;

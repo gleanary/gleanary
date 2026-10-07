@@ -1,0 +1,45 @@
+# Dependencies
+node_modules/
+
+# Next.js
+.next/
+out/
+tsconfig.tsbuildinfo
+
+# Environment & secrets
+.env
+.env.local
+.env.production
+*.tfvars
+infra/.terraform/
+infra/.terraform.lock.hcl
+*.tfstate
+*.tfstate.backup
+infra/catalog
+infra/output.json
+
+# Database
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+data/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+
+# Misc
+output.json
+
+# Test
+coverage/
+playwright-report/
+test-results/
+
+# Playwright auth state
+e2e/.auth/

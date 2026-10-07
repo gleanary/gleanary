@@ -1,0 +1,1 @@
+ALTER TABLE `drafts` ADD `model` text DEFAULT 'claude-sonnet-4-6' NOT NULL;

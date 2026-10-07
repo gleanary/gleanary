@@ -1,0 +1,93 @@
+{
+  "cleanupPeriodDays": 14,
+  "env": {
+    "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1"
+  },
+  "permissions": {
+    "allow": [
+      "Bash(npm run lint)",
+      "Bash(npm run typecheck)",
+      "Bash(npm run test)",
+      "Bash(npm run build)",
+      "Bash(sqlite3 *)",
+      "Bash(npm ls *)",
+      "Bash(curl -s *)"
+    ],
+    "deny": [
+      "Read(~/.ssh/**)",
+      "Read(~/.aws/**)",
+      "Read(~/.kube/**)",
+      "Read(~/.gnupg/**)",
+      "Read(~/.config/gcloud/**)",
+      "Read(~/.netrc)",
+      "Read(~/.docker/config.json)",
+      "Read(./.env)",
+      "Read(./.env.*)",
+      "Read(./secrets/**)",
+      "Edit(~/.ssh/**)",
+      "Edit(~/.aws/**)",
+      "Edit(./.env*)",
+      "Edit(/etc/**)",
+      "Bash(curl:*)",
+      "Bash(wget:*)",
+      "Bash(nc:*)",
+      "Bash(ssh:*)",
+      "Bash(scp:*)",
+      "Bash(sudo:*)",
+      "Bash(su:*)",
+      "Bash(npm publish:*)",
+      "Bash(yarn publish:*)",
+      "Bash(pnpm publish:*)"
+    ],
+    "ask": [
+      "Bash(git push:*)",
+      "Bash(docker push:*)",
+      "Bash(kubectl apply:*)",
+      "Edit(.github/workflows/**)",
+      "Edit(Dockerfile)",
+      "Edit(**/package.json)",
+      "Edit(contracts/**)"
+    ]
+  },
+  "sandbox": {
+    "enabled": true,
+    "failIfUnavailable": true,
+    "allowUnsandboxedCommands": true,
+    "excludedCommands": ["gh"]
+  },
+  "claudeMdExcludes": ["**/node_modules/**", "**/vendor/**", "**/third-party/**"],
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "./.claude/hooks/session-start.sh"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "./.claude/hooks/pre-commit-check.sh"
+          }
+        ]
+      },
+      {
+        "matcher": "Edit|Write|MultiEdit|Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "./.claude/secret-scanner.sh",
+            "timeout": 15
+          }
+        ]
+      }
+    ]
+  }
+}

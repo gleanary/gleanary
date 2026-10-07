@@ -1,0 +1,1 @@
+ALTER TABLE `highlights` ADD `anchor_status` text DEFAULT 'anchored' NOT NULL;

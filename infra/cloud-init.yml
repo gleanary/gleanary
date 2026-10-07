@@ -1,0 +1,105 @@
+#cloud-config
+package_update: true
+package_upgrade: true
+
+packages:
+  - docker.io
+  - docker-compose-v2
+  - fail2ban
+  - unattended-upgrades
+  - sqlite3
+
+runcmd:
+  # Enable Docker
+  - systemctl enable --now docker
+  - usermod -aG docker ubuntu
+
+  # Create app directories
+  - mkdir -p /opt/gleanary/data/db
+  - mkdir -p /opt/gleanary/data/backups
+  - mkdir -p /opt/gleanary/data/caddy
+
+  # Write environment file
+  - |
+    cat > /opt/gleanary/.env << 'ENVEOF'
+    DATABASE_URL=file:/data/db/gleanary.db
+    # Single quotes keep dotenv from $-expanding the bcrypt hash
+    SETTINGS_AUTH_HASH='${basic_auth_hash}'
+    SETTINGS_ENCRYPTION_KEY=${settings_encryption_key}
+    ANTHROPIC_API_KEY=${anthropic_api_key}
+    JINA_API_KEY=${jina_api_key}
+    SENTRY_DSN=${sentry_dsn}
+    BETTERSTACK_SOURCE_TOKEN=${betterstack_token}
+    NODE_ENV=production
+    LOG_LEVEL=info
+    PORT=3000
+    ENVEOF
+    chmod 600 /opt/gleanary/.env
+
+  # Write Caddyfile
+  - |
+    cat > /opt/gleanary/Caddyfile << 'CADDYEOF'
+    ${domain} {
+      header {
+        X-Content-Type-Options "nosniff"
+        X-Frame-Options "DENY"
+        Referrer-Policy "strict-origin-when-cross-origin"
+        Permissions-Policy "camera=(), microphone=(), geolocation=()"
+        Content-Security-Policy "default-src 'self'; img-src 'self' https:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self' https://*.sentry.io; frame-src 'none'; object-src 'none'; worker-src 'self' blob:"
+      }
+
+      reverse_proxy app:3000
+    }
+    CADDYEOF
+
+  # Write docker-compose.yml
+  - |
+    cat > /opt/gleanary/compose.yml << 'COMPOSEEOF'
+    services:
+      app:
+        image: ${github_image}
+        restart: unless-stopped
+        volumes:
+          - /opt/gleanary/data/db:/data/db
+        env_file:
+          - .env
+        networks:
+          - internal
+
+      caddy:
+        image: caddy:2-alpine
+        restart: unless-stopped
+        ports:
+          - "80:80"
+          - "443:443"
+        volumes:
+          - /opt/gleanary/Caddyfile:/etc/caddy/Caddyfile:ro
+          - /opt/gleanary/data/caddy:/data
+        networks:
+          - internal
+
+    networks:
+      internal:
+    COMPOSEEOF
+
+  # Daily backup cron: SQLite safe copy + keep last 7 days
+  - |
+    cat > /etc/cron.daily/gleanary-backup << 'CRONEOF'
+    #!/bin/bash
+    BACKUP_DIR=/opt/gleanary/data/backups
+    DB_PATH=/opt/gleanary/data/db/gleanary.db
+    if [ -f "$DB_PATH" ]; then
+      sqlite3 "$DB_PATH" ".backup '$BACKUP_DIR/gleanary-$(date +%Y%m%d-%H%M).db'"
+      find "$BACKUP_DIR" -name "*.db" -mtime +7 -delete
+    fi
+    CRONEOF
+    chmod +x /etc/cron.daily/gleanary-backup
+
+  # Start the stack (only if image is specified)
+  - |
+    if [ -n "${github_image}" ]; then
+      cd /opt/gleanary && docker compose up -d
+    fi
+
+# Security hardening
+ssh_pwauth: false

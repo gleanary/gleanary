@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX `articles_external_id_unique` ON `articles` (`external_id`);

@@ -1,0 +1,17 @@
+{
+  "id": "msg_test_123",
+  "type": "message",
+  "role": "assistant",
+  "content": [
+    {
+      "type": "text",
+      "text": "This article discusses software testing best practices, including unit testing, integration testing, and end-to-end testing strategies."
+    }
+  ],
+  "model": "claude-sonnet-4-6",
+  "stop_reason": "end_turn",
+  "usage": {
+    "input_tokens": 500,
+    "output_tokens": 30
+  }
+}

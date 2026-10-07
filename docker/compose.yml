@@ -1,0 +1,57 @@
+# Gleanary self-host stack.
+#
+# Local / VPN-only (app on 127.0.0.1:3000, built-in auth still active):
+#   docker compose -f docker/compose.yml up -d
+#
+# Public server with HTTPS (Caddy terminates TLS, automatic Let's Encrypt):
+#   DOMAIN=reader.example.com docker compose -f docker/compose.yml --profile tls up -d
+#
+# Configuration comes from a .env file next to this compose file or exported
+# env vars — see .env.example at the repo root. Required: DATABASE_URL,
+# SETTINGS_ENCRYPTION_KEY, SETTINGS_AUTH_HASH.
+#
+# APP_BIND defaults to 127.0.0.1 so the plain-HTTP port is never exposed to
+# the network by accident; set APP_BIND=0.0.0.0 for LAN/Tailscale access.
+
+services:
+  app:
+    image: ${GLEANARY_IMAGE:-gleanary:local}
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    restart: unless-stopped
+    ports:
+      - '${APP_BIND:-127.0.0.1}:3000:3000'
+    volumes:
+      - ../data/db:/data/db
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-file:/data/db/gleanary.db}
+      NODE_ENV: production
+    env_file:
+      - path: ../.env
+        required: false
+    networks:
+      - internal
+
+  caddy:
+    image: caddy:2-alpine
+    profiles:
+      - tls
+    restart: unless-stopped
+    ports:
+      - '80:80'
+      - '443:443'
+    environment:
+      # Required for the tls profile — Caddy exits with a config error if unset
+      DOMAIN: ${DOMAIN:-}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+    networks:
+      - internal
+
+volumes:
+  caddy-data:
+
+networks:
+  internal:

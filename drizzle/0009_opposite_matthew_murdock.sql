@@ -1,0 +1,1 @@
+ALTER TABLE `chat_sessions` ADD `model` text DEFAULT 'claude-sonnet-4-6' NOT NULL;

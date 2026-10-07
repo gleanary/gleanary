@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+  <channel>
+    <title>Test Blog</title>
+    <link>https://example.com</link>
+    <description>A test blog for integration tests</description>
+    <language>en-us</language>
+    <lastBuildDate>Mon, 01 Jan 2024 12:00:00 GMT</lastBuildDate>
+    <item>
+      <title>First Post</title>
+      <link>https://example.com/first-post</link>
+      <guid>guid-first-post</guid>
+      <pubDate>Mon, 01 Jan 2024 10:00:00 GMT</pubDate>
+      <description>Summary of the first post.</description>
+    </item>
+    <item>
+      <title>Second Post</title>
+      <link>https://example.com/second-post</link>
+      <guid>guid-second-post</guid>
+      <pubDate>Sun, 31 Dec 2023 10:00:00 GMT</pubDate>
+      <description>Summary of the second post.</description>
+    </item>
+  </channel>
+</rss>
