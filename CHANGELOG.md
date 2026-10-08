@@ -6,6 +6,7 @@ All notable changes to this project will be documented in this file.
 
 ### Changed
 
+- **CI: per-job and per-step `timeout-minutes`** — lint/typecheck 10, tests 15, E2E 30, and 10 on the two Playwright install steps, so a stalled apt mirror fails fast instead of running to GitHub's 6-hour job ceiling (seen once on the E2E system-deps step).
 - **Public-release prep**: repo URLs point at `gleanary/gleanary`; references to private issue/PR numbers removed from docs, skills, the changelog, CI config and code comments; personal-tooling (RTK) mentions dropped; new `docs/ai-first-development.md` explains the AI-first development setup, linked from the README. Two gitleaks false positives (a test dummy key, a placeholder `curl -u` example) are annotated `gitleaks:allow`.
 
 - **Infra: dropped the unused `ovh/ovh` provider** and its `ovh_application_key` / `ovh_application_secret` / `ovh_consumer_key` variables; every resource is OpenStack-managed, so OVH API credentials are no longer needed.
