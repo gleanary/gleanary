@@ -28,7 +28,6 @@ runcmd:
     SETTINGS_ENCRYPTION_KEY=${settings_encryption_key}
     ANTHROPIC_API_KEY=${anthropic_api_key}
     JINA_API_KEY=${jina_api_key}
-    SENTRY_DSN=${sentry_dsn}
     BETTERSTACK_SOURCE_TOKEN=${betterstack_token}
     NODE_ENV=production
     LOG_LEVEL=info
@@ -38,6 +37,8 @@ runcmd:
 
   # Write Caddyfile
   - |
+    # Keep in sync with docker/Caddyfile. No basic_auth: authentication is built
+    # into the app itself (session login + Basic header for API clients).
     cat > /opt/gleanary/Caddyfile << 'CADDYEOF'
     ${domain} {
       header {
@@ -45,7 +46,7 @@ runcmd:
         X-Frame-Options "DENY"
         Referrer-Policy "strict-origin-when-cross-origin"
         Permissions-Policy "camera=(), microphone=(), geolocation=()"
-        Content-Security-Policy "default-src 'self'; img-src 'self' https:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self' https://*.sentry.io; frame-src 'none'; object-src 'none'; worker-src 'self' blob:"
+        Content-Security-Policy "default-src 'self'; img-src 'self' https:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; connect-src 'self'; frame-src 'none'; object-src 'none'; worker-src 'self' blob:"
       }
 
       reverse_proxy app:3000

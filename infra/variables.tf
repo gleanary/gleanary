@@ -75,11 +75,6 @@ variable "jina_api_key" {
   description = "Jina Reader API key for article fetching (leave empty to use free tier)"
 }
 
-variable "sentry_dsn" {
-  type        = string
-  default     = ""
-  description = "Sentry DSN for error tracking (leave empty to disable)"
-}
 
 variable "betterstack_source_token" {
   type        = string

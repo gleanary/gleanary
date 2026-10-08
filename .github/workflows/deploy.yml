@@ -1,4 +1,4 @@
-# Owner-specific deployment: GHCR image push, Sentry sourcemaps, SSH deploy.
+# Owner-specific deployment: GHCR image push, SSH deploy.
 # Runs only after CI succeeds on main, and only when the repository variable
 # DEPLOY_ENABLED is set to 'true' — forks and the public repo skip it entirely.
 name: Deploy
@@ -42,13 +42,6 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      - name: Upload source maps to Sentry
-        run: npx @sentry/cli sourcemaps upload .next
-        env:
-          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
-          SENTRY_ORG: ${{ secrets.SENTRY_ORG }}
-          SENTRY_PROJECT: gleanary
-        continue-on-error: true # Don't fail deploy if Sentry upload fails
 
       - name: Deploy to server
         uses: appleboy/ssh-action@v1

@@ -6,6 +6,7 @@ All notable changes to this project will be documented in this file.
 
 ### Changed
 
+- **Infra drift fixed: `infra/cloud-init.yml` now matches `docker/Caddyfile`** — the bootstrap Caddyfile had a stale CSP (`script-src 'self'` without `'unsafe-inline'`, which breaks App Router hydration, and a leftover Sentry `connect-src`); it now uses the same CSP as `docker/Caddyfile` and documents that there is no Caddy `basic_auth` (auth lives in the app). Removed the unused `SENTRY_DSN` env line, the `sentry_dsn` OpenTofu variable, and the Sentry source-map step in `deploy.yml` (no Sentry SDK is installed). `tofu plan` shows no infrastructure changes.
 - **CI: per-job and per-step `timeout-minutes`** — lint/typecheck 10, tests 15, E2E 30, and 10 on the two Playwright install steps, so a stalled apt mirror fails fast instead of running to GitHub's 6-hour job ceiling (seen once on the E2E system-deps step).
 - **Public-release prep**: repo URLs point at `gleanary/gleanary`; references to private issue/PR numbers removed from docs, skills, the changelog, CI config and code comments; personal-tooling (RTK) mentions dropped; new `docs/ai-first-development.md` explains the AI-first development setup, linked from the README. Two gitleaks false positives (a test dummy key, a placeholder `curl -u` example) are annotated `gitleaks:allow`.
 
