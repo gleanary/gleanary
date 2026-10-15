@@ -15,8 +15,9 @@ const directives = (text: string) =>
 /** The Caddyfile that cloud-init writes to the server (heredoc body). */
 const cloudInitCaddyfile = (() => {
   const match = read('infra/cloud-init.yml').match(/<< 'CADDYEOF'\n([\s\S]*?)\n\s*CADDYEOF/);
-  if (!match) throw new Error('Caddyfile heredoc not found in infra/cloud-init.yml');
-  return match[1];
+  const body = match?.[1];
+  if (!body) throw new Error('Caddyfile heredoc not found in infra/cloud-init.yml');
+  return body;
 })();
 
 const CADDYFILES = [
