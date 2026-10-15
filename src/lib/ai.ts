@@ -128,15 +128,33 @@ let _client: Anthropic | null = null;
 let _clientConfigKey: string = '';
 
 /**
+ * Returns the configured Anthropic API key, or throws a clear "not configured" error.
+ * @returns The Anthropic API key from Settings (or ANTHROPIC_API_KEY env)
+ * @throws ExternalServiceError (503) when no key is configured
+ */
+export function requireAnthropicApiKey(): string {
+  const apiKey = getConfig('anthropic_api_key');
+  if (!apiKey) {
+    throw new ExternalServiceError(
+      'Claude API',
+      'API key not configured. Add your Anthropic API key in Settings → Integrations.',
+      503,
+    );
+  }
+  return apiKey;
+}
+
+/**
  * Returns the Anthropic SDK client singleton.
  * Recreates the client if the configured API key has changed.
  * @returns Anthropic client instance
+ * @throws ExternalServiceError (503) when no API key is configured
  */
 function getClient(): Anthropic {
-  const apiKey = getConfig('anthropic_api_key');
+  const apiKey = requireAnthropicApiKey();
   if (!_client || _clientConfigKey !== apiKey) {
     _client = new Anthropic({
-      apiKey: apiKey || undefined,
+      apiKey,
       timeout: TIMEOUT_MS,
       ...(process.env.NODE_ENV === 'test' && { maxRetries: 0 }),
     });

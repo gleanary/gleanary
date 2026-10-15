@@ -45,7 +45,8 @@ The `cached` field indicates whether the result was returned from the database c
 
 - 404: Article not found
 - 422: Invalid input
-- 502: Claude API error (ExternalServiceError)
+- 503: Claude API error (ExternalServiceError)
+- 503: No Anthropic API key configured — `error` is `"Claude API: API key not configured. Add your Anthropic API key in Settings → Integrations."` (thrown before any request is sent)
 
 ### POST /api/ai/tag
 
@@ -132,8 +133,9 @@ Stored as constants in `src/lib/ai.ts`:
 
 - Article with no content (only URL/title): return error "Article has no content to analyze"
 - Very long articles: truncate content to ~100K chars before sending to Claude
-- Claude API timeout: 30s timeout, return 502
-- Claude API rate limit: return 502 with retry-after hint
+- No Anthropic API key (neither the `anthropic_api_key` setting nor `ANTHROPIC_API_KEY`): every Claude call (summarize, tag, explain, chat SSE `error` event, …) fails fast with 503 "API key not configured" instead of the raw SDK auth error. The missing key is not cached, so saving a key in Settings takes effect on the next call. `POST /api/ai/clean` checks this up front when Haiku is the only reformat provider (provider `anthropic`, or no Mistral key), so a chunked reformat returns 503 rather than 422 "All chunks failed"; with Mistral configured as the provider, no Anthropic key is required.
+- Claude API timeout: 30s timeout, return 503
+- Claude API rate limit: return 503
 - Empty tag suggestions: return empty array, don't update ai_tags
 - Duplicate tag suggestions: deduplicate before creating
 
