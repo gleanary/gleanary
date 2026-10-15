@@ -8,6 +8,7 @@ import {
   isAuthConfigured,
   isLoginThrottled,
   isSecureRequest,
+  isValidBcryptHash,
   registerLoginFailure,
   sessionCookieOptions,
   verifyPassword,
@@ -19,17 +20,16 @@ import { logger } from '@/lib/logger';
  * Authenticate with the app password and receive a session cookie.
  * @param req - JSON body: { password }
  * @returns 200 with Set-Cookie on success; 403 wrong password; 422 invalid
- *   body; 429 throttled; 503 when auth env vars are missing
+ *   body; 429 throttled; 503 when auth env vars are missing or the hash is malformed
  */
 export const POST = withRoute('POST /api/auth/login', async (req: NextRequest) => {
   if (!isAuthConfigured()) {
-    return NextResponse.json(
-      {
-        error:
-          'Authentication is not configured. Set SETTINGS_AUTH_HASH and SETTINGS_ENCRYPTION_KEY (see README).',
-      },
-      { status: 503 },
-    );
+    const authHash = process.env.SETTINGS_AUTH_HASH;
+    const error =
+      authHash && !isValidBcryptHash(authHash)
+        ? 'Authentication is misconfigured: SETTINGS_AUTH_HASH is not a valid bcrypt hash (its `$` characters were likely expanded when the env file was loaded; see README).'
+        : 'Authentication is not configured. Set SETTINGS_AUTH_HASH and SETTINGS_ENCRYPTION_KEY (see README).';
+    return NextResponse.json({ error }, { status: 503 });
   }
 
   const ip = getClientIp(req) ?? 'unknown';

@@ -42,7 +42,12 @@ TLS termination.
   VPN/Tailscale-only deployments); logs a one-time warning.
 - **Safe by default**: when `SETTINGS_AUTH_HASH` / `SETTINGS_ENCRYPTION_KEY`
   are missing, the app still blocks and `POST /api/auth/login` returns `503`
-  with setup instructions.
+  with setup instructions. A `SETTINGS_AUTH_HASH` that is set but is not a
+  valid bcrypt hash (`isValidBcryptHash()`; typically a hash whose `$`
+  sequences were expanded by `@next/env` under `npm run dev`) is treated as
+  not configured: login returns `503` saying the hash is invalid (instead of
+  a misleading `403`), and a one-time `auth_hash_malformed` warning (never
+  containing the hash) explains the `\$` escaping fix.
 
 ## API contract
 
@@ -51,7 +56,7 @@ TLS termination.
 - Body: `{ password: string }` (Zod: `loginSchema` in `src/lib/validators.ts`)
 - `200` `{ ok: true }` + `Set-Cookie: gleanary_session=…`
 - `403` wrong password · `422` invalid body · `429` throttled ·
-  `503` auth env vars missing
+  `503` auth env vars missing or `SETTINGS_AUTH_HASH` not a valid bcrypt hash
 
 ### POST /api/auth/logout
 

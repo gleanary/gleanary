@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import bcrypt from 'bcryptjs';
 import {
   createSessionToken,
@@ -13,6 +13,7 @@ import {
   clearAuthCaches,
   SESSION_DURATION_MS,
 } from '@/lib/auth';
+import { logger } from '@/lib/logger';
 import { setupAuthEnv, TEST_PASSWORD } from '../mocks/auth-env';
 
 describe('auth', () => {
@@ -26,6 +27,46 @@ describe('auth', () => {
     it('reports auth unconfigured when SETTINGS_AUTH_HASH is missing', () => {
       delete process.env.SETTINGS_AUTH_HASH;
       expect(isAuthConfigured()).toBe(false);
+    });
+
+    describe('malformed SETTINGS_AUTH_HASH', () => {
+      afterEach(() => {
+        vi.unstubAllEnvs();
+        vi.restoreAllMocks();
+      });
+
+      // What a `$2b$..$` hash looks like after @next/env expands each `$NAME`
+      // to an empty string under `npm run dev`
+      const expandedHash = () => process.env.SETTINGS_AUTH_HASH!.replace(/^\$2b\$\d{2}\$/, '');
+
+      it('reports auth unconfigured when the hash is not a valid bcrypt hash', () => {
+        vi.stubEnv('SETTINGS_AUTH_HASH', expandedHash());
+        expect(isAuthConfigured()).toBe(false);
+        vi.stubEnv('SETTINGS_AUTH_HASH', 'b10N/TeNbaUnotabcrypthash');
+        expect(isAuthConfigured()).toBe(false);
+      });
+
+      it('warns once without logging the hash value', () => {
+        const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => logger);
+        const malformed = expandedHash();
+        vi.stubEnv('SETTINGS_AUTH_HASH', malformed);
+        isAuthConfigured();
+        isAuthConfigured();
+        const calls = warnSpy.mock.calls.filter(
+          ([obj]) => (obj as { event?: string }).event === 'auth_hash_malformed',
+        );
+        expect(calls).toHaveLength(1);
+        expect(JSON.stringify(calls[0])).not.toContain(malformed);
+        expect(String(calls[0]![1])).toContain('\\$');
+      });
+
+      it('accepts valid bcrypt hashes of any variant and cost', () => {
+        const body = process.env.SETTINGS_AUTH_HASH!.slice(7);
+        for (const prefix of ['$2a$10$', '$2b$12$', '$2y$04$']) {
+          vi.stubEnv('SETTINGS_AUTH_HASH', prefix + body);
+          expect(isAuthConfigured()).toBe(true);
+        }
+      });
     });
 
     it('reports auth disabled only when AUTH_DISABLED=true', () => {
