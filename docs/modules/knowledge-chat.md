@@ -521,7 +521,7 @@ For conversations that grow long, use a sliding window: keep the first 2 message
   - "Annotate highlight" → if the message discusses a specific highlight, adds the insight as a note
   - "Bookmark" → marks the message for later reference (just a flag, no separate table needed)
 - Scope badge shown at top; clicking allows scope change
-- Auto-generated session title after first exchange (LLM picks a short title from the content)
+- Auto-generated session title after first exchange (`generateChatTitle()` in `src/lib/chat-title.ts`): only the first user message is sent to `UTILITY_MODEL`, wrapped in `<message>` tags with an instruction not to answer it (`maxTokens` 30, feature `chat_title_generation`). The output is cleaned (first line, quotes/`Title:` prefix/trailing punctuation stripped) and rejected if empty, over 80 chars or 12 words, or answer-like (`I …`, `Sorry`, `Sure`, `Here`, `As an AI`); on rejection or API failure the title falls back to the first message on one line, cut at a word boundary to ~60 chars + `…` (`New chat` if blank). The follow-up route only re-titles while the title is still `New chat`, so manual renames are kept.
 
 ### Sidebar integration
 
