@@ -11,9 +11,11 @@ export default defineConfig({
       provider: 'v8',
       reporter: ['text', 'json-summary', 'html'],
       include: ['src/**/*.ts'],
-      // Not dead config: in vitest v4 every file loaded during the run is
-      // reported regardless of `include`; these keep the .tsx components
-      // loaded by jsdom tests out of the (TS-only) coverage gate.
+      // Defensive guard: vitest v4 reported every file loaded during the run
+      // regardless of `include`, so the .tsx components loaded by jsdom tests
+      // leaked into the (TS-only) coverage gate. vitest v5 honours `include`
+      // (verified: removing this yields no .tsx entries); kept so the gate
+      // stays TS-only if `include` is ever widened.
       exclude: ['src/app/**/*.tsx', 'src/components/**/*.tsx'],
       // Baseline measured 2026-07-15: statements 78.7%,
       // branches 70.6%, functions 78.9%, lines 80.6%. Set just below so
