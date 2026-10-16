@@ -282,6 +282,7 @@ Rules are codified in `architecture.md §16.10`. Key invariants: sanitize HTML b
 - **Only critical user journeys** (see architecture.md Section 11.5)
 - **Use `data-testid` attributes** for selectors, never CSS classes
 - **Each test is independent**: no shared state between tests
+- **Global-state contention → named test locks**: when a spec reads DB-wide state that other specs mutate in parallel, use Playwright `lock` (not `describe.serial`); see `HIGHLIGHT_WRITER_LOCKS` in `e2e/utils.ts`. A new spec that deletes highlights must take an entry there. Prefer `locator.visible()` over the `:visible` pseudo-class
 
 ### Running Tests
 

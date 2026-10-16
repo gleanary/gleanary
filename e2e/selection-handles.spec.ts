@@ -1,4 +1,5 @@
 import { test, expect, type Page } from '@playwright/test';
+import { HIGHLIGHT_WRITER_LOCKS } from './utils';
 
 const TEST_ARTICLE_HTML = `
 <p data-testid="para-1">This is the first paragraph of a test article with enough text for highlighting and handle testing.</p>
@@ -28,7 +29,7 @@ async function waitForMarks(page: Page, minCount = 1): Promise<void> {
   );
 }
 
-test.describe('Selection Handles E2E', () => {
+test.describe('Selection Handles E2E', { lock: HIGHLIGHT_WRITER_LOCKS.selectionHandles }, () => {
   let articleId: number;
 
   test.beforeEach(async ({ page }) => {
