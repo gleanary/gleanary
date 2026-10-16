@@ -6,7 +6,7 @@ import 'react-pdf/dist/Page/AnnotationLayer.css';
 import 'react-pdf/dist/Page/TextLayer.css';
 
 pdfjs.GlobalWorkerOptions.workerSrc = new URL(
-  'react-pdf/node_modules/pdfjs-dist/build/pdf.worker.min.mjs',
+  'pdfjs-dist/build/pdf.worker.min.mjs',
   import.meta.url,
 ).toString();
 
@@ -109,6 +109,8 @@ export function PdfViewer({ articleId, pageCount }: PdfViewerProps) {
         file={`/api/articles/${articleId}/original`}
         onLoadSuccess={handleLoadSuccess}
         onLoadError={() => setLoadError(true)}
+        // react-pdf 11 suspends by default; keep the component-managed skeleton/error flow.
+        suspense={false}
       >
         {containerWidth === null
           ? Array.from({ length: totalPages }, (_, i) => (
