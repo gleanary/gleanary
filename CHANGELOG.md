@@ -6,6 +6,7 @@ All notable changes to this project will be documented in this file.
 
 ### Changed
 
+- **react-pdf 11 Suspense mode evaluated, opt-out kept** (#13): `PdfViewer` stays on `suspense={false}` with its manual skeleton/error flow; the rationale (per-page Suspense boundaries, a new Error Boundary class, no gain from `startTransition`) is documented inline.
 - **Tooling cleanup** — `vitest.config.ts` renamed to `vitest.config.mts` (silences Vite's ESM-in-CommonJS config warning; `__dirname` → `import.meta.dirname`); `next-env.d.ts` is no longer tracked (gitignored per the Next.js docs) and `npm run typecheck` now runs `next typegen` first so it exists in CI; the Next.js agent-rules block that `next dev` writes into `CLAUDE.md` is committed so the tree stays clean.
 - **Test runner migrated to vitest 5** — `vitest` + `@vitest/coverage-v8` bumped together to 5.0.5 (vite 8.3.4 now resolved as vitest's peer); the suite passes unchanged under the new clear-mocks-by-default behaviour and coverage stays above the thresholds.
 - **`docs/architecture.md` reconciled with the public deployment** — Sentry removed (it was never installed), Caddy basic auth replaced by the built-in app auth, the app documented as the single owner of CSP and security headers, deploy secrets moved to the `production` environment with the hardened `deploy.yml` trigger, and the pasted OpenTofu/cloud-init/Dockerfile copies in §8 replaced by pointers to the real files (they had drifted).

@@ -109,7 +109,11 @@ export function PdfViewer({ articleId, pageCount }: PdfViewerProps) {
         file={`/api/articles/${articleId}/original`}
         onLoadSuccess={handleLoadSuccess}
         onLoadError={() => setLoadError(true)}
-        // react-pdf 11 suspends by default; keep the component-managed skeleton/error flow.
+        // react-pdf 11 suspends by default; we opt out and keep the component-managed
+        // skeleton/error flow (evaluated in #13). Suspense mode would need a Suspense
+        // boundary per lazily-mounted <Page> (each one suspends, otherwise the whole
+        // document flashes back to the fallback on scroll) plus an Error Boundary class,
+        // and startTransition buys nothing since `file` only changes on remount.
         suspense={false}
       >
         {containerWidth === null
