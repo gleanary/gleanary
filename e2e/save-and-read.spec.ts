@@ -1,7 +1,7 @@
 import { test, expect } from '@playwright/test';
-import { waitForApiResponse } from './utils';
+import { HIGHLIGHT_WRITER_LOCKS, waitForApiResponse } from './utils';
 
-test.describe('Save Article and Read', () => {
+test.describe('Save Article and Read', { lock: HIGHLIGHT_WRITER_LOCKS.saveAndRead }, () => {
   const createdIds: number[] = [];
 
   test.afterEach(async ({ page }) => {

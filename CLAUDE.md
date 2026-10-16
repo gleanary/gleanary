@@ -147,7 +147,6 @@ Session types define the process; the workflows in `.claude/workflows/` are the 
 | Refactor **existing tests** without weakening them (stub/env hygiene, fake timers, flaky E2E, testid migration) | `feature-session` mode `test-hygiene` (green-baseline → suite-contract gate; E2E fixes get a `--repeat-each` stability proof)                                             |
 | Add tests for **existing code** (coverage gaps)                                                                 | `feature-session` mode `test-coverage` (tests pass immediately → mutation check per file; discovered bugs reported, never fixed inline)                                   |
 | One mechanical transformation across many test files (~10+)                                                     | `test-sweep` (fan-out per file group → aggregate contract check → single verify)                                                                                          |
-| Docs drift (`architecture.md`, module specs)                                                                    | **Inline `SESSION: docs`, never a workflow** — `architecture.md` is human-approval-only and workers are forbidden from editing it                                         |
 | CI/CD, infra                                                                                                    | **Inline `SESSION: infra`, never a workflow** — workers are forbidden from `.github/workflows/` and `infra/`; pushes touching `.github/workflows/` need the human's token |
 
 Routing rules:
@@ -282,6 +281,7 @@ Rules are codified in `architecture.md §16.10`. Key invariants: sanitize HTML b
 - **Only critical user journeys** (see architecture.md Section 11.5)
 - **Use `data-testid` attributes** for selectors, never CSS classes
 - **Each test is independent**: no shared state between tests
+- **Global-state contention → named test locks**: when a spec reads DB-wide state that other specs mutate in parallel, use Playwright `lock` (not `describe.serial`); see `HIGHLIGHT_WRITER_LOCKS` in `e2e/utils.ts`. A new spec that deletes highlights must take an entry there. Prefer `locator.visible()` over the `:visible` pseudo-class
 
 ### Running Tests
 

@@ -1,6 +1,7 @@
 import { test, expect } from '@playwright/test';
+import { HIGHLIGHT_WRITER_LOCKS } from './utils';
 
-test.describe('Global Search', () => {
+test.describe('Global Search', { lock: HIGHLIGHT_WRITER_LOCKS.globalSearch }, () => {
   const createdIds: number[] = [];
 
   test.afterEach(async ({ page }) => {

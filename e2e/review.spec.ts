@@ -1,5 +1,5 @@
 import { test, expect, type APIRequestContext } from '@playwright/test';
-import { waitForApiResponse } from './utils';
+import { ALL_HIGHLIGHT_WRITER_LOCKS, waitForApiResponse } from './utils';
 
 /**
  * Creates a highlight that is immediately due for review (new highlights
@@ -17,7 +17,9 @@ async function createDueHighlight(
   return highlight.id;
 }
 
-test.describe('Daily Review Flow', () => {
+// Holds every highlight-writer lock so no highlight-deleting spec runs while the
+// SSR'd review queue is open; see HIGHLIGHT_WRITER_LOCKS in ./utils for why.
+test.describe('Daily Review Flow', { lock: ALL_HIGHLIGHT_WRITER_LOCKS }, () => {
   let articleId: number;
 
   test.beforeAll(async ({ request }) => {
