@@ -32,11 +32,11 @@ export default defineConfig({
   },
   resolve: {
     alias: {
-      '@': path.resolve(__dirname, './src'),
+      '@': path.resolve(import.meta.dirname, './src'),
       // `server-only` throws when imported outside a bundler that applies the
       // `react-server` condition. Under vitest (plain node) it should be a
       // no-op, so alias it to the package's empty stub.
-      'server-only': path.resolve(__dirname, 'node_modules/server-only/empty.js'),
+      'server-only': path.resolve(import.meta.dirname, 'node_modules/server-only/empty.js'),
     },
   },
 });

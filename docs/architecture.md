@@ -709,7 +709,7 @@ The four CI jobs run in parallel (E2E does not wait for the others); deploy is a
 **`ci.yml`** — runs on every PR and push to `main`, with per-ref concurrency cancellation. Four independent jobs, all in parallel (no `needs` chaining — total wall-clock is the slowest job, not the sum):
 
 - **`lint`**, **`typecheck`** — `npm run lint` / `npm run typecheck`.
-- **`test`** — `npm run test:coverage`: all Vitest unit + integration tests with v8 coverage; baseline thresholds in `vitest.config.ts` fail the job on regression, and the coverage report is uploaded as a workflow artifact.
+- **`test`** — `npm run test:coverage`: all Vitest unit + integration tests with v8 coverage; baseline thresholds in `vitest.config.mts` fail the job on regression, and the coverage report is uploaded as a workflow artifact.
 - **`e2e`** — production build (`npm run build`) served by `next start`, then the full Playwright suite. Two load-bearing details:
   - **Real-auth mode**: the Playwright config derives `SETTINGS_AUTH_HASH` from `E2E_AUTH_PASSWORD` (plus a fixed `SETTINGS_ENCRYPTION_KEY`) for the spawned server, so the whole suite runs against the built-in auth gate, including the login journey.
   - Playwright browsers are cached (`actions/cache` keyed on `package-lock.json`); the HTML report and traces upload as artifacts whenever the run isn't cancelled.
@@ -1196,7 +1196,7 @@ E2E runs on PRs too, so a broken critical journey fails CI before merge; the Pla
 
 ### 11.9 Coverage
 
-Coverage is collected and **enforced** in CI: the `test` job runs `npm run test:coverage` (`@vitest/coverage-v8`, scoped to `src/**/*.ts` — `.tsx` UI components are excluded from the gate), and baseline thresholds in `vitest.config.ts` fail the build on regression:
+Coverage is collected and **enforced** in CI: the `test` job runs `npm run test:coverage` (`@vitest/coverage-v8`, scoped to `src/**/*.ts` — `.tsx` UI components are excluded from the gate), and baseline thresholds in `vitest.config.mts` fail the build on regression:
 
 | Metric     | Threshold | Baseline (2026-07-15) |
 | ---------- | --------- | --------------------- |
@@ -1702,4 +1702,4 @@ docker/                         # Dockerfile + compose.yml + Caddyfile
 - **Client** — modules with a `'use client'` directive or React hooks (e.g. `use-pdf-upload.ts`, `markdown-renderer.ts`). Never add `server-only` here.
 - **Pure / isomorphic** — dependency-free constants, types, and predicates safe to import from either side (e.g. `settings-schema.ts`, `validators.ts`, `article-api.ts`, `draft-autosave.ts`). Keep these free of server imports so pure consumers (like the Zod validation layer) do not transitively weld to the server stack. When a server module needs to expose a pure constant to isomorphic code, extract it into a dependency-free module and re-export for back-compat (as `settings.ts` does with `settings-schema.ts`).
 
-> Note: `server-only` throws under plain node (vitest), so `vitest.config.ts` aliases it to the package's empty stub for the test environment.
+> Note: `server-only` throws under plain node (vitest), so `vitest.config.mts` aliases it to the package's empty stub for the test environment.

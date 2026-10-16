@@ -443,3 +443,13 @@ docker compose -f docker/compose.yml up -d
 - Don't add custom CSS files or `style={}` color literals — extend `globals.css` tokens if something is genuinely missing (rare, needs a reason).
 - Don't introduce a second font, a new radius, or off-scale spacing.
 - Don't use raw palette colors for app chrome or status; status maps onto `tint-*`. The only fixed raw accents are the highlight `yellow-400`, the TTS/reading-progress `blue-400/500`, and the favorite-heart active `red-500`.
+
+<!-- BEGIN:nextjs-agent-rules -->
+
+# This is NOT the Next.js you know
+
+This version has breaking changes — APIs, conventions, and file structure may all differ from your training data. Read the relevant guide in `node_modules/next/dist/docs/` (resolved from this file's directory; in monorepos the `next` package may not be visible from the repo root) before writing any code. Heed deprecation notices.
+
+This block is written and re-added by `next dev` — verify at `node_modules/next/dist/server/lib/generate-agent-files.js`. Removing it from a diff only re-creates the uncommitted change; committing it with your work keeps the tree clean.
+
+<!-- END:nextjs-agent-rules -->
