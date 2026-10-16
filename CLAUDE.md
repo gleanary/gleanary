@@ -147,7 +147,6 @@ Session types define the process; the workflows in `.claude/workflows/` are the 
 | Refactor **existing tests** without weakening them (stub/env hygiene, fake timers, flaky E2E, testid migration) | `feature-session` mode `test-hygiene` (green-baseline → suite-contract gate; E2E fixes get a `--repeat-each` stability proof)                                             |
 | Add tests for **existing code** (coverage gaps)                                                                 | `feature-session` mode `test-coverage` (tests pass immediately → mutation check per file; discovered bugs reported, never fixed inline)                                   |
 | One mechanical transformation across many test files (~10+)                                                     | `test-sweep` (fan-out per file group → aggregate contract check → single verify)                                                                                          |
-| Docs drift (`architecture.md`, module specs)                                                                    | **Inline `SESSION: docs`, never a workflow** — `architecture.md` is human-approval-only and workers are forbidden from editing it                                         |
 | CI/CD, infra                                                                                                    | **Inline `SESSION: infra`, never a workflow** — workers are forbidden from `.github/workflows/` and `infra/`; pushes touching `.github/workflows/` need the human's token |
 
 Routing rules:
