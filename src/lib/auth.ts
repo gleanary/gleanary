@@ -3,6 +3,7 @@ import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
 import bcrypt from 'bcryptjs';
 import type { NextRequest } from 'next/server';
 import { isEncryptionAvailable } from '@/lib/settings-crypto';
+import { logger } from '@/lib/logger';
 
 /** Name of the session cookie set on successful login. */
 export const SESSION_COOKIE_NAME = 'gleanary_session';
@@ -37,12 +38,41 @@ export function isAuthDisabled(): boolean {
   return process.env.AUTH_DISABLED === 'true';
 }
 
+/** Format of a bcrypt hash: `$2a|b|x|y$<cost>$<53 chars of salt+digest>` (60 chars total). */
+const BCRYPT_HASH_PATTERN = /^\$2[abxy]\$\d{2}\$[./A-Za-z0-9]{53}$/;
+
+let warnedHashMalformed = false;
+
+/**
+ * Whether a value is a well-formed bcrypt hash. bcrypt.compare silently returns
+ * false for anything else, so a mangled SETTINGS_AUTH_HASH would reject every password.
+ * @param value - Candidate hash
+ * @returns true if the value matches the bcrypt hash format
+ */
+export function isValidBcryptHash(value: string): boolean {
+  return BCRYPT_HASH_PATTERN.test(value);
+}
+
 /**
  * Whether the two env vars required for authentication are present and valid.
- * @returns true if SETTINGS_AUTH_HASH and a valid SETTINGS_ENCRYPTION_KEY are set
+ * A SETTINGS_AUTH_HASH that is set but not a valid bcrypt hash counts as not
+ * configured (and logs a one-time warning).
+ * @returns true if a valid SETTINGS_AUTH_HASH and SETTINGS_ENCRYPTION_KEY are set
  */
 export function isAuthConfigured(): boolean {
-  return isEncryptionAvailable() && Boolean(process.env.SETTINGS_AUTH_HASH);
+  const authHash = process.env.SETTINGS_AUTH_HASH;
+  if (!authHash) return false;
+  if (!isValidBcryptHash(authHash)) {
+    if (!warnedHashMalformed) {
+      warnedHashMalformed = true;
+      logger.warn(
+        { event: 'auth_hash_malformed' },
+        'SETTINGS_AUTH_HASH is not a valid bcrypt hash, so login is disabled. Under `npm run dev`, Next.js expands `$` even inside single quotes in .env: escape each `$` as `\\$`. With Docker compose env_file, wrap the hash in single quotes instead.',
+      );
+    }
+    return false;
+  }
+  return isEncryptionAvailable();
 }
 
 /**
@@ -224,12 +254,14 @@ export function clearLoginFailures(ip: string): void {
 }
 
 /**
- * Clear all in-memory auth caches (Basic auth cache + login throttling). For tests.
+ * Clear all in-memory auth state (Basic auth cache, login throttling, signing
+ * key, malformed-hash warning flag). For tests.
  */
 export function clearAuthCaches(): void {
   basicAuthCache.clear();
   loginFailures.clear();
   signingKeyCache = null;
+  warnedHashMalformed = false;
 }
 
 /**

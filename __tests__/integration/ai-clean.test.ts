@@ -31,12 +31,12 @@ vi.mock('node:fs/promises', async (importOriginal) => {
 import { eq } from 'drizzle-orm';
 import { server, setupHandlers } from '../mocks/server';
 import { resetClient } from '@/lib/ai';
-import { clearSettingsCache } from '@/lib/settings';
+import { clearSettingsCache, deleteSetting } from '@/lib/settings';
 import { MISTRAL_REFORMAT_MODEL } from '@/lib/mistral-chat';
 import { articles, aiUsage } from '@/db/schema';
 import { storePdfImage, deletePdfImages } from '@/lib/pdf-storage';
 import { POST as createArticle } from '@/app/api/articles/route';
-import { POST as cleanArticle } from '@/app/api/ai/clean/route';
+import { POST as cleanArticle, CHUNK_THRESHOLD } from '@/app/api/ai/clean/route';
 import { POST as revertArticle } from '@/app/api/ai/revert/route';
 
 const mockStorePdfImage = storePdfImage as ReturnType<typeof vi.fn>;
@@ -489,6 +489,94 @@ describe('AI Clean + Revert API', () => {
 
       const res = await cleanArticle(jsonReq('POST', '/api/ai/clean', { articleId }));
       expect(res.status).toBe(503);
+    });
+  });
+
+  describe('HTML branch — no Anthropic API key', () => {
+    let anthropicCalled: boolean;
+
+    beforeEach(() => {
+      vi.stubEnv('ANTHROPIC_API_KEY', '');
+      deleteSetting('anthropic_api_key');
+      clearSettingsCache();
+      resetClient();
+      anthropicCalled = false;
+      server.use(
+        http.post('https://api.anthropic.com/v1/messages', () => {
+          anthropicCalled = true;
+          return HttpResponse.json({ error: { message: 'unexpected' } }, { status: 401 });
+        }),
+      );
+    });
+
+    afterEach(() => {
+      clearSettingsCache();
+    });
+
+    /** Creates an HTML article large enough to take the chunked reformat path. */
+    async function createLargeArticle(): Promise<number> {
+      const para = '<p>' + 'x'.repeat(480) + '</p>';
+      const count = Math.ceil((CHUNK_THRESHOLD + 5_000) / (para.length + 1));
+      const res = await createArticle(
+        jsonReq('POST', '/api/articles', {
+          url: 'https://example.com/clean-no-key-chunked',
+          title: 'Chunked No Key Article',
+          contentHtml: Array.from({ length: count }, () => para).join('\n'),
+          contentText: 'large article',
+          excerpt: 'large',
+        }),
+      );
+      return (await res.json()).article.id;
+    }
+
+    async function expectNotConfigured(res: Response) {
+      expect(res.status).toBe(503);
+      const body = await res.json();
+      expect(body.error).toContain('not configured');
+      expect(body.error).not.toContain('All chunks failed');
+      expect(body.error).not.toContain('Could not resolve authentication');
+      expect(anthropicCalled).toBe(false);
+    }
+
+    it('returns 503 not configured for a chunked article when neither key is set', async () => {
+      vi.stubEnv('MISTRAL_API_KEY', '');
+      clearSettingsCache();
+      const largeId = await createLargeArticle();
+      const db = dbMock.mock.db!;
+      const before = db.select().from(articles).where(eq(articles.id, largeId)).get();
+
+      const res = await cleanArticle(jsonReq('POST', '/api/ai/clean', { articleId: largeId }));
+      await expectNotConfigured(res);
+
+      const after = db.select().from(articles).where(eq(articles.id, largeId)).get();
+      expect(after?.contentHtml).toBe(before?.contentHtml);
+      expect(after?.aiCleanedAt).toBeNull();
+    });
+
+    it('returns 503 not configured for a single-shot article when neither key is set', async () => {
+      vi.stubEnv('MISTRAL_API_KEY', '');
+      clearSettingsCache();
+
+      const res = await cleanArticle(jsonReq('POST', '/api/ai/clean', { articleId }));
+      await expectNotConfigured(res);
+    });
+
+    it('returns 503 not configured when the provider is anthropic, even with a Mistral key', async () => {
+      vi.stubEnv('REFORMAT_PROVIDER', 'anthropic');
+      clearSettingsCache();
+
+      const res = await cleanArticle(jsonReq('POST', '/api/ai/clean', { articleId }));
+      await expectNotConfigured(res);
+    });
+
+    it('still reformats via Mistral when Mistral is configured as the provider', async () => {
+      const res = await cleanArticle(jsonReq('POST', '/api/ai/clean', { articleId }));
+      expect(res.status).toBe(200);
+
+      const body = await res.json();
+      expect(body.provider).toBe('mistral');
+      expect(body.fallback).toBeUndefined();
+      expect(anthropicCalled).toBe(false);
     });
   });
 

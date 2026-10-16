@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import { NextRequest } from 'next/server';
 
 import proxy from '@/proxy';
@@ -159,6 +159,34 @@ describe('Auth', () => {
       delete process.env.SETTINGS_AUTH_HASH;
       const res = await login(loginReq(TEST_PASSWORD));
       expect(res.status).toBe(503);
+    });
+
+    describe('with a malformed SETTINGS_AUTH_HASH ($-expanded by next dev)', () => {
+      afterEach(() => vi.unstubAllEnvs());
+
+      const stubExpandedHash = () =>
+        vi.stubEnv(
+          'SETTINGS_AUTH_HASH',
+          process.env.SETTINGS_AUTH_HASH!.replace(/^\$2b\$\d{2}\$/, ''),
+        );
+
+      it('returns 503 explaining the hash is invalid instead of 403', async () => {
+        stubExpandedHash();
+        const res = await login(loginReq(TEST_PASSWORD));
+        expect(res.status).toBe(503);
+        const body = (await res.json()) as { error: string };
+        expect(body.error).toContain('not a valid bcrypt hash');
+        expect(body.error).toContain('$');
+        expect(body.error).toContain('README');
+      });
+
+      it('still blocks protected routes in the proxy', async () => {
+        stubExpandedHash();
+        const api = await proxy(req('/api/articles', { basic: `reader:${TEST_PASSWORD}` }));
+        expect(api.status).toBe(401);
+        const page = await proxy(req('/'));
+        expect(page.status).toBe(307);
+      });
     });
 
     it('throttles after repeated failures from the same IP', async () => {

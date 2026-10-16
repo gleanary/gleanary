@@ -152,7 +152,14 @@ export const DRAFT_MODELS: Array<{ id: DraftModelId; name: string }> = ALL_CLAUD
   (m) => m.features.some((f) => f === 'draft'),
 ).map((m) => ({ id: 'apiId' in m ? m.apiId : m.id, name: m.name }));
 
-/** Model used for utility calls: keyword extraction, title generation, concept indexing */
+/**
+ * Default model for non-chat AI features (summarize, tag, explain, thesis/highlight suggest,
+ * concept index, voice extraction). Must be an active (non-historical) registry entry —
+ * retired model ids are rejected by the Anthropic API with 404 not_found_error.
+ */
+export const DEFAULT_FEATURE_MODEL = 'claude-sonnet-4-6';
+
+/** Model used for utility calls: keyword extraction, chat title generation, lint, ai-clean fallback */
 export const UTILITY_MODEL = 'claude-haiku-4-5-20251001';
 
 export interface ModelBudget {

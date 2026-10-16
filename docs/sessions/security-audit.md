@@ -48,7 +48,8 @@ Full codebase security scan. Run this at minimum once per phase, or after any mo
    - **FAIL if**: any high/critical vulnerabilities with available fix
 
 7. **HEADERS AUDIT**:
-   - Verify `docker/Caddyfile` includes all security headers from architecture.md §16.7
+   - Verify `next.config.ts` `headers()` includes all security headers from architecture.md §16.7 (the app is their single owner)
+   - Verify `docker/Caddyfile` sets no security headers (a second CSP from Caddy would be enforced alongside the app's)
    - Check CSP policy matches what the app actually needs (no overly permissive `unsafe-eval`)
    - **FAIL if**: missing CSP, X-Frame-Options, or X-Content-Type-Options
 

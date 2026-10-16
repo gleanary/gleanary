@@ -7,6 +7,8 @@ const dbMock = await vi.hoisted(async () => (await import('./setup')).createDbMo
 vi.mock('@/db', () => dbMock.mock);
 
 import { resetClient } from '@/lib/ai';
+import { clearSettingsCache, deleteSetting, setSetting } from '@/lib/settings';
+import { expectActiveModel } from '../mocks/active-models';
 import { POST as createArticle } from '@/app/api/articles/route';
 import { POST as createHighlight } from '@/app/api/highlights/route';
 import { POST as summarize } from '@/app/api/ai/summarize/route';
@@ -70,8 +72,30 @@ describe('AI Features API', () => {
 
   describe('POST /api/ai/summarize', () => {
     it('summarizes an article and stores result', async () => {
+      let requestedModel: unknown;
+      server.use(
+        http.post('https://api.anthropic.com/v1/messages', async ({ request }) => {
+          requestedModel = ((await request.json()) as { model?: unknown }).model;
+          return HttpResponse.json({
+            id: 'msg_mock',
+            type: 'message',
+            role: 'assistant',
+            content: [
+              {
+                type: 'text',
+                text: 'This article discusses testing patterns for modern web applications.',
+              },
+            ],
+            model: 'claude-sonnet-4-20250514',
+            stop_reason: 'end_turn',
+            usage: { input_tokens: 100, output_tokens: 20 },
+          });
+        }),
+      );
+
       const res = await summarize(jsonReq('POST', '/api/ai/summarize', { articleId }));
       expect(res.status).toBe(200);
+      expectActiveModel(requestedModel);
 
       const body = await res.json();
       expect(body.summary).toBeTruthy();
@@ -133,7 +157,7 @@ describe('AI Features API', () => {
       expect(res.status).toBe(422);
     });
 
-    it('returns 502 when Claude API fails', async () => {
+    it('returns 503 when Claude API fails', async () => {
       server.use(
         http.post('https://api.anthropic.com/v1/messages', () => {
           return HttpResponse.json({ error: { message: 'Rate limited' } }, { status: 429 });
@@ -147,8 +171,10 @@ describe('AI Features API', () => {
 
   describe('POST /api/ai/tag', () => {
     it('auto-tags an article', async () => {
+      let requestedModel: unknown;
       server.use(
-        http.post('https://api.anthropic.com/v1/messages', () => {
+        http.post('https://api.anthropic.com/v1/messages', async ({ request }) => {
+          requestedModel = ((await request.json()) as { model?: unknown }).model;
           return HttpResponse.json({
             id: 'msg_tag',
             type: 'message',
@@ -163,6 +189,7 @@ describe('AI Features API', () => {
 
       const res = await autoTag(jsonReq('POST', '/api/ai/tag', { articleId }));
       expect(res.status).toBe(200);
+      expectActiveModel(requestedModel);
 
       const body = await res.json();
       expect(body.tags).toBeInstanceOf(Array);
@@ -224,7 +251,7 @@ describe('AI Features API', () => {
       expect(res.status).toBe(422);
     });
 
-    it('returns 502 when Claude API fails', async () => {
+    it('returns 503 when Claude API fails', async () => {
       server.use(
         http.post('https://api.anthropic.com/v1/messages', () => {
           return HttpResponse.json({ error: { message: 'Server error' } }, { status: 500 });
@@ -327,7 +354,7 @@ describe('AI Features API', () => {
       expect(res.status).toBe(422);
     });
 
-    it('returns 502 when Claude API fails', async () => {
+    it('returns 503 when Claude API fails', async () => {
       server.use(
         http.post('https://api.anthropic.com/v1/messages', () => {
           return HttpResponse.json({ error: { message: 'Overloaded' } }, { status: 529 });
@@ -338,6 +365,93 @@ describe('AI Features API', () => {
         jsonReq('POST', '/api/ai/explain', { highlightId, mode: 'explain' }),
       );
       expect(res.status).toBe(503);
+    });
+  });
+  describe('without an Anthropic API key', () => {
+    let anthropicCalled: boolean;
+
+    beforeEach(() => {
+      vi.stubEnv('ANTHROPIC_API_KEY', '');
+      deleteSetting('anthropic_api_key');
+      clearSettingsCache();
+      resetClient();
+      anthropicCalled = false;
+    });
+
+    afterEach(() => {
+      clearSettingsCache();
+    });
+
+    /** Registers a handler that records whether any request reached the Anthropic API. */
+    function trackAnthropicCalls() {
+      server.use(
+        http.post('https://api.anthropic.com/v1/messages', () => {
+          anthropicCalled = true;
+          return HttpResponse.json({ error: { message: 'unexpected' } }, { status: 401 });
+        }),
+      );
+    }
+
+    async function expectNotConfigured(res: Response) {
+      expect(res.status).toBe(503);
+      const body = await res.json();
+      expect(body.error).toContain('not configured');
+      expect(body.error).not.toContain('Could not resolve authentication');
+      expect(anthropicCalled).toBe(false);
+    }
+
+    it('summarize returns 503 not configured instead of the raw SDK error', async () => {
+      trackAnthropicCalls();
+      const res = await summarize(jsonReq('POST', '/api/ai/summarize', { articleId }));
+      await expectNotConfigured(res);
+    });
+
+    it('tag returns 503 not configured instead of the raw SDK error', async () => {
+      trackAnthropicCalls();
+      const res = await autoTag(jsonReq('POST', '/api/ai/tag', { articleId }));
+      await expectNotConfigured(res);
+    });
+
+    it('explain returns 503 not configured instead of the raw SDK error', async () => {
+      const hlRes = await createHighlight(
+        jsonReq('POST', '/api/highlights', {
+          articleId,
+          text: 'Testing patterns are essential for maintainable code.',
+        }),
+      );
+      const { highlight } = await hlRes.json();
+      trackAnthropicCalls();
+
+      const res = await explain(
+        jsonReq('POST', '/api/ai/explain', { highlightId: highlight.id, mode: 'explain' }),
+      );
+      await expectNotConfigured(res);
+    });
+
+    it('succeeds on the next call once a key is saved in Settings (missing key not cached)', async () => {
+      trackAnthropicCalls();
+      const failed = await summarize(jsonReq('POST', '/api/ai/summarize', { articleId }));
+      expect(failed.status).toBe(503);
+
+      server.use(
+        http.post('https://api.anthropic.com/v1/messages', () =>
+          HttpResponse.json({
+            id: 'msg_later',
+            type: 'message',
+            role: 'assistant',
+            content: [{ type: 'text', text: 'Summary after the key was saved.' }],
+            model: 'claude-sonnet-4-20250514',
+            stop_reason: 'end_turn',
+            usage: { input_tokens: 100, output_tokens: 20 },
+          }),
+        ),
+      );
+      setSetting('anthropic_api_key', 'sk-ant-saved-later');
+
+      const res = await summarize(jsonReq('POST', '/api/ai/summarize', { articleId }));
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.summary).toBeTruthy();
     });
   });
 });

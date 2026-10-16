@@ -1,13 +1,14 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { NextRequest } from 'next/server';
 import { http, HttpResponse } from 'msw';
-import { setupHandlers } from '../mocks/server';
+import { setupHandlers, server } from '../mocks/server';
 
 const dbMock = await vi.hoisted(async () => (await import('./setup')).createDbMock());
 vi.mock('@/db', () => dbMock.mock);
 
 import { resetClient } from '@/lib/ai';
-import { articles } from '@/db/schema';
+import { eq } from 'drizzle-orm';
+import { articles, chatSessions } from '@/db/schema';
 
 // Import route handlers
 import { GET as listSessions, POST as createSession } from '@/app/api/chat/route';
@@ -109,11 +110,13 @@ async function parseSSE(response: Response): Promise<Array<{ event: string; data
 
 describe('Chat API', () => {
   let testArticleId: number;
+  let testDb: ReturnType<typeof dbMock.setup>['db'];
 
   beforeEach(() => {
     // Set dummy API key before any imports that initialize the Anthropic client
     vi.stubEnv('ANTHROPIC_API_KEY', 'sk-ant-test-dummy-key');
     const { db } = dbMock.setup();
+    testDb = db;
     resetClient();
 
     // Insert a test article for retrieval
@@ -169,6 +172,43 @@ describe('Chat API', () => {
       const doneEvent = events.find((e) => e.event === 'done');
       expect(doneEvent).toBeDefined();
       expect((doneEvent!.data as { messageId: number }).messageId).toBeGreaterThan(0);
+
+      const titleEvent = events.find((e) => e.event === 'title');
+      expect(titleEvent?.data).toEqual({ title: 'Testing Patterns Discussion' });
+      const row = testDb
+        .select()
+        .from(chatSessions)
+        .where(eq(chatSessions.id, sessionData.id))
+        .get();
+      expect(row?.title).toBe('Testing Patterns Discussion');
+    });
+
+    it('falls back to the first message when the title model answers instead of titling', async () => {
+      const answerLike =
+        'I don\'t have access to your library or any previous conversation context. To answer what spaced repetition is "according to your library," I would need you to share what your library says about it.\n\nC';
+      server.use(
+        http.post('https://api.anthropic.com/v1/messages', async ({ request }) => {
+          const body = (await request.clone().json()) as Record<string, unknown>;
+          const systemPrompt = typeof body.system === 'string' ? body.system : '';
+          if (!body.stream && systemPrompt.includes('3-8 word title')) {
+            return HttpResponse.json({
+              ...defaultResponse,
+              content: [{ type: 'text', text: answerLike }],
+            });
+          }
+          // Fall through to the file-level handler for every other call
+          return undefined;
+        }),
+      );
+
+      const message = 'What is spaced repetition according to my library?';
+      const res = await createSession(jsonReq('POST', '/api/chat', { message }));
+      const events = await parseSSE(res);
+
+      const sessionId = (events.find((e) => e.event === 'session')!.data as { id: number }).id;
+      expect(events.find((e) => e.event === 'title')?.data).toEqual({ title: message });
+      const row = testDb.select().from(chatSessions).where(eq(chatSessions.id, sessionId)).get();
+      expect(row?.title).toBe(message);
     });
 
     it('returns 422 for empty message', async () => {
@@ -221,6 +261,49 @@ describe('Chat API', () => {
     });
   });
 
+  describe('POST /api/chat/[id] (auto-title on follow-up)', () => {
+    it('titles a "New chat" session from the first user message when the model answers instead', async () => {
+      const createRes = await createSession(
+        jsonReq('POST', '/api/chat', { message: 'Explain spaced repetition' }),
+      );
+      const events = await parseSSE(createRes);
+      const sessionId = (events.find((e) => e.event === 'session')!.data as { id: number }).id;
+      testDb
+        .update(chatSessions)
+        .set({ title: 'New chat' })
+        .where(eq(chatSessions.id, sessionId))
+        .run();
+
+      server.use(
+        http.post('https://api.anthropic.com/v1/messages', async ({ request }) => {
+          const body = (await request.clone().json()) as Record<string, unknown>;
+          const systemPrompt = typeof body.system === 'string' ? body.system : '';
+          if (!body.stream && systemPrompt.includes('3-8 word title')) {
+            return HttpResponse.json({
+              ...defaultResponse,
+              content: [
+                { type: 'text', text: 'Sure, I can help with that.\nSpaced repetition is' },
+              ],
+            });
+          }
+          return undefined;
+        }),
+      );
+
+      const followupRes = await sendMessage(
+        jsonReq('POST', `/api/chat/${sessionId}`, { message: 'Tell me more' }),
+        routeContext(sessionId),
+      );
+      const followupEvents = await parseSSE(followupRes);
+
+      expect(followupEvents.find((e) => e.event === 'title')?.data).toEqual({
+        title: 'Explain spaced repetition',
+      });
+      const row = testDb.select().from(chatSessions).where(eq(chatSessions.id, sessionId)).get();
+      expect(row?.title).toBe('Explain spaced repetition');
+    });
+  });
+
   describe('Chat CRUD flow', () => {
     it('creates, lists, gets, updates, and deletes a session', async () => {
       // Create via POST (SSE)
@@ -266,6 +349,8 @@ describe('Chat API', () => {
       expect(followupRes.status).toBe(200);
       const followupEvents = await parseSSE(followupRes);
       expect(followupEvents.filter((e) => e.event === 'delta').length).toBeGreaterThan(0);
+      // A manually renamed session is never re-titled
+      expect(followupEvents.find((e) => e.event === 'title')).toBeUndefined();
 
       // Verify messages grew
       const getRes2 = await getSession(

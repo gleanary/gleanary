@@ -1,10 +1,11 @@
 import { callClaudeStreaming } from '@/lib/ai';
+import { DEFAULT_FEATURE_MODEL } from '@/lib/models';
 import { computeWordCount } from '@/lib/text-utils';
 import type { VoiceSample } from '@/types';
 
 export { computeWordCount };
 
-const MODEL = 'claude-sonnet-4-20250514';
+const MODEL = DEFAULT_FEATURE_MODEL;
 
 /** Maximum total character length of all samples before truncating longest ones */
 const MAX_SAMPLES_CHARS = 80_000;

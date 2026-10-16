@@ -18,7 +18,7 @@ The codebase is built almost entirely by AI coding agents under human review;
 - **Highlight library** with filtering, bulk operations, and tagging
 - **Full-text search** across articles and highlights (SQLite FTS5)
 - **Spaced repetition** daily review of highlights (SM-2 algorithm)
-- **AI-powered** summarization, explanation, auto-tagging, and knowledge chat (Claude API)
+- **AI-powered** knowledge chat over your library, concept indexing for search, AI clean-up of badly formatted articles, and evidence suggestions for theses (Claude API). Summarize, explain and auto-tag exist as API endpoints but have no web UI yet
 - **Text-to-speech** immersion reading (Inworld)
 - **Thesis tracker & drafts** — collect evidence, then turn a thesis into a blog post, LinkedIn post, or YouTube script in your own voice
 - **Browser extension** (Chrome/Firefox) for one-click article saving
@@ -64,19 +64,25 @@ Generate the two required secrets and put them in `.env`:
 # SETTINGS_ENCRYPTION_KEY — random 256-bit hex key
 openssl rand -hex 32
 
-# SETTINGS_AUTH_HASH — bcrypt hash of your app password
-node -e "require('bcryptjs').hash('your-password', 10).then(console.log)"
+# SETTINGS_AUTH_HASH — bcrypt hash of your app password (no local Node.js needed)
+docker run --rm -w /tmp node:22-alpine sh -c "npm i -s bcryptjs >/dev/null 2>&1 && node -e \"require('bcryptjs').hash('your-password', 10).then(console.log)\""
 ```
 
-> **Note:** wrap the bcrypt hash in single quotes in `.env`
-> (`SETTINGS_AUTH_HASH='$2b$10$...'`) — otherwise dotenv treats each `$` as a
-> variable reference and silently corrupts the hash.
+> **Note:** with Docker, wrap the bcrypt hash in single quotes in `.env`
+> (`SETTINGS_AUTH_HASH='$2b$10$...'`), otherwise each `$` is treated as a variable
+> reference and the hash is silently corrupted. For `npm run dev`, see
+> [Development Setup](#development-setup): it needs a different form. If the hash
+> is corrupted, login answers with an explicit "not a valid bcrypt hash" error.
 
 Then start the stack:
 
 ```bash
 # Local / VPN-only (app on http://127.0.0.1:3000)
 docker compose -f docker/compose.yml up -d --build
+
+# Reachable from your LAN / Tailscale (binds 0.0.0.0:3000). APP_BIND is read by
+# Docker Compose from the shell, not from .env
+APP_BIND=0.0.0.0 docker compose -f docker/compose.yml up -d --build
 
 # Public server with HTTPS (Caddy terminates TLS with automatic Let's Encrypt)
 DOMAIN=reader.example.com docker compose -f docker/compose.yml --profile tls up -d --build
@@ -114,7 +120,8 @@ clear "not configured" error instead of breaking the app.
 Operational (optional): `BETTERSTACK_SOURCE_TOKEN`, `LOG_LEVEL`, `PORT`,
 `REFORMAT_PROVIDER` (AI clean-up provider: `mistral` or `anthropic`),
 `PDF_DATA_DIR` (where uploaded PDFs are stored), `APP_BIND` (Docker host bind
-address, default `127.0.0.1`), `AUTH_DISABLED` (see Security).
+address, default `127.0.0.1`; set it in the shell when running `docker compose`,
+not in `.env`), `AUTH_DISABLED` (see Security).
 
 ## Security
 
@@ -150,6 +157,14 @@ npm install
 cp .env.example .env       # set the required values as above
 npm run dev                # migrations run automatically first (predev)
 ```
+
+After `npm install` you can also generate the hash locally:
+`node -e "require('bcryptjs').hash('your-password', 10).then(console.log)"`.
+
+> **`.env` under `npm run dev`:** Next.js expands `$` even inside single quotes,
+> so write the bcrypt hash **without quotes, escaping every `$` as `\$`**:
+> `SETTINGS_AUTH_HASH=\$2b\$10\$...`. (This form does not work with Docker
+> Compose, which needs the single-quoted form shown in Quick Start.)
 
 Requires Node.js 22+. Common commands:
 

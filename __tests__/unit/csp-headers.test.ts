@@ -21,6 +21,30 @@ describe('CSP headers', () => {
   });
 });
 
+describe('security headers (app is the single owner)', () => {
+  it('serves the non-CSP security headers on all routes', async () => {
+    const rules = await headers();
+    const global = rules.find((r) => r.source === '/(.*)');
+    const byKey = new Map(global?.headers.map((h) => [h.key, h.value]));
+
+    expect(byKey.get('X-Content-Type-Options')).toBe('nosniff');
+    expect(byKey.get('X-Frame-Options')).toBe('DENY');
+    expect(byKey.get('Referrer-Policy')).toBe('strict-origin-when-cross-origin');
+    expect(byKey.get('Permissions-Policy')).toBe('camera=(), microphone=(), geolocation=()');
+  });
+
+  it('allows data: images so sanitized inline images in articles render', async () => {
+    const csp = await getGlobalCsp(headers);
+    const imgSrc = csp
+      .split(';')
+      .map((d) => d.trim())
+      .find((d) => d.startsWith('img-src'));
+
+    expect(imgSrc).toBeDefined();
+    expect(imgSrc).toContain('data:');
+  });
+});
+
 describe('CSP script-src in production', () => {
   afterEach(() => {
     vi.unstubAllEnvs();

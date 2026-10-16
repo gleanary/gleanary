@@ -6,8 +6,11 @@ import type { NextConfig } from 'next';
 // page and cannot be hash-allowlisted. Per the CSP spec, adding ANY hash or nonce to
 // script-src makes the browser IGNORE 'unsafe-inline', so hashing our two hand-written
 // bootstrap scripts (theme FOUC guard, SW registration) would silently block hydration
-// on every route. This matches the accepted CSP posture in docker/Caddyfile; a
-// nonce-based CSP is tracked follow-up debt.
+// on every route. A nonce-based CSP is tracked follow-up debt.
+//
+// The app is the single owner of all security headers: docker/Caddyfile only
+// terminates TLS and proxies. A second CSP from the proxy would be enforced
+// alongside this one (browsers apply the intersection) and block what we allow here.
 const scriptSrc =
   process.env.NODE_ENV === 'production'
     ? `script-src 'self' 'unsafe-inline'`
@@ -32,7 +35,13 @@ export async function headers() {
   return [
     {
       source: '/(.*)',
-      headers: [{ key: 'Content-Security-Policy', value: contentSecurityPolicy }],
+      headers: [
+        { key: 'Content-Security-Policy', value: contentSecurityPolicy },
+        { key: 'X-Content-Type-Options', value: 'nosniff' },
+        { key: 'X-Frame-Options', value: 'DENY' },
+        { key: 'Referrer-Policy', value: 'strict-origin-when-cross-origin' },
+        { key: 'Permissions-Policy', value: 'camera=(), microphone=(), geolocation=()' },
+      ],
     },
   ];
 }

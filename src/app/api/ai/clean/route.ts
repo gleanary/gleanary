@@ -11,6 +11,7 @@ import { getPdfHashFromPath } from '@/lib/pdf-storage';
 import { processPdfWithMistral, MAX_PDF_PAGES } from '@/lib/pdf-processor';
 import { recordPageBasedUsage } from '@/lib/ai-usage';
 import { getConfig } from '@/lib/settings';
+import { requireAnthropicApiKey } from '@/lib/ai';
 import {
   CHUNK_THRESHOLD,
   runChunkedReformat,
@@ -115,6 +116,9 @@ export const POST = withRoute('POST /api/ai/clean', async (req: NextRequest) => 
   // Still a "fallback" from the user's perspective (unlike provider=anthropic).
   const mistralUnavailable = provider !== 'anthropic' && !getConfig('mistral_api_key');
   const skipMistral = provider === 'anthropic' || mistralUnavailable;
+  // Haiku is the only provider left: fail fast with a clear error instead of letting
+  // the chunked path swallow per-chunk auth failures into a generic 422.
+  if (skipMistral) requireAnthropicApiKey();
 
   if (content.length > CHUNK_THRESHOLD) {
     const {

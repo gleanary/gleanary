@@ -361,7 +361,7 @@ export function SettingsPage() {
       title: 'Appearance',
       content: (
         <div className="space-y-3">
-          <p className="text-muted-foreground text-sm">Choose how Reader looks to you.</p>
+          <p className="text-muted-foreground text-sm">Choose how Gleanary looks to you.</p>
           <div className="flex gap-2" role="radiogroup" aria-label="Appearance mode">
             {(['automatic', 'light', 'dark'] as const).map((mode) => (
               // Accepted raw <button> (handover §5): ARIA radiogroup option (role="radio" +

@@ -313,7 +313,7 @@ Mistral OCR is billed per page. `pricing.ts` includes a per-page rate card entry
 
 - `pdfjs-dist` used server-side only for metadata extraction (`pdf-preflight.ts`); no `getTextContent()` calls on the server
 - Worker runs in its own context; embedded JavaScript disabled by default
-- CSP: `worker-src 'self' blob:` in Caddyfile; `style-src 'unsafe-inline'` already present for layer CSS
+- CSP: `worker-src 'self' blob:` in `next.config.ts` `headers()`; `style-src 'unsafe-inline'` already present for layer CSS
 
 ---
 

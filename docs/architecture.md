@@ -76,9 +76,9 @@ External input:
 | IaC                      | **OpenTofu**                        | OVH Public Cloud (OpenStack provider) — provisions the VPS                       |
 | Server bootstrap         | **cloud-init**                      | Installs Docker, Caddy, creates dirs, writes configs on first boot               |
 | Reverse proxy            | **Caddy**                           | Auto-HTTPS via Let's Encrypt, TLS only — auth is built into the app              |
-| Access control           | **Basic auth via Caddy**            | Upgrade to Tailscale post-MVP for zero-trust                                     |
+| Access control           | **Built-in app auth**               | Session login + `Authorization: Basic` for API clients (bcrypt hash, throttled)  |
 | CI/CD                    | **GitHub Actions**                  | Lint + typecheck + test → build Docker → push GHCR → deploy via SSH              |
-| Error tracking           | **Sentry** (free tier)              | Auto-instrumented via @sentry/nextjs; errors, perf traces, Web Vitals            |
+| Error tracking           | **pino** (no SaaS)                  | Structured `logger.error` events; Sentry was planned but never installed         |
 | Logging                  | **Better Stack** (free tier)        | Structured JSON logs via pino, shipped via Docker log driver or HTTP             |
 | Uptime                   | **Uptime Robot** (free tier)        | HTTP health check every 5min, email/webhook alerts                               |
 | Unit + integration tests | **Vitest**                          | Fast, native ESM, compatible with Next.js                                        |
@@ -603,319 +603,48 @@ OVH Public Cloud is OpenStack-based, so provisioning uses the OpenStack provider
 
 ```
 infra/
-├── main.tf                  — server, firewall, volume, SSH key, DNS
-├── variables.tf             — configurable inputs
-├── outputs.tf               — IP, volume ID, server ID
-├── terraform.tfvars.example — template for secrets
+├── main.tf                  — SSH key pair + VPS instance (OpenStack provider)
+├── variables.tf             — configurable inputs (secrets go in terraform.tfvars, gitignored)
+├── outputs.tf               — server IP, SSH command, app URL, health check
 ├── cloud-init.yml           — server bootstrap template
 └── .terraform.lock.hcl
 
 docker/
 ├── Dockerfile               — Next.js standalone build
-├── compose.yml              — app + caddy + backup cron
-├── Caddyfile                — reverse proxy + HTTPS + basic auth
-└── .env.example             — runtime secrets template
+├── compose.yml              — app + optional Caddy (`--profile tls`)
+└── Caddyfile                — TLS termination + reverse proxy only (no auth, no headers)
 ```
+
+Runtime configuration comes from the root `.env` (template: `.env.example`).
 
 ### 8.4 OpenTofu Configuration
 
-OVH Public Cloud is OpenStack-based. The OpenStack provider manages everything (instance, SSH key, networking/security groups), authenticated with a Public Cloud OpenStack user.
+OVH Public Cloud is OpenStack-based. The OpenStack provider manages the SSH key pair and the instance; networking uses OpenStack's default security group. **`infra/*.tf` is the source of truth** — the HCL is deliberately not mirrored here (copies drifted).
 
-```hcl
-# infra/main.tf
-
-terraform {
-  required_providers {
-    openstack = {
-      source  = "terraform-provider-openstack/openstack"
-      version = "~> 3.0"
-    }
-  }
-}
-
-provider "openstack" {
-  auth_url    = "https://auth.cloud.ovh.net/v3"
-  domain_name = "Default"
-  tenant_id   = var.ovh_project_id
-  user_name   = var.openstack_username
-  password    = var.openstack_password
-  region      = var.region
-}
-
-# --- SSH Key ---
-resource "openstack_compute_keypair_v2" "default" {
-  name       = "gleanary"
-  public_key = var.ssh_public_key
-}
-
-# --- Security Group (Firewall) ---
-resource "openstack_networking_secgroup_v2" "default" {
-  name        = "gleanary"
-  description = "Gleanary security group"
-}
-
-resource "openstack_networking_secgroup_rule_v2" "ssh" {
-  direction         = "ingress"
-  ethertype         = "IPv4"
-  protocol          = "tcp"
-  port_range_min    = 22
-  port_range_max    = 22
-  remote_ip_prefix  = var.allowed_ssh_cidr
-  security_group_id = openstack_networking_secgroup_v2.default.id
-}
-
-resource "openstack_networking_secgroup_rule_v2" "https" {
-  direction         = "ingress"
-  ethertype         = "IPv4"
-  protocol          = "tcp"
-  port_range_min    = 443
-  port_range_max    = 443
-  remote_ip_prefix  = "0.0.0.0/0"
-  security_group_id = openstack_networking_secgroup_v2.default.id
-}
-
-resource "openstack_networking_secgroup_rule_v2" "http" {
-  direction         = "ingress"
-  ethertype         = "IPv4"
-  protocol          = "tcp"
-  port_range_min    = 80
-  port_range_max    = 80
-  remote_ip_prefix  = "0.0.0.0/0"
-  security_group_id = openstack_networking_secgroup_v2.default.id
-}
-
-# --- VPS Instance ---
-resource "openstack_compute_instance_v2" "app" {
-  name            = "gleanary"
-  image_name      = "Ubuntu 24.04"
-  flavor_name     = var.flavor_name  # "d2-2" (2 vCPU, 4GB) or "d2-4"
-  region          = var.region
-  key_pair        = openstack_compute_keypair_v2.default.name
-  security_groups = [openstack_networking_secgroup_v2.default.name]
-
-  user_data = templatefile("cloud-init.yml", {
-    domain            = var.domain
-    basic_auth_hash   = var.basic_auth_hash
-    anthropic_api_key = var.anthropic_api_key
-  })
-
-  network {
-    name = "Ext-Net"  # OVH public network
-  }
-}
-```
-
-The live `infra/main.tf` adds `lifecycle { ignore_changes = [...] }` to the keypair (`name`) and the instance (`name`, `key_pair`, `image_name`, `user_data`): each of these forces replacement, and replacing the instance wipes the SQLite DB on its local disk. `cloud-init.yml` therefore only matters at first boot; rotate runtime secrets in the server's env file over SSH, and re-bootstrap deliberately with `tofu apply -replace=openstack_compute_instance_v2.app`.
-
-```hcl
-# infra/variables.tf
-
-variable "ovh_project_id" {
-  type = string
-  # Public Cloud project ID from OVH manager
-}
-
-# OpenStack credentials
-variable "openstack_username" {
-  type      = string
-  sensitive = true
-}
-
-variable "openstack_password" {
-  type      = string
-  sensitive = true
-}
-
-variable "ssh_public_key" {
-  type = string
-}
-
-variable "allowed_ssh_cidr" {
-  type    = string
-  default = "0.0.0.0/0"  # restrict to your IP in tfvars
-}
-
-variable "flavor_name" {
-  type    = string
-  default = "d2-2"  # 2 vCPU, 4GB RAM — OVH Discovery range
-}
-
-variable "region" {
-  type    = string
-  default = "GRA11"  # Gravelines, France
-}
-
-variable "domain" {
-  type = string
-}
-
-variable "basic_auth_hash" {
-  type      = string
-  sensitive = true
-}
-
-variable "anthropic_api_key" {
-  type      = string
-  sensitive = true
-}
-```
-
-```hcl
-# infra/outputs.tf
-
-output "server_ip" {
-  value = openstack_compute_instance_v2.app.access_ip_v4
-}
-
-output "ssh_command" {
-  value = "ssh ubuntu@${openstack_compute_instance_v2.app.access_ip_v4}"
-}
-```
-
-**OVH API credentials**: generate at https://api.ovh.com/createToken/ with `GET/POST/PUT/DELETE /cloud/project/*` rights. OpenStack credentials are created in the OVH Manager under Public Cloud → Project → Users & Roles.
+- **Inputs** (`variables.tf`): OpenStack project/user/password, SSH public key and allowed SSH CIDR, flavor and region, the app domain, and the app secrets that cloud-init writes to the server's `.env` (`basic_auth_hash` → `SETTINGS_AUTH_HASH`, `settings_encryption_key`, optional `anthropic_api_key`, `jina_api_key`, `betterstack_source_token`), plus `github_image` (image the server starts on first boot; empty = wait for the first deploy).
+- **`lifecycle.ignore_changes`** on the instance covers `name`, `key_pair`, `image_name` and `user_data`: editing `cloud-init.yml` or rotating secrets never forces a server rebuild (which would wipe the SQLite DB). Runtime config changes go to `/opt/gleanary/.env` over SSH; re-bootstrap on purpose with `tofu apply -replace`.
 
 ### 8.5 Cloud-Init (Server Bootstrap)
 
-```yaml
-# infra/cloud-init.yml
+**`infra/cloud-init.yml` is the source of truth.** On first boot it:
 
-#cloud-config
-package_update: true
-package_upgrade: true
-
-packages:
-  - docker.io
-  - docker-compose-v2
-  - fail2ban
-  - unattended-upgrades
-  - sqlite3 # useful for manual DB inspection
-
-# Enable Docker
-runcmd:
-  - systemctl enable --now docker
-
-  # Create app directories (on local disk)
-  - mkdir -p /opt/gleanary/data/db
-  - mkdir -p /opt/gleanary/data/backups
-  - mkdir -p /opt/gleanary/data/caddy
-
-  # Write environment file
-  - |
-    cat > /opt/gleanary/.env << 'EOF'
-    ANTHROPIC_API_KEY=${anthropic_api_key}
-    DATABASE_URL=file:/data/db/gleanary.db
-    DOMAIN=${domain}
-    BASIC_AUTH_HASH=${basic_auth_hash}
-    EOF
-
-  # Write Caddyfile
-  - |
-    cat > /opt/gleanary/Caddyfile << 'EOF'
-    ${domain} {
-      basicauth * {
-        reader ${basic_auth_hash}
-      }
-      reverse_proxy app:3000
-    }
-    EOF
-
-  # Write docker-compose.yml
-  - |
-    cat > /opt/gleanary/compose.yml << 'EOF'
-    services:
-      app:
-        image: ghcr.io/${github_user}/gleanary:latest
-        # Or build locally: build: .
-        restart: unless-stopped
-        volumes:
-          - /opt/gleanary/data/db:/data/db
-        environment:
-          - DATABASE_URL=file:/data/db/gleanary.db
-          - ANTHROPIC_API_KEY=${anthropic_api_key}
-        networks:
-          - internal
-
-      caddy:
-        image: caddy:2-alpine
-        restart: unless-stopped
-        ports:
-          - "80:80"
-          - "443:443"
-        volumes:
-          - /opt/gleanary/Caddyfile:/etc/caddy/Caddyfile:ro
-          - /opt/gleanary/data/caddy:/data
-        networks:
-          - internal
-
-    networks:
-      internal:
-    EOF
-
-  # Daily backup cron: SQLite safe copy + keep last 7 days
-  - |
-    cat > /etc/cron.daily/gleanary-backup << 'CRON'
-    #!/bin/bash
-    BACKUP_DIR=/opt/gleanary/data/backups
-    DB_PATH=/opt/gleanary/data/db/gleanary.db
-    sqlite3 "$DB_PATH" ".backup '$BACKUP_DIR/gleanary-$(date +%Y%m%d-%H%M).db'"
-    find "$BACKUP_DIR" -name "*.db" -mtime +7 -delete
-    CRON
-    chmod +x /etc/cron.daily/gleanary-backup
-
-  # Start the stack (will pull images on first run)
-  # Commented out until first image is pushed:
-  # cd /opt/gleanary && docker compose up -d
-
-# Security hardening
-ssh_pwauth: false
-```
+1. Installs Docker + Compose v2, fail2ban, unattended-upgrades and sqlite3.
+2. Creates `/opt/gleanary/data/{db,backups,caddy}`.
+3. Writes `/opt/gleanary/.env` (chmod 600) with the app secrets — the bcrypt hash is single-quoted, the form Docker Compose `env_file` needs.
+4. Writes `/opt/gleanary/Caddyfile`: TLS + `reverse_proxy app:3000` only. **No `basic_auth` and no `header` block** — authentication and all security headers come from the app (§16.2, §16.7). A test (`__tests__/unit/caddyfile.test.ts`) keeps this Caddyfile and `docker/Caddyfile` free of security headers.
+5. Writes `/opt/gleanary/compose.yml` (app from GHCR + Caddy) and a daily SQLite `.backup` cron keeping 7 days.
+6. Starts the stack if `github_image` is set.
 
 ### 8.6 Docker Configuration
 
-```dockerfile
-# docker/Dockerfile
-
-FROM node:20-alpine AS base
-
-FROM base AS deps
-WORKDIR /app
-COPY package.json package-lock.json ./
-RUN npm ci --omit=dev
-
-FROM base AS builder
-WORKDIR /app
-COPY package.json package-lock.json ./
-RUN npm ci
-COPY . .
-RUN npm run build
-
-FROM base AS runner
-WORKDIR /app
-ENV NODE_ENV=production
-RUN addgroup --system --gid 1001 nodejs
-RUN adduser --system --uid 1001 nextjs
-
-COPY --from=builder /app/public ./public
-COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
-COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
-
-# SQLite data directory
-RUN mkdir -p /data/db && chown nextjs:nodejs /data/db
-VOLUME /data
-
-USER nextjs
-EXPOSE 3000
-ENV PORT=3000
-ENV HOSTNAME="0.0.0.0"
-CMD ["node", "server.js"]
-```
+`docker/Dockerfile` is a multi-stage build producing the Next.js **standalone** output, run as a non-root user with the SQLite directory under `/data` (see the file for the exact base image and stages). `docker/compose.yml` runs the app (port bound to `APP_BIND`, default `127.0.0.1`) and, with `--profile tls`, Caddy for automatic HTTPS. `APP_BIND` and `DOMAIN` are Compose interpolation variables, set in the shell, not in the root `.env`.
 
 ### 8.7 Deployment Workflow
 
 ```
 First time:
   1. cd infra/
-  2. cp terraform.tfvars.example terraform.tfvars  (fill in OVH + OpenStack credentials)
+  2. create terraform.tfvars with the inputs from variables.tf (OpenStack credentials, SSH key, domain, app secrets)
   3. tofu init
   4. tofu plan
   5. tofu apply
@@ -924,9 +653,9 @@ First time:
   7. Wait for DNS propagation (~5-15 min)
 
 App updates (CI/CD — automatic):
-  1. Push to main
-  2. GH Action builds Docker image → pushes to GHCR
-  3. SSH into server → docker compose pull && docker compose up -d
+  1. Push to main of gleanary/gleanary
+  2. CI green → deploy.yml builds the image → pushes ghcr.io/gleanary/gleanary:latest
+  3. SSH into server (production environment secrets) → docker compose pull && docker compose up -d
 
 App updates (manual):
   1. ssh ubuntu@<server-ip>
@@ -943,7 +672,7 @@ Backup restore:
 
 | Enhancement                         | Purpose                                        | Effort                                                     |
 | ----------------------------------- | ---------------------------------------------- | ---------------------------------------------------------- |
-| **Tailscale** instead of basic auth | Zero-trust access, no exposed ports            | 1h — install via cloud-init, remove port 443 from firewall |
+| **Tailscale** in front of the app   | Zero-trust access, no exposed ports            | 1h — install via cloud-init, remove port 443 from firewall |
 | **Litestream** → OVH Object Storage | Continuous SQLite replication, off-site backup | 2h — add sidecar container, create S3-compatible bucket    |
 | **Watchtower**                      | Auto-pull new images                           | 30min — add container to compose                           |
 | **OVH automated snapshots**         | VPS-level backup                               | 15min — enable in OVH manager, ~€1/month                   |
@@ -967,7 +696,7 @@ PR / push (any branch → main)          Push/merge to main
 └──────────┬─────────────────┘    │ Deploy (deploy.yml)        │
            │                      │ gated: DEPLOY_ENABLED=true │
            ▼                      │ Docker build → GHCR push → │
-      ✅ PR status                │ Sentry maps → SSH deploy   │
+      ✅ PR status                │ SSH deploy (production env)│
                                   └───────────────────────────┘
 ```
 
@@ -985,19 +714,17 @@ The four CI jobs run in parallel (E2E does not wait for the others); deploy is a
   - **Real-auth mode**: the Playwright config derives `SETTINGS_AUTH_HASH` from `E2E_AUTH_PASSWORD` (plus a fixed `SETTINGS_ENCRYPTION_KEY`) for the spawned server, so the whole suite runs against the built-in auth gate, including the login journey.
   - Playwright browsers are cached (`actions/cache` keyed on `package-lock.json`); the HTML report and traces upload as artifacts whenever the run isn't cancelled.
 
-**`deploy.yml`** — a separate, owner-specific workflow triggered by `workflow_run` when CI completes successfully on `main`. Gated on the repository variable `DEPLOY_ENABLED == 'true'` so forks and the public repo skip it entirely. Steps: Docker build → push to GHCR → Sentry source-map upload (`continue-on-error`, never blocks a deploy) → SSH to the server as `ubuntu` → `docker compose pull && up -d`.
+**`deploy.yml`** — a separate, owner-specific workflow triggered by `workflow_run` when CI completes successfully on `main`. It runs only when the repository variable `DEPLOY_ENABLED == 'true'` (forks never set it) **and** the CI run was a `push` from this repository (`workflow_run.event == 'push'` and `head_repository == github.repository`), so a fork PR whose branch is named `main` cannot trigger it. The job uses the `production` environment (deployable from `main` only), checks out exactly the commit CI tested (`workflow_run.head_sha`), never runs two deploys at once (`concurrency: deploy-production`) and times out after 20 minutes. Steps: Docker build → push `ghcr.io/<repo>:latest` → SSH to the server as `ubuntu` → `docker compose pull && up -d`. Deploy logs are public on the public repo; secrets are masked.
 
 ### 9.3 Required GitHub Secrets & Variables
 
-| Name                | Kind     | Source / purpose                                       |
-| ------------------- | -------- | ------------------------------------------------------ |
-| `SERVER_IP`         | secret   | `tofu output server_ip`                                |
-| `SSH_PRIVATE_KEY`   | secret   | Private key matching the public key in OpenTofu config |
-| `SENTRY_AUTH_TOKEN` | secret   | Sentry source-map upload                               |
-| `SENTRY_ORG`        | secret   | Sentry source-map upload                               |
-| `DEPLOY_ENABLED`    | variable | `'true'` enables deploy.yml (unset on forks)           |
+| Name              | Kind                             | Source / purpose                                                             |
+| ----------------- | -------------------------------- | ---------------------------------------------------------------------------- |
+| `SERVER_IP`       | secret, `production` environment | `tofu output server_ip`                                                      |
+| `SSH_PRIVATE_KEY` | secret, `production` environment | Dedicated deploy key whose public half is in `authorized_keys` on the server |
+| `DEPLOY_ENABLED`  | repository variable              | `'true'` enables deploy.yml (unset on forks)                                 |
 
-`GITHUB_TOKEN` is provided automatically and has `packages:write` for GHCR. The E2E env values (`E2E_AUTH_PASSWORD`, `SETTINGS_ENCRYPTION_KEY`) are non-secret CI-only fixtures defined inline in `ci.yml`.
+The `production` environment only allows deployments from `main`. `GITHUB_TOKEN` is provided automatically and has `packages:write` for GHCR. The E2E env values (`E2E_AUTH_PASSWORD`, `SETTINGS_ENCRYPTION_KEY`) are non-secret CI-only fixtures defined inline in `ci.yml`.
 
 ### 9.4 Package Scripts
 
@@ -1007,66 +734,33 @@ See `package.json` for the authoritative list. The CI-relevant ones: `lint` (ESL
 
 ### 10.1 Strategy
 
-Three SaaS free tiers cover all observability needs without adding any containers to the VPS:
+Two SaaS free tiers plus structured logs cover observability without adding containers to the VPS:
 
 ```
-┌──────────────────────────────────────────────────────────┐
-│                  Observability Stack                      │
-│                                                          │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐   │
-│  │   Sentry      │  │ Better Stack │  │ Uptime Robot │   │
-│  │              │  │              │  │              │   │
-│  │ • Errors     │  │ • Structured │  │ • HTTP ping  │   │
-│  │ • Exceptions │  │   logs       │  │   every 5min │   │
-│  │ • Perf traces│  │ • Log search │  │ • Alerting   │   │
-│  │ • Web Vitals │  │ • Dashboards │  │   (email,    │   │
-│  │              │  │ • Alerting   │  │    webhook)  │   │
-│  │ Free: 5K     │  │              │  │              │   │
-│  │ events/mo    │  │ Free: 1GB    │  │ Free: 50     │   │
-│  │              │  │ logs/mo      │  │ monitors     │   │
-│  └──────┬───────┘  └──────┬───────┘  └──────┬───────┘   │
-│         │                 │                 │            │
-└─────────┼─────────────────┼─────────────────┼────────────┘
-          │                 │                 │
-          ▼                 ▼                 ▼
-    ┌─────────────────────────────────────────────┐
-    │              Next.js App                     │
-    │                                             │
-    │  @sentry/nextjs     pino + Better Stack     │
-    │  (auto-instruments   HTTP drain             │
-    │   API routes,                               │
-    │   React errors,       GET /api/health       │
-    │   web vitals)         (for Uptime Robot)    │
-    └─────────────────────────────────────────────┘
+┌──────────────────────────────────────────┐
+│           Observability Stack            │
+│                                          │
+│  ┌──────────────┐   ┌──────────────┐     │
+│  │ Better Stack │   │ Uptime Robot │     │
+│  │ • Structured │   │ • HTTP ping  │     │
+│  │   logs       │   │   every 5min │     │
+│  │ • Log search │   │ • Alerting   │     │
+│  │ • Alerting   │   │   (email,    │     │
+│  │ Free: 1GB/mo │   │    webhook)  │     │
+│  └──────┬───────┘   └──────┬───────┘     │
+└─────────┼──────────────────┼─────────────┘
+          ▼                  ▼
+    ┌─────────────────────────────────────────┐
+    │               Next.js App               │
+    │  pino structured logs   GET /api/health │
+    │  (errors = logger.error  (for Uptime    │
+    │   events)                 Robot)        │
+    └─────────────────────────────────────────┘
 ```
 
-### 10.2 Sentry (Error Tracking + Performance)
+### 10.2 Error Tracking
 
-**Free tier**: 5,000 events/month — more than enough for single-user.
-
-**What it captures**:
-
-- Unhandled exceptions (server + client)
-- API route performance traces
-- Web Vitals (LCP, FID, CLS) from the reader view
-- Release tracking (tied to Git SHA via CI)
-
-**Integration**:
-
-```bash
-npx @sentry/wizard@latest -i nextjs
-```
-
-This auto-instruments API routes, React error boundaries, and client-side performance. Zero manual instrumentation needed for baseline coverage.
-
-**Environment variables** (added to `.env` and Docker Compose):
-
-```
-SENTRY_DSN=https://xxx@o123.ingest.sentry.io/456
-SENTRY_AUTH_TOKEN=sntrys_xxx  # for source maps upload in CI
-```
-
-**CI integration** — source map upload is included in the deploy job (see Section 9.2) so Sentry can show readable stack traces.
+No error-tracking SaaS is installed. Sentry was planned in the original design but never added (no `@sentry/*` dependency); its CI source-map step, `SENTRY_DSN` env var and CSP allowance have been removed. Errors are structured `logger.error` events (`err`, `event`, ids) and can be searched in the log backend. Adding an error tracker later means a dependency, a DSN env var and a `connect-src` entry in the CSP (`next.config.ts`).
 
 ### 10.3 Better Stack (Structured Logging)
 
@@ -1185,8 +879,7 @@ Better Stack's free tier lets you search and filter these, and set alerts on pat
 ### 10.6 Environment Variables Summary
 
 ```bash
-# Observability — add to .env and compose.yml
-SENTRY_DSN=https://xxx@o123.ingest.sentry.io/456
+# Observability — add to .env
 BETTERSTACK_SOURCE_TOKEN=xxx
 # Uptime Robot is external, no app config needed
 ```
@@ -1416,7 +1109,6 @@ All external dependencies are mocked in tests — no real network calls. This is
 | **External URLs** (article fetching) | MSW intercepts fetch, returns fixture HTML   |
 | **RSS feeds**                        | MSW returns fixture XML                      |
 | **Anthropic Claude API**             | MSW returns fixture responses                |
-| **Sentry**                           | Disabled in test env (`SENTRY_DSN` not set)  |
 | **Better Stack**                     | Disabled in test env (pino writes to stdout) |
 
 ```typescript
@@ -1611,7 +1303,7 @@ The modules should be built in this order to maximize incremental usability:
 Phase 0 — Infrastructure (Day 1)
   ├── OpenTofu setup + provision VPS
   ├── GitHub repo + CI/CD pipeline
-  ├── Sentry + Better Stack + Uptime Robot accounts
+  ├── Better Stack + Uptime Robot accounts
   └── Docker Compose verified end-to-end
 
 Phase 1 — Foundation (Week 1)
@@ -1667,7 +1359,7 @@ After Phase 4 you have the complete system.
 - **Availability**: `restart: unless-stopped` in Docker. No HA needed for single-user
 - **Backup**: Automated daily via cron (SQLite `.backup` command, retains 7 days on disk). Data lives on VPS local disk — recommend enabling OVH automated VPS snapshots and/or adding Litestream for continuous replication to OVH Object Storage or S3
 - **Reproducibility**: Full infra is IaC — `tofu apply` recreates the server from scratch. Restore DB from latest backup after rebuild
-- **Observability**: Sentry for errors/perf, Better Stack for logs, Uptime Robot for availability. All SaaS, zero infra overhead. ~5K errors/mo + 1GB logs/mo + 50 monitors free
+- **Observability**: structured pino logs (errors included), Better Stack for logs, Uptime Robot for availability. All SaaS, zero infra overhead. 1GB logs/mo + 50 monitors free
 
 ## 16. Security
 
@@ -1771,11 +1463,13 @@ export function sanitizeArticleHtml(html: string): string {
 4. Store sanitized HTML in database
 5. Render with `dangerouslySetInnerHTML` — safe because content was sanitized on ingestion
 
-**Content Security Policy** — set via Caddy headers:
+**Content Security Policy** — set by the app in `next.config.ts` `headers()` (every route). The app is the **single owner** of all security headers: Caddy sets none, because a second CSP from the proxy would be enforced alongside this one (browsers apply the intersection) and block sources the app allows, such as `data:` images in sanitized articles. Production policy:
 
 ```
-Content-Security-Policy: default-src 'self'; img-src 'self' https:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; connect-src 'self' https://*.sentry.io; frame-src 'none'; object-src 'none'; worker-src 'self' blob:
+Content-Security-Policy: default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' https: data:; connect-src 'self'; worker-src 'self' blob:; object-src 'none'; frame-src 'none'; base-uri 'self'; form-action 'self'
 ```
+
+In development `script-src` also allows `'unsafe-eval'` (HMR).
 
 `script-src` requires `'unsafe-inline'`: the Next.js App Router hydrates through dynamic inline scripts that cannot be hash-allowlisted, and any hash/nonce in the directive makes browsers ignore `'unsafe-inline'` (hash-pinning broke hydration app-wide). Re-tightening via a per-request nonce is tracked in `TECH_DEBT.md`.
 
@@ -1886,25 +1580,24 @@ updates:
 
 ### 16.7 Network Security (Summary)
 
-| Layer                   | Protection                                                                 |
-| ----------------------- | -------------------------------------------------------------------------- |
-| **Firewall**            | Only ports 22 (SSH, restricted IP), 80, 443                                |
-| **SSH**                 | Key-only auth, `ssh_pwauth: false`                                         |
-| **HTTPS**               | Caddy auto-provisions Let's Encrypt, TLS 1.2+                              |
-| **Basic auth**          | All routes behind Caddy basic auth (bcrypt hash)                           |
-| **fail2ban**            | Protects against SSH brute force                                           |
-| **Unattended upgrades** | Automatic Ubuntu security patches                                          |
-| **Security headers**    | CSP, X-Frame-Options DENY, X-Content-Type-Options nosniff, Referrer-Policy |
+| Layer                   | Protection                                                                                                                                    |
+| ----------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Firewall**            | Only ports 22 (SSH, restricted IP), 80, 443                                                                                                   |
+| **SSH**                 | Key-only auth, `ssh_pwauth: false`                                                                                                            |
+| **HTTPS**               | Caddy auto-provisions Let's Encrypt, TLS 1.2+                                                                                                 |
+| **App auth**            | Built-in session login / Basic header (bcrypt hash, login throttling); no proxy-level auth                                                    |
+| **fail2ban**            | Protects against SSH brute force                                                                                                              |
+| **Unattended upgrades** | Automatic Ubuntu security patches                                                                                                             |
+| **Security headers**    | CSP, X-Frame-Options DENY, X-Content-Type-Options nosniff, Referrer-Policy, Permissions-Policy — set by the app (`next.config.ts`), not Caddy |
 
 ### 16.8 Secrets Management
 
-| Secret              | Stored in                                                    | Never in               |
-| ------------------- | ------------------------------------------------------------ | ---------------------- |
-| OVH API credentials | `terraform.tfvars` (gitignored)                              | Git, logs              |
-| Anthropic API key   | `.env` on server + GitHub Secrets                            | Git, logs, client-side |
-| Basic auth password | Caddy bcrypt hash in `terraform.tfvars`                      | Git, plaintext         |
-| SSH private key     | Local machine + GitHub Secrets                               | Git, logs              |
-| Sentry DSN          | `.env` (can be client-side, it's an identifier not a secret) | —                      |
+| Secret                | Stored in                                                                                                   | Never in               |
+| --------------------- | ----------------------------------------------------------------------------------------------------------- | ---------------------- |
+| OpenStack credentials | `terraform.tfvars` (gitignored)                                                                             | Git, logs              |
+| Anthropic API key     | Encrypted in SQLite via Settings (or `.env` on server)                                                      | Git, logs, client-side |
+| App password          | bcrypt hash `SETTINGS_AUTH_HASH` in the server `.env` (seeded from `basic_auth_hash` in `terraform.tfvars`) | Git, plaintext         |
+| SSH private key       | Local machine + `production` environment secret (dedicated deploy key)                                      | Git, logs              |
 
 **Rules**: `.env` and `terraform.tfvars` in `.gitignore`. `.env.example` committed with placeholders. No secrets in Docker images — passed via env vars at runtime.
 

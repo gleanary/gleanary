@@ -45,7 +45,6 @@ resource "openstack_compute_instance_v2" "app" {
     anthropic_api_key       = var.anthropic_api_key
     jina_api_key            = var.jina_api_key
     betterstack_token       = var.betterstack_source_token
-    sentry_dsn              = var.sentry_dsn
     github_image            = var.github_image
   })
 

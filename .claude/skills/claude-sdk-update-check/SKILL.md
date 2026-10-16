@@ -103,7 +103,7 @@ it directly."
   in `src/lib/ai.ts`.
 - **SDK is in `serverExternalPackages`** (Next config) to stop Turbopack rebundling it.
 - **`usage.server_tool_use.web_search_requests`** — **fixed**: both call sites
-  (`src/lib/ai.ts:471` and `:616`) now read
+  (`src/lib/ai.ts:472` and `:617`) now read
   `usage.server_tool_use?.web_search_requests ?? 0`. Former TECH_DEBT item closed.
 - **`usage.output_tokens_details`** added in 0.100.0 — thinking-token breakdown. Currently
   unused by Gleanary.
@@ -114,8 +114,14 @@ it directly."
   per model (id, apiId, pricing, context window, selector membership); `pricing.ts` derives
   `CLAUDE_PRICING` from it and the chat/draft selectors are derived too. Remaining hardcoded
   spots: schema defaults `claude-sonnet-4-6` on `chat_sessions.model` (`src/db/schema.ts:259`)
-  and `drafts.model` (`:322`), `DEFAULT_CHAT_MODEL` / `DEFAULT_DRAFT_MODEL` / `UTILITY_MODEL`
-  constants in `models.ts`.
+  and `drafts.model` (`:322`), `DEFAULT_CHAT_MODEL` / `DEFAULT_DRAFT_MODEL` /
+  `DEFAULT_FEATURE_MODEL` / `UTILITY_MODEL` constants in `models.ts`. `src/lib/ai.ts` (`MODEL`,
+  the default for `callClaude` / `callClaudeWithMeta`) and `src/lib/voice-extraction.ts` take
+  `DEFAULT_FEATURE_MODEL`. **Always grep `src/` for literal `claude-` ids too** (`git grep -nE
+"claude-[a-z0-9.-]+" -- src`): until 2026-10 both of those files hardcoded
+  `claude-sonnet-4-20250514`, which this check missed; it was retired 2026-06-15 and broke
+  summarize/tag/explain/thesis suggest/concept index/voice extraction with a 404 in production.
+  `__tests__/unit/models.test.ts` now guards that `DEFAULT_FEATURE_MODEL` is an active entry.
 - **Rate card** (via `ALL_CLAUDE_MODELS`) covers **Haiku 4.5, Sonnet 4.6, Opus 4.8** (active,
   in selectors) + **Opus 4.7, Opus 4.6, Sonnet 4** (historical, pricing only). All prices
   re-verified correct 2026-07-21. Cost is computed at read time.
@@ -128,15 +134,16 @@ it directly."
     tokens for the same text, so post-intro it is effectively ~30% dearer than Sonnet 4.6 per
     document; (c) `temperature`/`top_p`/`top_k` return 400 on it (Gleanary sets none — safe).
   - **`claude-fable-5`** missing — $10/$50 MTok. Out of scope unless deep-research tier changes.
-  - **No retirement risk** on any model Gleanary uses. Nearest "not sooner than" dates:
+  - **No retirement risk** on any model Gleanary uses (**wrong at the time**: the hardcoded
+    Sonnet 4 id above was missed). Nearest "not sooner than" dates:
     Haiku 4.5 2026-10-15, Sonnet 4.6 2027-02-17, Opus 4.8 2027-05-28. Opus 4.1 retires
     2026-08-05 but Gleanary does not reference it.
 
 **Axis 3 — API features used**
 
 - **Prompt caching** — relied on; cache read/write tokens tracked. Pricing unchanged.
-- **PDF document API** — `callClaudeWithDocument()` in `src/lib/ai.ts` (native document block).
-  No schema changes noted.
+- **PDF document API** — `callClaudeWithDocument()` no longer exists in `src/lib/ai.ts`;
+  re-locate the document-block call site (if any) on the next check.
 - **Web search / server tool use** — used; `ai_usage.webSearchCount` is now correctly read from
   `usage.server_tool_use?.web_search_requests` at both call sites. $10 per 1,000 searches,
   unchanged.

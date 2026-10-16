@@ -3,7 +3,8 @@ import { desc, eq, inArray, sql, max, count } from 'drizzle-orm';
 import { db, rawDb } from '@/db';
 import { chatSessions, chatMessages } from '@/db/schema';
 import { createChatSchema, listChatSessionsSchema } from '@/lib/validators';
-import { callClaude, callClaudeStreaming } from '@/lib/ai';
+import { callClaudeStreaming } from '@/lib/ai';
+import { generateChatTitle } from '@/lib/chat-title';
 import {
   parseScope,
   extractKeywords,
@@ -13,7 +14,7 @@ import {
   parseCitations,
   CHAT_SYSTEM_PROMPT,
 } from '@/lib/chat-retrieval';
-import { getModelBudget, UTILITY_MODEL } from '@/lib/models';
+import { getModelBudget } from '@/lib/models';
 import { logger } from '@/lib/logger';
 import { handleApiError, withRoute } from '@/lib/api-error-handler';
 import { sseEvent, SSE_HEADERS } from '@/lib/sse';
@@ -159,28 +160,16 @@ export async function POST(req: NextRequest) {
 
         // 7. Auto-generate title (non-blocking, but stream stays open for the title event)
         try {
-          const titleInput = `User: ${body.message.slice(0, 200)}\nAssistant: ${result.text.slice(0, 200)}`;
-          const title = await callClaude(
-            'Given this conversation, write a 3-8 word title. Return ONLY the title, no quotes or punctuation.',
-            titleInput,
-            {
-              feature: 'chat_title_generation',
-              resourceType: 'chat_session',
-              resourceId: session.id,
-            },
-            UTILITY_MODEL,
-          );
-          const cleanTitle = title
-            .trim()
-            .replace(/^["']|["']$/g, '')
-            .slice(0, 200);
-          if (cleanTitle) {
-            db.update(chatSessions)
-              .set({ title: cleanTitle, updatedAt: sql`(datetime('now'))` })
-              .where(eq(chatSessions.id, session.id))
-              .run();
-            controller.enqueue(sseEvent('title', { title: cleanTitle }));
-          }
+          const title = await generateChatTitle(body.message, {
+            feature: 'chat_title_generation',
+            resourceType: 'chat_session',
+            resourceId: session.id,
+          });
+          db.update(chatSessions)
+            .set({ title, updatedAt: sql`(datetime('now'))` })
+            .where(eq(chatSessions.id, session.id))
+            .run();
+          controller.enqueue(sseEvent('title', { title }));
         } catch (err) {
           logger.warn(
             { err, event: 'chat_title_failed', sessionId: session.id },
