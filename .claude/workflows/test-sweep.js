@@ -154,7 +154,7 @@ Rules, in order:
 1. BEFORE: count it()/test() and .skip/.only occurrences across your files (report as beforeIts/beforeSkips).
 2. Apply the transformation to each file. The suite contract is inviolable: no test deleted, no assertion removed or loosened, no new .skip/.only. If the pattern genuinely does not apply to a file, leave it unchanged and list it in skipped with the reason.
 3. AFTER: re-count (afterIts/afterSkips). Run ONLY your files: \`npm run test -- ${g.files.join(' ')}\` and set scopedGreen. NEVER run the full suite, \`npx playwright test\`, or E2E of any kind — concurrent Playwright runs collide on the port, and the full suite is verified once at the end.
-4. FORBIDDEN: data/ (the dev database lives there), package.json, vitest.config.ts, playwright.config.ts, src/, docs/, .github/, any file outside YOUR FILES.
+4. FORBIDDEN: data/ (the dev database lives there), package.json, vitest.config.mts, playwright.config.ts, src/, docs/, .github/, any file outside YOUR FILES.
 
 Return the structured result. Your final message is data, not prose.`;
 

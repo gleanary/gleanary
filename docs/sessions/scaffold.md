@@ -47,7 +47,7 @@ This session creates the entire project skeleton. Run once at the start of Phase
 
 3. **CONFIGURE TOOLING**:
    - `tsconfig.json`: strict mode, no `any`
-   - `vitest.config.ts`: setup files, path aliases, coverage
+   - `vitest.config.mts`: setup files, path aliases, coverage
    - `playwright.config.ts`: chromium only, base URL
    - `.eslintrc.json`: extend next/core-web-vitals + strict TS rules
    - `.prettierrc`: consistent formatting

@@ -51,7 +51,7 @@ jobs:
           cache: npm
       - run: npm install -g npm@11
       - run: npm ci
-      # Coverage thresholds live in vitest.config.ts; a drop below the
+      # Coverage thresholds live in vitest.config.mts; a drop below the
       # baseline fails this step.
       - run: npm run test:coverage
 
