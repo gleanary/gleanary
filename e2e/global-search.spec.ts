@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test';
-import { HIGHLIGHT_WRITER_LOCKS } from './utils';
+import { HIGHLIGHT_WRITER_LOCKS, openSearchPalette } from './utils';
 
 test.describe('Global Search', { lock: HIGHLIGHT_WRITER_LOCKS.globalSearch }, () => {
   const createdIds: number[] = [];
@@ -40,9 +40,7 @@ test.describe('Global Search', { lock: HIGHLIGHT_WRITER_LOCKS.globalSearch }, ()
     await page.goto('/');
 
     // Open palette with Ctrl+K
-    await page.keyboard.press('Control+k');
-    const input = page.getByRole('combobox', { name: 'Search' });
-    await expect(input).toBeVisible();
+    const input = await openSearchPalette(page);
 
     // Type query — at least 2 chars, wait for results
     await input.fill(uniqueWord);
@@ -91,9 +89,7 @@ test.describe('Global Search', { lock: HIGHLIGHT_WRITER_LOCKS.globalSearch }, ()
     await page.goto('/');
 
     // Open palette
-    await page.keyboard.press('Control+k');
-    const input = page.getByRole('combobox', { name: 'Search' });
-    await expect(input).toBeVisible();
+    const input = await openSearchPalette(page);
     await input.fill(uniqueWord);
 
     // Wait for "See all" footer to appear
@@ -129,9 +125,7 @@ test.describe('Global Search', { lock: HIGHLIGHT_WRITER_LOCKS.globalSearch }, ()
     page,
   }) => {
     await page.goto('/');
-    await page.keyboard.press('Control+k');
-    const input = page.getByRole('combobox', { name: 'Search' });
-    await expect(input).toBeVisible();
+    const input = await openSearchPalette(page);
 
     // Use DOM dispatch workaround: headless Chromium's Escape key navigates to about:blank
     // instead of firing a keyboard event to the page. See TECH_DEBT.md.

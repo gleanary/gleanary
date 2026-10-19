@@ -1,4 +1,4 @@
-import { type Page, type Response } from '@playwright/test';
+import { expect, type Locator, type Page, type Response } from '@playwright/test';
 
 /**
  * Waits for the next HTTP response whose URL pathname and request method match.
@@ -77,3 +77,27 @@ export const HIGHLIGHT_WRITER_LOCKS = {
 
 /** Every highlight-writer lock; held by the Daily Review spec to exclude all writers. */
 export const ALL_HIGHLIGHT_WRITER_LOCKS = Object.values(HIGHLIGHT_WRITER_LOCKS);
+
+/**
+ * Opens the global search palette with Ctrl+K and returns its (visible) input.
+ *
+ * Why: the Cmd/Ctrl+K listener is attached to `window` in an AppShell `useEffect`,
+ * i.e. only after hydration. `page.goto` resolves on `load`, which in dev mode can
+ * precede hydration, so a single keypress right after navigation is silently
+ * dropped and the palette never opens. This retries until the shortcut takes effect.
+ *
+ * Ctrl+K TOGGLES the palette, so a key is only pressed while the input is not
+ * visible; a blind retry could otherwise close a palette that just opened. Fails
+ * (like the original `toBeVisible` assertion) if the palette never opens in 10s.
+ *
+ * @param page - Playwright page, already navigated to an AppShell route
+ * @returns Locator for the palette's search combobox, asserted visible
+ */
+export async function openSearchPalette(page: Page): Promise<Locator> {
+  const input = page.getByRole('combobox', { name: 'Search' });
+  await expect(async () => {
+    if (!(await input.isVisible())) await page.keyboard.press('Control+k');
+    await expect(input).toBeVisible({ timeout: 1000 });
+  }).toPass({ timeout: 10_000 });
+  return input;
+}
