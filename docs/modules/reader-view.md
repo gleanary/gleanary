@@ -47,6 +47,15 @@ Client component. Fixed toolbar at top with:
 
 Server component. Renders sanitized HTML via `dangerouslySetInnerHTML`. Safe because content is sanitized via DOMPurify at ingestion time (article-parser module).
 
+#### Math rendering
+
+After mount, `ArticleContent` lazily imports `renderMath()` from `src/lib/math-render.ts` (KaTeX auto-render, kept out of the initial bundle) and calls `onReady` once the pass completes, whether or not any math was found. The library's `HighlightCard` uses the same helper on its off-screen scratch element (`output: 'html'`), so the reader and the cards can't drift apart.
+
+- `$$…$$` and `\[…\]` render as display math, `\(…\)` as inline math.
+- Single `$…$` follows Pandoc's `tex_math_dollars` rule: the opening `$` must be immediately followed by a non-space character; the closing `$` must be immediately preceded by a non-space character and not followed by a digit; the span cannot cross a newline or another `$` (so in "costs $5, and later $x$" the currency `$` can't pair with the math). Escaped `\$` and `$$` are never paired. Valid spans are rewritten to `\(…\)` before auto-render runs, and single `$` is not an auto-render delimiter.
+- Why: auto-render pairs _any_ two dollars in a text node, so prose such as "$1,578 for workers … and $966" rendered as italic math with its spaces stripped. With the Pandoc rule, `$5 and $10`, `$5-$10` and `$ 5 $` stay text, while `$E=mc^2$`, `$2x+1$` and `$x_i$` still render.
+- Text inside `code`, `pre`, `script`, `style`, `textarea`, `noscript` and `option` is never touched.
+
 ### 5. Article Header (`src/components/reader/article-header.tsx`)
 
 Server component. Displays:

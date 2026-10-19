@@ -29,21 +29,12 @@ export function HighlightCard({ highlight, selected, onSelect, snippet }: Highli
 
   useEffect(() => {
     let mounted = true;
-    void import('katex/contrib/auto-render').then(({ default: renderMathInElement }) => {
+    void import('@/lib/math-render').then(({ renderMath }) => {
       if (!mounted) return;
       // Use an off-screen element so React reconciliation doesn't revert KaTeX's DOM changes
       const scratch = document.createElement('span');
       scratch.textContent = displayText;
-      renderMathInElement(scratch, {
-        delimiters: [
-          { left: '$$', right: '$$', display: true },
-          { left: '$', right: '$', display: false },
-          { left: '\\[', right: '\\]', display: true },
-          { left: '\\(', right: '\\)', display: false },
-        ],
-        output: 'html',
-        throwOnError: false,
-      });
+      renderMath(scratch, { output: 'html' });
       if (mounted) setRenderedHtml(scratch.innerHTML);
     });
     return () => {

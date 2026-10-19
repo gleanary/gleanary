@@ -1,6 +1,6 @@
 /** @vitest-environment jsdom */
 import { describe, it, expect } from 'vitest';
-import { render } from '@testing-library/react';
+import { render, waitFor } from '@testing-library/react';
 import { HighlightCard } from '@/components/library/highlight-card';
 import type { HighlightWithContext } from '@/types';
 
@@ -47,5 +47,33 @@ describe('HighlightCard', () => {
     );
 
     expect(container.textContent).toContain('a < b > c');
+  });
+
+  it('renders currency dollar amounts as plain text, not KaTeX math', async () => {
+    // The trailing real math gives a deterministic signal that the async KaTeX pass ran.
+    const currency = 'earnings of $1,578 for workers and $966 for people';
+    const { container } = render(
+      <HighlightCard
+        highlight={makeHighlight(`${currency}, with \\(x\\)`)}
+        selected={false}
+        onSelect={() => {}}
+      />,
+    );
+
+    await waitFor(() => expect(container.querySelector('.katex')).not.toBeNull());
+    expect(container.querySelectorAll('.katex')).toHaveLength(1);
+    expect(container.textContent).toContain(currency);
+  });
+
+  it('still renders real inline math after the async effect', async () => {
+    const { container } = render(
+      <HighlightCard
+        highlight={makeHighlight('Energy $E=mc^2$ here')}
+        selected={false}
+        onSelect={() => {}}
+      />,
+    );
+
+    await waitFor(() => expect(container.querySelector('.katex')).not.toBeNull());
   });
 });
