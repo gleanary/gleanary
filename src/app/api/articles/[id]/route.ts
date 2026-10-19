@@ -60,6 +60,11 @@ export const PATCH = withRoute(
       ...data,
       updatedAt: sql`(datetime('now'))`,
     };
+    // A reset to 0 also forgets where in the content the reader was
+    if (data.readingProgress === 0) {
+      updates.readingAnchorBlock = null;
+      updates.readingAnchorOffset = null;
+    }
     // Auto-set readAt when archiving for the first time (skip if client supplied one)
     if (data.status === 'archived' && !existing.readAt && data.readAt === undefined) {
       updates.readAt = sql`(datetime('now'))`;

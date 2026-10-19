@@ -57,6 +57,8 @@ export const articles = sqliteTable(
     wordCount: integer('word_count').default(0),
     pageCount: integer('page_count'),
     readingProgress: real('reading_progress').default(0),
+    readingAnchorBlock: integer('reading_anchor_block'),
+    readingAnchorOffset: real('reading_anchor_offset'),
     status: text('status', { enum: ['inbox', 'reading', 'archived', 'pending_review'] })
       .notNull()
       .default('inbox'),

@@ -393,6 +393,89 @@ describe('Articles API', () => {
       expect(res.status).toBe(422);
     });
 
+    it('saves the reading anchor alongside increasing reading progress', async () => {
+      const createRes = await createArticle(jsonReq('POST', '/api/articles', validArticle));
+      const { article } = await createRes.json();
+
+      const res = await updateArticle(
+        jsonReq('PATCH', `/api/articles/${article.id}`, {
+          readingProgress: 0.4,
+          readingAnchorBlock: 7,
+          readingAnchorOffset: 0.25,
+        }),
+        routeParams(article.id),
+      );
+      const body = await res.json();
+      expect(body.article.readingProgress).toBe(0.4);
+      expect(body.article.readingAnchorBlock).toBe(7);
+      expect(body.article.readingAnchorOffset).toBe(0.25);
+    });
+
+    it('ignores the reading anchor when reading progress does not increase', async () => {
+      const createRes = await createArticle(jsonReq('POST', '/api/articles', validArticle));
+      const { article } = await createRes.json();
+
+      await updateArticle(
+        jsonReq('PATCH', `/api/articles/${article.id}`, {
+          readingProgress: 0.6,
+          readingAnchorBlock: 9,
+          readingAnchorOffset: 0.5,
+        }),
+        routeParams(article.id),
+      );
+
+      const res = await updateArticle(
+        jsonReq('PATCH', `/api/articles/${article.id}`, {
+          readingProgress: 0.6,
+          readingAnchorBlock: 3,
+          readingAnchorOffset: 0.1,
+        }),
+        routeParams(article.id),
+      );
+      const body = await res.json();
+      expect(body.article.readingProgress).toBe(0.6);
+      expect(body.article.readingAnchorBlock).toBe(9);
+      expect(body.article.readingAnchorOffset).toBe(0.5);
+    });
+
+    it('clears the reading anchor when reading progress is reset to 0', async () => {
+      const createRes = await createArticle(jsonReq('POST', '/api/articles', validArticle));
+      const { article } = await createRes.json();
+
+      await updateArticle(
+        jsonReq('PATCH', `/api/articles/${article.id}`, {
+          readingProgress: 0.6,
+          readingAnchorBlock: 9,
+          readingAnchorOffset: 0.5,
+        }),
+        routeParams(article.id),
+      );
+
+      const res = await updateArticle(
+        jsonReq('PATCH', `/api/articles/${article.id}`, { readingProgress: 0 }),
+        routeParams(article.id),
+      );
+      const body = await res.json();
+      expect(body.article.readingProgress).toBe(0);
+      expect(body.article.readingAnchorBlock).toBeNull();
+      expect(body.article.readingAnchorOffset).toBeNull();
+    });
+
+    it('returns 422 for an out-of-range reading anchor offset', async () => {
+      const createRes = await createArticle(jsonReq('POST', '/api/articles', validArticle));
+      const { article } = await createRes.json();
+
+      const res = await updateArticle(
+        jsonReq('PATCH', `/api/articles/${article.id}`, {
+          readingProgress: 0.5,
+          readingAnchorBlock: 1,
+          readingAnchorOffset: 1.5,
+        }),
+        routeParams(article.id),
+      );
+      expect(res.status).toBe(422);
+    });
+
     it('saves TTS position (paragraph + time offset)', async () => {
       const createRes = await createArticle(jsonReq('POST', '/api/articles', validArticle));
       const { article } = await createRes.json();

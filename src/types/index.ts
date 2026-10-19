@@ -140,6 +140,19 @@ export interface TextQuoteAnchor {
   end: number;
 }
 
+/**
+ * Content-relative reading position: the first block element (in `BLOCK_SELECTORS`
+ * document order within `.article-content`) still visible at the viewport top, and
+ * how far (0–1 of its height) it is scrolled past. Survives layout changes (late
+ * images, KaTeX) that make a document-height ratio inaccurate.
+ */
+export interface ReadingAnchor {
+  /** Index of the block among the content's block elements. */
+  block: number;
+  /** Fraction (0–1) of the block's height above the viewport top. */
+  offset: number;
+}
+
 /** Known setting keys */
 export const SETTING_KEYS = [
   'inworld_api_key',

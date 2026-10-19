@@ -79,7 +79,7 @@ Server component. Displays:
 - `GET /api/articles/[id]` — Direct DB query in server component (RSC)
 - `PATCH /api/articles/[id]` — Client-side calls for:
   - `{ status: 'reading' }` — on initial load (if inbox)
-  - `{ readingProgress: 0.42 }` — debounced scroll tracking
+  - `{ readingProgress: 0.42, readingAnchorBlock: 12, readingAnchorOffset: 0.3 }` — debounced scroll tracking (and the keepalive save on unload)
   - `{ status: 'archived' }` — archive button (sole finish action; stamps `readAt` on first archive)
   - `{ isFavorite: true/false }` — favorite toggle
 
@@ -176,6 +176,10 @@ Article content is immutable after save, so child-index paths are stable.
 - **Monotonic**: progress only increases, never decreases when scrolling back up (both client-side and server-side enforcement)
 - Debounce PATCH calls (every 5 seconds while scrolling)
 - Persist on page unload via `fetch` with `keepalive: true`
+- **Content anchor**: each save also sends a `ReadingAnchor` (`src/lib/reading-anchor.ts`), captured when progress last advanced: the index of the first block element (`BLOCK_SELECTORS`, shared with the TTS word highlighter) in `.article-content` whose bottom is below the viewport top, plus the fraction (0–1) of that block scrolled past. Stored as `reading_anchor_block` / `reading_anchor_offset`; cleared by a reset to 0.
+- **Restore**: on open, `ArticleReader` scrolls to the saved anchor (`anchorToScrollY`). It falls back to `readingProgress × scrollable height` for legacy articles without an anchor, when the anchored block no longer exists (content re-parsed or AI-cleaned), or when there is no `.article-content` (PDF original view). The ratio alone overshot because images without dimensions and async KaTeX had not laid out yet one frame after mount.
+- **Restore window**: for up to 3 s after the first restore, a `ResizeObserver` on the content and `<html>` re-applies the same target whenever late layout (image loads, KaTeX) changes the size, so browsers without scroll anchoring (Safari) do not drift. The first `wheel`, `touchstart`, `keydown` or `pointerdown` ends the window, and so does a progress reset.
+- The saved `readingProgress` stays rounded to whole percent and still drives the progress bar.
 
 ## Security
 

@@ -1,11 +1,11 @@
 'use client';
 
 import { useEffect, useRef } from 'react';
+import { BLOCK_SELECTORS } from '@/lib/reading-anchor';
 import type { TTSStatus } from '@/types';
 
 const ACTIVE_CLASS = 'tts-active-word';
 const WORD_ATTR = 'data-tts-word';
-const BLOCK_SELECTORS = 'p, h1, h2, h3, h4, h5, h6, li, blockquote, figcaption, pre, td, th';
 
 interface WordHighlighterProps {
   /** Ref to the .article-content container */
