@@ -86,6 +86,8 @@ export const updateArticleSchema = partialWithAtLeastOne(
   z.object({
     status: articleStatusEnum,
     readingProgress: z.number().min(0).max(1),
+    readingAnchorBlock: z.number().int().min(0).nullable(),
+    readingAnchorOffset: z.number().min(0).max(1).nullable(),
     isFavorite: z.boolean(),
     title: z.string().min(1).max(2000),
     readAt: z.string(),

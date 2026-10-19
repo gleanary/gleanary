@@ -128,6 +128,8 @@ External input:
                            │ read_at               │       │ created_at   │
                            │ created_at            │       └──────────────┘
                            │ updated_at            │
+                           │ reading_anchor_block  │
+                           │ reading_anchor_offset │
                            └──────────────────────┘
 
   extraction_tier enum:

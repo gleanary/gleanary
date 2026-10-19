@@ -130,11 +130,15 @@ Update article fields (status, progress, favorite, etc.).
 {
   status?: "inbox" | "reading" | "archived";
   readingProgress?: number;       // 0-1
+  readingAnchorBlock?: number | null;   // int >= 0, index of the first visible content block
+  readingAnchorOffset?: number | null;  // 0-1, fraction of that block scrolled past
   isFavorite?: boolean;
   title?: string;
   readAt?: string;                // ISO 8601
 }
 ```
+
+**Reading progress is monotonic**: if `readingProgress` is present and not greater than the stored value (and not `0`), the whole update is ignored and the existing article is returned, so the reading anchor fields are dropped with it and always describe the furthest point reached. `readingProgress: 0` (reset) also clears `readingAnchorBlock`/`readingAnchorOffset`.
 
 **Response**: `200` with updated article.
 **Errors**: `404`, `422`.
