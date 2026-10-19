@@ -260,6 +260,8 @@ Rules are codified in `architecture.md §16.10`. Key invariants: sanitize HTML b
 
 **Global network tripwire (applies to every vitest file, unit and integration):** a shared MSW server runs via vitest `setupFiles` with `onUnhandledRequest: 'error'` — any unmocked HTTP request is rejected instead of silently hitting the real network. Register per-file handlers with `setupHandlers(...)` from `__tests__/mocks/server.ts`; use raw `server.use(...)` only for per-test overrides inside `it` bodies. Never call `setupServer` yourself, and never register handlers in `beforeAll` — the global `afterEach` resets them. For client-side code that fetches relative URLs (which MSW cannot intercept in Node), stub fetch in a `beforeAll` and `vi.unstubAllGlobals()` in `afterAll` (see `__tests__/unit/article-api.test.ts`).
 
+**Anthropic model tripwire:** the same setup fails any test whose `POST https://api.anthropic.com/v1/messages` sends a `model` outside `ACTIVE_MODEL_IDS` (`__tests__/mocks/active-models.ts`). Use registry ids in requests and fixtures; a test that deliberately sends a non-registry model must call `drainModelViolations()` with a comment.
+
 ### Unit Tests
 
 - **File naming**: `__tests__/unit/<module-name>.test.ts` (`.test.tsx` for component tests)

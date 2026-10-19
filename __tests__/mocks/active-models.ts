@@ -4,7 +4,11 @@ import { ANTHROPIC_MODELS, DRAFT_MODEL_IDS } from '@/lib/models';
 /** Claude model id retired 2026-06-15; Anthropic returns 404 not_found_error for it. */
 export const RETIRED_MODEL_ID = 'claude-sonnet-4-20250514';
 
-/** API ids of active (selectable) registry models; historical entries have no features. */
+/**
+ * API ids of the active registry models: exactly the chat ∪ draft ids, because
+ * historical (pricing-only) entries are defined with `features: []` and so appear
+ * in neither. Also backs the global /v1/messages model tripwire (msw-setup.ts).
+ */
 export const ACTIVE_MODEL_IDS = new Set([...ANTHROPIC_MODELS.map((m) => m.id), ...DRAFT_MODEL_IDS]);
 
 /**

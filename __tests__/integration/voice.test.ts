@@ -42,7 +42,7 @@ const PROFILE_TEXT = [
 function sseProfile(text: string): string {
   const textJson = JSON.stringify(text);
   return [
-    `event: message_start\ndata: {"type":"message_start","message":{"id":"msg_test","type":"message","role":"assistant","content":[],"model":"claude-sonnet-4-20250514","stop_reason":null,"usage":{"input_tokens":500,"output_tokens":0}}}\n\n`,
+    `event: message_start\ndata: {"type":"message_start","message":{"id":"msg_test","type":"message","role":"assistant","content":[],"model":"claude-sonnet-4-6","stop_reason":null,"usage":{"input_tokens":500,"output_tokens":0}}}\n\n`,
     `event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}\n\n`,
     `event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":${textJson}}}\n\n`,
     `event: content_block_stop\ndata: {"type":"content_block_stop","index":0}\n\n`,
@@ -64,7 +64,7 @@ setupHandlers(
       type: 'message',
       role: 'assistant',
       content: [{ type: 'text', text: PROFILE_TEXT }],
-      model: 'claude-sonnet-4-20250514',
+      model: 'claude-sonnet-4-6',
       stop_reason: 'end_turn',
       usage: { input_tokens: 500, output_tokens: 200 },
     });

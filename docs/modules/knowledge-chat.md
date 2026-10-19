@@ -324,6 +324,8 @@ data: { messageId: number, contextTokens: number }
 
 Appends a user message to an existing session and streams the assistant's response.
 
+The session's stored `model` is used only while it is still a chat model in the registry (`ANTHROPIC_MODELS`); a retired or unknown id falls back to `DEFAULT_CHAT_MODEL` for the budget, retrieval and API call. The stored row is not rewritten.
+
 ```typescript
 // Request
 {

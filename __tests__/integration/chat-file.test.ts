@@ -26,7 +26,7 @@ setupHandlers(
           type: 'message',
           role: 'assistant',
           content: [{ type: 'text', text: '["testing"]' }],
-          model: 'claude-sonnet-4-20250514',
+          model: 'claude-sonnet-4-6',
           stop_reason: 'end_turn',
           usage: { input_tokens: 100, output_tokens: 10 },
         });
@@ -37,7 +37,7 @@ setupHandlers(
           type: 'message',
           role: 'assistant',
           content: [{ type: 'text', text: 'Test Chat' }],
-          model: 'claude-sonnet-4-20250514',
+          model: 'claude-sonnet-4-6',
           stop_reason: 'end_turn',
           usage: { input_tokens: 100, output_tokens: 10 },
         });
@@ -47,7 +47,7 @@ setupHandlers(
         type: 'message',
         role: 'assistant',
         content: [{ type: 'text', text: 'A test response.' }],
-        model: 'claude-sonnet-4-20250514',
+        model: 'claude-sonnet-4-6',
         stop_reason: 'end_turn',
         usage: { input_tokens: 100, output_tokens: 10 },
       });
@@ -55,7 +55,7 @@ setupHandlers(
 
     // Streaming response
     const streamBody = [
-      'event: message_start\ndata: {"type":"message_start","message":{"id":"msg_mock","type":"message","role":"assistant","content":[],"model":"claude-sonnet-4-20250514","stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":100,"output_tokens":0}}}\n\n',
+      'event: message_start\ndata: {"type":"message_start","message":{"id":"msg_mock","type":"message","role":"assistant","content":[],"model":"claude-sonnet-4-6","stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":100,"output_tokens":0}}}\n\n',
       'event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}\n\n',
       'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Test response with [highlight:1] citation."}}\n\n',
       'event: content_block_stop\ndata: {"type":"content_block_stop","index":0}\n\n',

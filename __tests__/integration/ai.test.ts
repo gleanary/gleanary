@@ -27,7 +27,7 @@ setupHandlers(
           text: 'This article discusses testing patterns for modern web applications.',
         },
       ],
-      model: 'claude-sonnet-4-20250514',
+      model: 'claude-sonnet-4-6',
       stop_reason: 'end_turn',
       usage: { input_tokens: 100, output_tokens: 20 },
     });
@@ -86,7 +86,7 @@ describe('AI Features API', () => {
                 text: 'This article discusses testing patterns for modern web applications.',
               },
             ],
-            model: 'claude-sonnet-4-20250514',
+            model: 'claude-sonnet-4-6',
             stop_reason: 'end_turn',
             usage: { input_tokens: 100, output_tokens: 20 },
           });
@@ -114,7 +114,7 @@ describe('AI Features API', () => {
             type: 'message',
             role: 'assistant',
             content: [{ type: 'text', text: 'DIFFERENT RESPONSE' }],
-            model: 'claude-sonnet-4-20250514',
+            model: 'claude-sonnet-4-6',
             stop_reason: 'end_turn',
             usage: { input_tokens: 100, output_tokens: 20 },
           });
@@ -180,7 +180,7 @@ describe('AI Features API', () => {
             type: 'message',
             role: 'assistant',
             content: [{ type: 'text', text: '["testing", "web-development", "javascript"]' }],
-            model: 'claude-sonnet-4-20250514',
+            model: 'claude-sonnet-4-6',
             stop_reason: 'end_turn',
             usage: { input_tokens: 100, output_tokens: 20 },
           });
@@ -209,7 +209,7 @@ describe('AI Features API', () => {
             type: 'message',
             role: 'assistant',
             content: [{ type: 'text', text: '["testing", "new-tag"]' }],
-            model: 'claude-sonnet-4-20250514',
+            model: 'claude-sonnet-4-6',
             stop_reason: 'end_turn',
             usage: { input_tokens: 100, output_tokens: 20 },
           });
@@ -291,7 +291,7 @@ describe('AI Features API', () => {
                 text: 'This passage emphasizes the importance of testing patterns for code quality.',
               },
             ],
-            model: 'claude-sonnet-4-20250514',
+            model: 'claude-sonnet-4-6',
             stop_reason: 'end_turn',
             usage: { input_tokens: 100, output_tokens: 30 },
           });
@@ -321,7 +321,7 @@ describe('AI Features API', () => {
                 text: 'This is important because it highlights a key software engineering principle.',
               },
             ],
-            model: 'claude-sonnet-4-20250514',
+            model: 'claude-sonnet-4-6',
             stop_reason: 'end_turn',
             usage: { input_tokens: 100, output_tokens: 30 },
           });
@@ -440,7 +440,7 @@ describe('AI Features API', () => {
             type: 'message',
             role: 'assistant',
             content: [{ type: 'text', text: 'Summary after the key was saved.' }],
-            model: 'claude-sonnet-4-20250514',
+            model: 'claude-sonnet-4-6',
             stop_reason: 'end_turn',
             usage: { input_tokens: 100, output_tokens: 20 },
           }),
