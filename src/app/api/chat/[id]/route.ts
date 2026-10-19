@@ -14,7 +14,7 @@ import {
   parseCitations,
   CHAT_SYSTEM_PROMPT,
 } from '@/lib/chat-retrieval';
-import { getModelBudget } from '@/lib/models';
+import { ANTHROPIC_MODELS, DEFAULT_CHAT_MODEL, getModelBudget } from '@/lib/models';
 import { logger } from '@/lib/logger';
 import { handleApiError, withRoute } from '@/lib/api-error-handler';
 import { NotFoundError } from '@/lib/errors';
@@ -89,8 +89,12 @@ export async function POST(req: NextRequest, context: RouteContext) {
         // 3. Retrieve context
         const scope = parseScope(session.scope);
         const keywords = await extractKeywords(body.message, id);
-        const { historyBudgetChars, maxResponseTokens } = getModelBudget(session.model);
-        const context = retrieveContext(scope, keywords, rawDb, session.model);
+        // A stored model that has since left the registry (retired) would 404 at the API.
+        const model = ANTHROPIC_MODELS.some((m) => m.id === session.model)
+          ? session.model
+          : DEFAULT_CHAT_MODEL;
+        const { historyBudgetChars, maxResponseTokens } = getModelBudget(model);
+        const context = retrieveContext(scope, keywords, rawDb, model);
 
         // 4. Build conversation history from all session messages
         const allMessages = db
@@ -108,7 +112,7 @@ export async function POST(req: NextRequest, context: RouteContext) {
         const result = await callClaudeStreaming({
           system: systemPrompt,
           messages: history,
-          model: session.model,
+          model,
           maxTokens: maxResponseTokens,
           ctx: { feature: 'chat', resourceType: 'chat_session', resourceId: id },
           onText(delta) {

@@ -2,13 +2,15 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { NextRequest } from 'next/server';
 import { http, HttpResponse } from 'msw';
 import { setupHandlers, server } from '../mocks/server';
+import { RETIRED_MODEL_ID } from '../mocks/active-models';
 
 const dbMock = await vi.hoisted(async () => (await import('./setup')).createDbMock());
 vi.mock('@/db', () => dbMock.mock);
 
 import { resetClient } from '@/lib/ai';
 import { eq } from 'drizzle-orm';
-import { articles, chatSessions } from '@/db/schema';
+import { articles, chatMessages, chatSessions } from '@/db/schema';
+import { DEFAULT_CHAT_MODEL } from '@/lib/models';
 
 // Import route handlers
 import { GET as listSessions, POST as createSession } from '@/app/api/chat/route';
@@ -27,7 +29,7 @@ const defaultResponse = {
   content: [
     { type: 'text', text: 'This is a response about [article:1] discussing testing patterns.' },
   ],
-  model: 'claude-sonnet-4-20250514',
+  model: 'claude-sonnet-4-6',
   stop_reason: 'end_turn',
   usage: { input_tokens: 500, output_tokens: 50 },
 };
@@ -59,7 +61,7 @@ setupHandlers(
 
     // Streaming response for chat
     const streamBody = [
-      'event: message_start\ndata: {"type":"message_start","message":{"id":"msg_mock","type":"message","role":"assistant","content":[],"model":"claude-sonnet-4-20250514","stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":500,"output_tokens":0}}}\n\n',
+      'event: message_start\ndata: {"type":"message_start","message":{"id":"msg_mock","type":"message","role":"assistant","content":[],"model":"claude-sonnet-4-6","stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":500,"output_tokens":0}}}\n\n',
       'event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}\n\n',
       'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"This is a response about "}}\n\n',
       'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"[article:1] discussing testing."}}\n\n',
@@ -301,6 +303,88 @@ describe('Chat API', () => {
       });
       const row = testDb.select().from(chatSessions).where(eq(chatSessions.id, sessionId)).get();
       expect(row?.title).toBe('Explain spaced repetition');
+    });
+  });
+
+  describe('POST /api/chat/[id] (stored session model)', () => {
+    /** Seeds a session with the given stored model and returns its id. */
+    function seedSession(model: string): number {
+      return testDb.insert(chatSessions).values({ title: 'Seeded', model }).returning().get()!.id;
+    }
+
+    /** Captures the body of every outbound streaming Anthropic request. */
+    function captureStreamingRequests(): Array<Record<string, unknown>> {
+      const captured: Array<Record<string, unknown>> = [];
+      server.use(
+        http.post('https://api.anthropic.com/v1/messages', async ({ request }) => {
+          const body = (await request.clone().json()) as Record<string, unknown>;
+          if (body.stream) captured.push(body);
+          return undefined;
+        }),
+      );
+      return captured;
+    }
+
+    async function send(sessionId: number, message = 'Tell me more') {
+      const res = await sendMessage(
+        jsonReq('POST', `/api/chat/${sessionId}`, { message }),
+        routeContext(sessionId),
+      );
+      const events = await parseSSE(res);
+      expect(events.find((e) => e.event === 'error')).toBeUndefined();
+      return events;
+    }
+
+    it.each([
+      ['the retired id', RETIRED_MODEL_ID],
+      ['a historical registry entry with no features', 'claude-opus-4-7'],
+    ])('falls back to DEFAULT_CHAT_MODEL when session.model is %s', async (_label, stored) => {
+      const sessionId = seedSession(stored);
+      const captured = captureStreamingRequests();
+
+      await send(sessionId);
+
+      expect(captured).toHaveLength(1);
+      expect(captured[0]?.model).toBe(DEFAULT_CHAT_MODEL);
+      // The stored session row is not rewritten
+      const row = testDb.select().from(chatSessions).where(eq(chatSessions.id, sessionId)).get();
+      expect(row?.model).toBe(stored);
+    });
+
+    it.each(['claude-haiku-4-5-20251001', 'claude-opus-4-8'])(
+      'passes an active chat model (%s) through unchanged',
+      async (stored) => {
+        const sessionId = seedSession(stored);
+        const captured = captureStreamingRequests();
+
+        await send(sessionId);
+
+        expect(captured).toHaveLength(1);
+        expect(captured[0]?.model).toBe(stored);
+      },
+    );
+
+    it('sizes the history budget from the resolved model, not the stored one', async () => {
+      // 8 prior turns of 10k chars: ~70k kept chars exceeds a 200k-window budget (60k)
+      // but fits DEFAULT_CHAT_MODEL's 1M-window budget (300k), so nothing is trimmed.
+      const sessionId = seedSession(RETIRED_MODEL_ID);
+      for (let i = 0; i < 8; i++) {
+        testDb
+          .insert(chatMessages)
+          .values({
+            sessionId,
+            role: i % 2 === 0 ? 'user' : 'assistant',
+            content: `${i}`.padEnd(10_000, 'x'),
+          })
+          .run();
+      }
+      const captured = captureStreamingRequests();
+
+      await send(sessionId);
+
+      expect(captured).toHaveLength(1);
+      // first 2 + omission marker + last 6 = 9 untrimmed history entries
+      expect(captured[0]?.messages as unknown[]).toHaveLength(9);
     });
   });
 

@@ -27,7 +27,7 @@ setupHandlers(
       type: 'message',
       role: 'assistant',
       content: [{ type: 'text', text: 'concept index generated' }],
-      model: 'claude-sonnet-4-20250514',
+      model: 'claude-sonnet-4-6',
       stop_reason: 'end_turn',
       usage: { input_tokens: 100, output_tokens: 20 },
     });
