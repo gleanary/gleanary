@@ -63,8 +63,8 @@ export const ArticleContent = memo(function ArticleContent({
     });
   }, [html]);
 
-  // Render LaTeX math using KaTeX. Loaded lazily to avoid bloating the initial bundle.
-  // throwOnError: false so malformed equations fall back to raw text rather than crashing.
+  // Render LaTeX math via renderMath (KaTeX, Pandoc-style `$` rules; see math-render.ts).
+  // Loaded lazily to avoid bloating the initial bundle.
   // onReady is called unconditionally once this pass finishes (whether or not the content
   // contained math) so HighlightLayer always gets a "content settled" signal to re-apply
   // highlights against the final DOM (KaTeX splits text nodes, shifting serialized paths,
@@ -75,17 +75,9 @@ export const ArticleContent = memo(function ArticleContent({
     if (!contentRef.current) return;
     let mounted = true;
     const el = contentRef.current;
-    void import('katex/contrib/auto-render').then(({ default: renderMathInElement }) => {
+    void import('@/lib/math-render').then(({ renderMath }) => {
       if (mounted) {
-        renderMathInElement(el, {
-          delimiters: [
-            { left: '$$', right: '$$', display: true },
-            { left: '$', right: '$', display: false },
-            { left: '\\[', right: '\\]', display: true },
-            { left: '\\(', right: '\\)', display: false },
-          ],
-          throwOnError: false,
-        });
+        renderMath(el);
         onReady?.();
       }
     });
