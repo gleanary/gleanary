@@ -6,6 +6,7 @@ All notable changes to this project will be documented in this file.
 
 ### Changed
 
+- **`cn()` now comes from the `cn` package instead of `tailwind-merge`** (#15): `src/lib/utils.ts` re-exports `cn` (the shape `shadcn migrate cn` targets, clsx-style inputs plus its cached fast path), keeping us aligned with upstream shadcn; a pairwise comparison of the 1,171 class tokens used in `src/` (1.37M merges) showed identical output to `tailwind-merge` 3.7.
 - **test(e2e): global-search opens the palette via a hydration-safe helper** (#20): `openSearchPalette()` in `e2e/utils.ts` retries Ctrl+K until the AppShell keydown listener has hydrated (pressing only while the palette is closed, since the shortcut toggles), so the press right after `page.goto('/')` can no longer be dropped; `--repeat-each=10 --retries=0` went from 29/30 failures to 0.
 - **test(e2e): serialize Daily Review against highlight-deleting specs with Playwright test locks** (#19): `HIGHLIGHT_WRITER_LOCKS` in `e2e/utils.ts` gives each highlight-deleting spec its own lock (writers stay parallel) and `review.spec.ts` holds all of them, so the SSR'd random review queue can no longer lose a card mid-session under local parallel workers.
 - **react-pdf 11 Suspense mode evaluated, opt-out kept** (#13): `PdfViewer` stays on `suspense={false}` with its manual skeleton/error flow; the rationale (per-page Suspense boundaries, a new Error Boundary class, no gain from `startTransition`) is documented inline.
