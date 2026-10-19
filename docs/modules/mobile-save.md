@@ -39,15 +39,16 @@ Enable saving articles from mobile devices via three mechanisms: a save page wit
 
 **Inputs:**
 
-- `?url=` query parameter (optional) — auto-fills and auto-saves on mount
+- `?url=` / `?text=` query parameters (optional, from the share target or an iOS Shortcut) — the first http(s) URL found in `url`, then `text`, is extracted (`extractSharedUrl()` in `src/lib/share-url.ts`, trailing punctuation stripped), auto-filled, and auto-saved on mount. Many Android apps share `"Title https://…"` in `text`.
 - Manual URL text input
 
 **Behavior:**
 
-1. If `?url=` param present → auto-fill input, immediately call save
+1. If a shared URL is extracted → auto-fill input, immediately call save
 2. User can also paste a URL manually and tap "Save"
 3. Calls `POST /api/articles/parse` with `{ url }`
 4. Shows status: saving → saved (with reader link) / duplicate / error
+5. **Shared saves open the article automatically**: on success (201) or duplicate (409 with `existingId`), the page shows "Opening article…" and navigates to `/reader/<id>` via `router.replace`, so Back from the reader doesn't return to `/save?url=…` and re-trigger the save. Manual saves stay on the page ("Save another"). Errors never navigate.
 
 **Auth:** Same-origin requests pass through Caddy basic auth automatically.
 

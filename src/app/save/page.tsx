@@ -1,61 +1,71 @@
 'use client';
 
 import { useState, useEffect, useCallback, useRef, Suspense } from 'react';
-import { useSearchParams } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { parseArticleByUrl } from '@/lib/article-api';
+import { extractSharedUrl } from '@/lib/share-url';
 import Link from 'next/link';
 
-type SaveStatus = 'idle' | 'saving' | 'saved' | 'duplicate' | 'error';
+type SaveStatus = 'idle' | 'saving' | 'saved' | 'duplicate' | 'opening' | 'error';
 
 function SaveForm() {
   const searchParams = useSearchParams();
-  const paramUrl = searchParams.get('url') ?? searchParams.get('text');
-  const [urlInput, setUrlInput] = useState(paramUrl ?? '');
-  const [status, setStatus] = useState<SaveStatus>('idle');
+  const router = useRouter();
+  const urlParam = searchParams.get('url');
+  const textParam = searchParams.get('text');
+  const sharedUrl = extractSharedUrl(urlParam, textParam);
+  const [urlInput, setUrlInput] = useState(() => sharedUrl ?? urlParam ?? '');
+  // A shared URL is auto-saved on mount, so start in 'saving' to avoid setState in the effect
+  const [status, setStatus] = useState<SaveStatus>(() => (sharedUrl ? 'saving' : 'idle'));
   const [savedArticleId, setSavedArticleId] = useState<number | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
-  const formRef = useRef<HTMLFormElement>(null);
   const hasAutoSubmitted = useRef(false);
 
-  const save = useCallback(async (url: string) => {
-    const trimmed = url.trim();
+  /** Saves the URL and reports the outcome; callers set the 'saving' state first. */
+  const save = useCallback(
+    (url: string, openOnSave: boolean) =>
+      parseArticleByUrl(url)
+        .then((result) => {
+          if (!result.ok && !result.duplicate) {
+            setErrorMessage(result.error ?? 'Something went wrong');
+            setStatus('error');
+            return;
+          }
+          const articleId = (result.duplicate ? result.existingId : result.article?.id) ?? null;
+          setSavedArticleId(articleId);
+          if (openOnSave && articleId) {
+            setStatus('opening');
+            // replace (not push) so Back from the reader doesn't re-run this auto-save
+            router.replace(`/reader/${articleId}`);
+            return;
+          }
+          setStatus(result.duplicate ? 'duplicate' : 'saved');
+        })
+        .catch(() => {
+          setErrorMessage('Network error — check your connection');
+          setStatus('error');
+        }),
+    [router],
+  );
+
+  // Auto-save a shared URL (once only) and open the article; manual saves stay here
+  useEffect(() => {
+    if (sharedUrl && !hasAutoSubmitted.current) {
+      hasAutoSubmitted.current = true;
+      void save(sharedUrl, true);
+    }
+  }, [sharedUrl, save]);
+
+  function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    const trimmed = urlInput.trim();
     if (!trimmed) return;
     setStatus('saving');
     setSavedArticleId(null);
     setErrorMessage(null);
-    try {
-      const result = await parseArticleByUrl(trimmed);
-      if (result.duplicate) {
-        setSavedArticleId(result.existingId ?? null);
-        setStatus('duplicate');
-        return;
-      }
-      if (!result.ok) {
-        setErrorMessage(result.error ?? 'Something went wrong');
-        setStatus('error');
-        return;
-      }
-      setSavedArticleId(result.article?.id ?? null);
-      setStatus('saved');
-    } catch {
-      setErrorMessage('Network error — check your connection');
-      setStatus('error');
-    }
-  }, []);
-
-  // Auto-submit the form when ?url= query param is present (once only)
-  useEffect(() => {
-    if (paramUrl && !hasAutoSubmitted.current) {
-      hasAutoSubmitted.current = true;
-      formRef.current?.requestSubmit();
-    }
-  }, [paramUrl]);
-
-  function handleSubmit(e: React.FormEvent) {
-    e.preventDefault();
-    void save(urlInput);
+    void save(trimmed, false);
   }
 
   function reset() {
@@ -69,7 +79,7 @@ function SaveForm() {
     <main className="mx-auto w-full max-w-md px-4 py-8">
       <h1 className="mb-6 text-xl font-medium">Save article</h1>
 
-      <form ref={formRef} onSubmit={handleSubmit} className="flex flex-col gap-3">
+      <form onSubmit={handleSubmit} className="flex flex-col gap-3">
         <Input
           data-testid="save-url-input"
           type="url"
@@ -79,7 +89,7 @@ function SaveForm() {
           placeholder="https://example.com/article"
           value={urlInput}
           onChange={(e) => setUrlInput(e.target.value)}
-          disabled={status === 'saving'}
+          disabled={status === 'saving' || status === 'opening'}
           required
         />
         <Button
@@ -87,7 +97,7 @@ function SaveForm() {
           type="submit"
           size="lg"
           className="w-full"
-          disabled={status === 'saving' || !urlInput.trim()}
+          disabled={status === 'saving' || status === 'opening' || !urlInput.trim()}
         >
           {status === 'saving' ? 'Saving…' : 'Save'}
         </Button>
@@ -96,6 +106,12 @@ function SaveForm() {
       {status !== 'idle' && (
         <div data-testid="save-status" className="mt-6">
           {status === 'saving' && <p className="text-muted-foreground">Saving article…</p>}
+
+          {status === 'opening' && (
+            <p data-testid="save-opening" className="text-success">
+              Saved! Opening article…
+            </p>
+          )}
 
           {status === 'saved' && (
             <div className="flex flex-col gap-3">

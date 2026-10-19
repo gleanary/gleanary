@@ -56,20 +56,28 @@ test.describe('Mobile Save Page', () => {
     expect(parsedUrl).toBe(testUrl);
   });
 
-  test('auto-saves when URL query param is provided', async ({ page }) => {
-    // Pre-create the article so the auto-save hits the deterministic duplicate path
-    // (the parse route dedups by URL before any external fetch)
-    const uniqueSuffix = Date.now();
-    const testUrl = `https://example.com/e2e-auto-save-${uniqueSuffix}`;
-    await createArticle(page, testUrl, `Auto Save Test ${uniqueSuffix}`);
+  // Android apps share either a bare `url` or "Title https://…" in `text`
+  for (const { name, query } of [
+    { name: 'a shared URL', query: (url: string) => `url=${encodeURIComponent(url)}` },
+    {
+      name: 'a URL inside shared text',
+      query: (url: string) => `text=${encodeURIComponent(`A great read ${url}`)}`,
+    },
+  ]) {
+    test(`auto-saves ${name} and opens the article`, async ({ page }) => {
+      // Pre-create the article so the auto-save hits the deterministic duplicate path
+      // (the parse route dedups by URL before any external fetch)
+      // Random suffix: both loop-generated tests run in parallel and may share a Date.now()
+      const uniqueSuffix = crypto.randomUUID();
+      const testUrl = `https://example.com/e2e-auto-save-${uniqueSuffix}`;
+      await createArticle(page, testUrl, `Auto Save Test ${uniqueSuffix}`);
+      const articleId = createdIds[createdIds.length - 1];
 
-    // Navigate to save page with url param — should auto-save and show duplicate
-    await page.goto(`/save?url=${encodeURIComponent(testUrl)}`);
+      await page.goto(`/save?${query(testUrl)}`);
 
-    const status = page.locator('[data-testid="save-status"]');
-    await expect(status).toBeVisible({ timeout: 10000 });
-    await expect(status).toContainText(/already/i);
-  });
+      await expect(page).toHaveURL(new RegExp(`/reader/${articleId}$`), { timeout: 10000 });
+    });
+  }
 
   test('shows duplicate message for already-saved URL', async ({ page }) => {
     const uniqueSuffix = Date.now();

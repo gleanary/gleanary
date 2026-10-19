@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- **Shared articles open automatically after saving** (mobile-save): when `/save` is opened from the Android share sheet (or an iOS Shortcut), a successful or duplicate save now navigates straight to `/reader/<id>` (history-replacing, so Back doesn't re-save); the URL is also extracted from the share `text` param (`"Title https://…"`) via `extractSharedUrl()`. Manual saves are unchanged.
+
 ### Changed
 
 - **`cn()` now comes from the `cn` package instead of `tailwind-merge`** (#15): `src/lib/utils.ts` re-exports `cn` (the shape `shadcn migrate cn` targets, clsx-style inputs plus its cached fast path), keeping us aligned with upstream shadcn; a pairwise comparison of the 1,171 class tokens used in `src/` (1.37M merges) showed identical output to `tailwind-merge` 3.7.
