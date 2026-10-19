@@ -6,6 +6,7 @@ All notable changes to this project will be documented in this file.
 
 ### Changed
 
+- **test(e2e): global-search opens the palette via a hydration-safe helper** (#20): `openSearchPalette()` in `e2e/utils.ts` retries Ctrl+K until the AppShell keydown listener has hydrated (pressing only while the palette is closed, since the shortcut toggles), so the press right after `page.goto('/')` can no longer be dropped; `--repeat-each=10 --retries=0` went from 29/30 failures to 0.
 - **test(e2e): serialize Daily Review against highlight-deleting specs with Playwright test locks** (#19): `HIGHLIGHT_WRITER_LOCKS` in `e2e/utils.ts` gives each highlight-deleting spec its own lock (writers stay parallel) and `review.spec.ts` holds all of them, so the SSR'd random review queue can no longer lose a card mid-session under local parallel workers.
 - **react-pdf 11 Suspense mode evaluated, opt-out kept** (#13): `PdfViewer` stays on `suspense={false}` with its manual skeleton/error flow; the rationale (per-page Suspense boundaries, a new Error Boundary class, no gain from `startTransition`) is documented inline.
 - **Tooling cleanup** — `vitest.config.ts` renamed to `vitest.config.mts` (silences Vite's ESM-in-CommonJS config warning; `__dirname` → `import.meta.dirname`); `next-env.d.ts` is no longer tracked (gitignored per the Next.js docs) and `npm run typecheck` now runs `next typegen` first so it exists in CI; the Next.js agent-rules block that `next dev` writes into `CLAUDE.md` is committed so the tree stays clean.
