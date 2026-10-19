@@ -4,6 +4,7 @@ import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { ArticleProvider, useArticle } from '@/components/reader/article-context';
 import { ArticleReader } from '@/components/reader/article-reader';
 import { anchorToScrollY, computeReadingAnchor } from '@/lib/reading-anchor';
+import { getScrollableHeight } from '@/lib/scroll-progress';
 import type { Article } from '@/types';
 
 vi.mock('next/navigation', () => ({ useRouter: () => ({ back: vi.fn() }) }));
@@ -17,6 +18,8 @@ const BLOCK_COUNT = 5;
 const BLOCK_SPACING = 500;
 const BLOCK_HEIGHT = 100;
 let layoutShift = 0;
+// Block getBoundingClientRect reads (layout reads in a real browser).
+let rectReads = 0;
 
 // requestAnimationFrame queue, flushed manually for determinism.
 let rafQueue: FrameRequestCallback[] = [];
@@ -50,6 +53,7 @@ function setScrollY(y: number) {
 function stubBlockRects() {
   document.querySelectorAll<HTMLElement>('.article-content p').forEach((el, i) => {
     el.getBoundingClientRect = () => {
+      rectReads++;
       const top = i * BLOCK_SPACING + layoutShift - window.scrollY;
       return {
         top,
@@ -112,6 +116,7 @@ beforeEach(() => {
   mockFetch.mockReset();
   mockFetch.mockResolvedValue({ ok: true, json: () => Promise.resolve({}) });
   layoutShift = 0;
+  rectReads = 0;
   rafQueue = [];
   resizeCallbacks = [];
   // scrollHeight 3000 − innerHeight 1000 → scrollable 2000, so progress 0.5 → y 1000
@@ -121,8 +126,9 @@ beforeEach(() => {
     return rafQueue.length;
   });
   vi.spyOn(window, 'cancelAnimationFrame').mockImplementation(() => {});
+  // Like a browser, clamp to the scrollable range (scrollHeight − innerHeight)
   vi.spyOn(window, 'scrollTo').mockImplementation(((opts: ScrollToOptions) => {
-    setScrollY(opts.top ?? 0);
+    setScrollY(Math.min(Math.max(opts.top ?? 0, 0), getScrollableHeight()));
   }) as typeof window.scrollTo);
   vi.stubGlobal(
     'ResizeObserver',
@@ -202,6 +208,49 @@ describe('ArticleReader reading-position restore', () => {
     },
   );
 
+  it('stops re-applying after a scroll away from the restore target (scrollbar drag)', () => {
+    renderReader({ readingProgress: 0.5, readingAnchorBlock: 2, readingAnchorOffset: 0.4 });
+    flushRaf();
+    setScrollY(1500);
+    fireEvent.scroll(window);
+    layoutShift = 200;
+    triggerResize();
+    expect(scrollToCalls()).toEqual([1040]);
+  });
+
+  it('keeps re-applying after the scroll event caused by its own restore', () => {
+    renderReader({ readingProgress: 0.5, readingAnchorBlock: 2, readingAnchorOffset: 0.4 });
+    flushRaf();
+    fireEvent.scroll(window);
+    layoutShift = 200;
+    triggerResize();
+    expect(scrollToCalls().at(-1)).toBe(1240);
+  });
+
+  it('keeps re-applying after a scroll-anchoring adjustment by the browser', () => {
+    renderReader({ readingProgress: 0.5, readingAnchorBlock: 2, readingAnchorOffset: 0.4 });
+    flushRaf();
+    // Chromium shifts scrollY with the content and fires scroll before ResizeObserver runs
+    layoutShift = 200;
+    setScrollY(1240);
+    fireEvent.scroll(window);
+    layoutShift = 300;
+    triggerResize();
+    expect(scrollToCalls().at(-1)).toBe(1340);
+  });
+
+  it('keeps re-applying when the browser clamps the restore target to the page end', () => {
+    // block 4 top 2000 + 0.5 × 100 = 2050, beyond the 2000px scrollable range
+    renderReader({ readingProgress: 0.99, readingAnchorBlock: 4, readingAnchorOffset: 0.5 });
+    flushRaf();
+    expect(window.scrollY).toBe(2000);
+    fireEvent.scroll(window);
+    // Content above loads and the page grows, so the anchor becomes reachable
+    layoutShift = -100;
+    triggerResize();
+    expect(scrollToCalls().at(-1)).toBe(1950);
+  });
+
   it('stops re-applying once the restore window expires', () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
     renderReader({ readingProgress: 0.5, readingAnchorBlock: 2, readingAnchorOffset: 0.4 });
@@ -242,6 +291,31 @@ describe('ArticleReader reading-position save', () => {
     ]);
   });
 
+  it('does not read block layout on scroll, only when a save is sent', () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    renderReader({ readingProgress: 0, readingAnchorBlock: null, readingAnchorOffset: null });
+    for (const y of [400, 800, 1040]) {
+      setScrollY(y);
+      fireEvent.scroll(window);
+    }
+    expect(rectReads).toBe(0);
+    act(() => vi.advanceTimersByTime(5_000));
+    expect(rectReads).toBeGreaterThan(0);
+  });
+
+  it('saves the anchor of the furthest point even after scrolling back up', () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    renderReader({ readingProgress: 0, readingAnchorBlock: null, readingAnchorOffset: null });
+    setScrollY(1040);
+    fireEvent.scroll(window);
+    setScrollY(200);
+    fireEvent.scroll(window);
+    act(() => vi.advanceTimersByTime(5_000));
+    expect(patchBodies()).toEqual([
+      { readingProgress: 0.52, readingAnchorBlock: 2, readingAnchorOffset: 0.4 },
+    ]);
+  });
+
   it('sends the content anchor with the keepalive save on page unload', () => {
     renderReader({ readingProgress: 0, readingAnchorBlock: null, readingAnchorOffset: null });
     setScrollY(1040);
@@ -271,6 +345,12 @@ describe('computeReadingAnchor / anchorToScrollY', () => {
     // Block 0 bottom (100) <= scrollY → skipped; block 1 top 500 − 300 = 200 > 0
     setScrollY(300);
     expect(computeReadingAnchor(container)).toEqual({ block: 1, offset: 0 });
+  });
+
+  it('anchors at a given scroll offset instead of the current one', () => {
+    const container = content();
+    setScrollY(0);
+    expect(computeReadingAnchor(container, 1040)).toEqual({ block: 2, offset: 0.4 });
   });
 
   it('returns null when every block is above the viewport top', () => {

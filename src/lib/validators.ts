@@ -94,6 +94,12 @@ export const updateArticleSchema = partialWithAtLeastOne(
     ttsParagraph: z.number().int().min(0).nullable(),
     ttsTimeOffset: z.number().min(0).nullable(),
   }),
+).refine(
+  (data) =>
+    data.readingProgress !== undefined ||
+    (data.readingAnchorBlock === undefined && data.readingAnchorOffset === undefined),
+  // The anchor is only written alongside progress, so the forward-only guard covers both
+  { message: 'readingAnchorBlock/readingAnchorOffset require readingProgress' },
 );
 
 /** Validates GET /api/articles query params */

@@ -138,7 +138,7 @@ Update article fields (status, progress, favorite, etc.).
 }
 ```
 
-**Reading progress is monotonic**: if `readingProgress` is present and not greater than the stored value (and not `0`), the whole update is ignored and the existing article is returned, so the reading anchor fields are dropped with it and always describe the furthest point reached. `readingProgress: 0` (reset) also clears `readingAnchorBlock`/`readingAnchorOffset`.
+**Reading progress is monotonic**: if `readingProgress` is present and not greater than the stored value (and not `0`), the whole update is ignored and the existing article is returned, so the reading anchor fields are dropped with it and always describe the furthest point reached. `readingProgress: 0` (reset) also clears `readingAnchorBlock`/`readingAnchorOffset`. The anchor fields are only accepted alongside `readingProgress`: a body with `readingAnchorBlock` or `readingAnchorOffset` but no `readingProgress` is rejected with `422`, so the anchor cannot drift from the saved progress.
 
 **Response**: `200` with updated article.
 **Errors**: `404`, `422`.
