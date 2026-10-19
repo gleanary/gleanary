@@ -11,21 +11,32 @@ import type { ReadingAnchor } from '@/types';
 const PROGRESS_DEBOUNCE_MS = 5_000;
 /** How long after mount late layout (images, KaTeX) may re-apply the restored position. */
 const RESTORE_WINDOW_MS = 3_000;
-/** User input that hands scrolling back to the reader, ending the restore window. */
+/**
+ * User input that hands scrolling back to the reader, ending the restore window. Scrolls
+ * also end it (see `onScroll`); these catch input before, or without, a scroll.
+ */
 const RESTORE_CANCEL_EVENTS = ['wheel', 'touchstart', 'keydown', 'pointerdown'] as const;
 
 function getContentContainer(): HTMLElement | null {
   return document.querySelector<HTMLElement>('.article-content');
 }
 
-/** Current content anchor, or null when there is no `.article-content` (e.g. PDF original view). */
-function captureReadingAnchor(): ReadingAnchor | null {
+/**
+ * Content anchor at the given scroll offset, or null when there is no `.article-content`
+ * (e.g. PDF original view). Reads layout, so only call it when a save is about to be sent.
+ */
+function captureReadingAnchor(scrollY: number): ReadingAnchor | null {
   const container = getContentContainer();
-  return container ? computeReadingAnchor(container) : null;
+  return container ? computeReadingAnchor(container, scrollY) : null;
 }
 
-/** PATCH body for a progress save: the ratio plus the content anchor captured with it. */
-function progressUpdate(progress: number, anchor: ReadingAnchor | null) {
+/**
+ * PATCH body for a progress save: the ratio plus the content anchor at the scroll
+ * offset where it was reached. Computing the anchor from that offset now assumes the
+ * layout above it has not shifted since, which holds within one debounce interval.
+ */
+function progressUpdate(progress: number, scrollY: number) {
+  const anchor = captureReadingAnchor(scrollY);
   return {
     readingProgress: progress,
     readingAnchorBlock: anchor?.block ?? null,
@@ -51,8 +62,8 @@ export function ArticleReader({ children }: { children: React.ReactNode }) {
   const { article, progressResetKey } = useArticle();
   const lastSavedProgress = useRef(article.readingProgress ?? 0);
   const maxProgress = useRef(article.readingProgress ?? 0);
-  // Content anchor captured at the moment maxProgress last advanced
-  const maxAnchor = useRef<ReadingAnchor | null>(null);
+  // Scroll offset at the moment maxProgress last advanced; the anchor is computed from it at save time
+  const maxScrollY = useRef(0);
   // Ends the post-restore re-apply window (set while it is active)
   const stopRestore = useRef<(() => void) | null>(null);
   const debounceTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -76,7 +87,7 @@ export function ArticleReader({ children }: { children: React.ReactNode }) {
       // Only track forward progress
       if (progress <= maxProgress.current) return;
       maxProgress.current = progress;
-      maxAnchor.current = captureReadingAnchor();
+      maxScrollY.current = window.scrollY;
 
       // Only save if progress exceeds last saved value meaningfully (> 1%)
       if (maxProgress.current - lastSavedProgress.current < 0.01) return;
@@ -87,7 +98,7 @@ export function ArticleReader({ children }: { children: React.ReactNode }) {
 
       debounceTimer.current = setTimeout(() => {
         lastSavedProgress.current = maxProgress.current;
-        patchArticle(article.id, progressUpdate(maxProgress.current, maxAnchor.current));
+        patchArticle(article.id, progressUpdate(maxProgress.current, maxScrollY.current));
       }, PROGRESS_DEBOUNCE_MS);
     };
 
@@ -110,11 +121,11 @@ export function ArticleReader({ children }: { children: React.ReactNode }) {
       const progress = getRoundedScrollProgress();
       if (progress !== null && progress > maxProgress.current) {
         maxProgress.current = progress;
-        maxAnchor.current = captureReadingAnchor();
+        maxScrollY.current = window.scrollY;
       }
 
       if (maxProgress.current - lastSavedProgress.current >= 0.01) {
-        patchArticle(article.id, progressUpdate(maxProgress.current, maxAnchor.current), {
+        patchArticle(article.id, progressUpdate(maxProgress.current, maxScrollY.current), {
           keepalive: true,
         });
       }
@@ -134,12 +145,17 @@ export function ArticleReader({ children }: { children: React.ReactNode }) {
         ? { block: article.readingAnchorBlock, offset: article.readingAnchorOffset ?? 0 }
         : null;
 
-    const restore = () => {
+    // Scroll offset of the saved position in the current layout, clamped to the page end
+    // like the browser clamps scrollTo
+    const targetY = (): number | null => {
       const container = getContentContainer();
       const anchorTop = savedAnchor && container ? anchorToScrollY(container, savedAnchor) : null;
       const top = anchorTop ?? progressToScrollY(savedProgress, getScrollableHeight());
-      if (top === null) return;
-      window.scrollTo({ top, behavior: 'instant' });
+      return top === null ? null : Math.min(Math.max(top, 0), getScrollableHeight());
+    };
+    const restore = () => {
+      const top = targetY();
+      if (top !== null) window.scrollTo({ top, behavior: 'instant' });
     };
 
     // Images without dimensions and async KaTeX can resize the content after the first
@@ -147,10 +163,18 @@ export function ArticleReader({ children }: { children: React.ReactNode }) {
     // resize until the user takes over or the window expires.
     let observer: ResizeObserver | null = null;
     let windowTimer: ReturnType<typeof setTimeout> | null = null;
+    // A scroll that leaves the saved position (scrollbar drag, hash navigation, TTS
+    // auto-scroll) also hands over. Comparing against the current target rather than the
+    // last restore lets the browser's own scroll anchoring and end-of-page clamping through.
+    const onScroll = () => {
+      const top = targetY();
+      if (top === null || Math.abs(window.scrollY - top) > 1) stop();
+    };
     const stop = () => {
       observer?.disconnect();
       if (windowTimer) clearTimeout(windowTimer);
       RESTORE_CANCEL_EVENTS.forEach((type) => window.removeEventListener(type, stop));
+      window.removeEventListener('scroll', onScroll);
       stopRestore.current = null;
     };
 
@@ -165,6 +189,7 @@ export function ArticleReader({ children }: { children: React.ReactNode }) {
       RESTORE_CANCEL_EVENTS.forEach((type) =>
         window.addEventListener(type, stop, { passive: true }),
       );
+      window.addEventListener('scroll', onScroll, { passive: true });
       stopRestore.current = stop;
     });
 
@@ -188,7 +213,7 @@ export function ArticleReader({ children }: { children: React.ReactNode }) {
     }
     lastSavedProgress.current = 0;
     maxProgress.current = 0;
-    maxAnchor.current = null;
+    maxScrollY.current = 0;
 
     const rafId = requestAnimationFrame(() => {
       window.scrollTo({ top: 0, behavior: 'instant' });

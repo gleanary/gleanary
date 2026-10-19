@@ -461,6 +461,38 @@ describe('Articles API', () => {
       expect(body.article.readingAnchorOffset).toBeNull();
     });
 
+    it.each([
+      { readingAnchorBlock: 3, readingAnchorOffset: 0.1 },
+      { readingAnchorBlock: null, readingAnchorOffset: null },
+      { readingAnchorOffset: 0.2 },
+    ])('returns 422 for reading anchor fields without reading progress (%o)', async (fields) => {
+      const createRes = await createArticle(jsonReq('POST', '/api/articles', validArticle));
+      const { article } = await createRes.json();
+
+      await updateArticle(
+        jsonReq('PATCH', `/api/articles/${article.id}`, {
+          readingProgress: 0.6,
+          readingAnchorBlock: 9,
+          readingAnchorOffset: 0.5,
+        }),
+        routeParams(article.id),
+      );
+
+      const res = await updateArticle(
+        jsonReq('PATCH', `/api/articles/${article.id}`, fields),
+        routeParams(article.id),
+      );
+      expect(res.status).toBe(422);
+
+      const getRes = await getArticle(
+        jsonReq('GET', `/api/articles/${article.id}`),
+        routeParams(article.id),
+      );
+      const body = await getRes.json();
+      expect(body.article.readingAnchorBlock).toBe(9);
+      expect(body.article.readingAnchorOffset).toBe(0.5);
+    });
+
     it('returns 422 for an out-of-range reading anchor offset', async () => {
       const createRes = await createArticle(jsonReq('POST', '/api/articles', validArticle));
       const { article } = await createRes.json();
