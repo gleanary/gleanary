@@ -1,6 +1,7 @@
 import { test, expect } from '@playwright/test';
+import { HIGHLIGHT_WRITER_LOCKS } from './utils';
 
-test.describe('Highlight Search', () => {
+test.describe('Highlight Search', { lock: HIGHLIGHT_WRITER_LOCKS.search }, () => {
   const createdIds: number[] = [];
 
   test.afterEach(async ({ page }) => {

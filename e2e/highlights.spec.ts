@@ -1,5 +1,5 @@
 import { test, expect, type Page } from '@playwright/test';
-import { waitForApiResponse } from './utils';
+import { HIGHLIGHT_WRITER_LOCKS, waitForApiResponse } from './utils';
 
 const TEST_ARTICLE_HTML = `
 <p data-testid="para-1">This is the first paragraph of a test article with enough text for highlighting.</p>
@@ -102,7 +102,7 @@ async function countUniqueHighlights(page: Page): Promise<number> {
   });
 }
 
-test.describe('Highlight E2E', () => {
+test.describe('Highlight E2E', { lock: HIGHLIGHT_WRITER_LOCKS.highlights }, () => {
   let articleId: number;
 
   test.beforeEach(async ({ page }) => {

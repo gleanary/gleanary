@@ -1,5 +1,5 @@
 import { test, expect, type Page } from '@playwright/test';
-import { waitForApiResponse } from './utils';
+import { HIGHLIGHT_WRITER_LOCKS, waitForApiResponse } from './utils';
 
 interface SeedData {
   articleId: number;
@@ -93,7 +93,7 @@ async function cleanupTestData(page: Page, seed: SeedData): Promise<void> {
   await Promise.all(promises);
 }
 
-test.describe('Draft flow (Module 16)', () => {
+test.describe('Draft flow (Module 16)', { lock: HIGHLIGHT_WRITER_LOCKS.draftFlow }, () => {
   let seed: SeedData;
 
   test.beforeEach(async ({ page }) => {

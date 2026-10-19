@@ -1,5 +1,5 @@
 import { test, expect, type Page } from '@playwright/test';
-import { waitForMarks } from './utils';
+import { HIGHLIGHT_WRITER_LOCKS, waitForMarks } from './utils';
 
 // A paragraph with inline math, a display-math block, and surrounding prose. The reader
 // renders LaTeX via KaTeX (katex/contrib/auto-render); this exercises the class-name
@@ -31,58 +31,68 @@ async function createMathArticle(page: Page): Promise<number> {
   return body.article.id;
 }
 
-test.describe('Math article (KaTeX rendering + highlight anchoring)', () => {
-  let articleId: number;
+test.describe(
+  'Math article (KaTeX rendering + highlight anchoring)',
+  { lock: HIGHLIGHT_WRITER_LOCKS.mathArticle },
+  () => {
+    let articleId: number;
 
-  test.afterEach(async ({ page }) => {
-    if (articleId) await page.request.delete(`/api/articles/${articleId}`).catch(() => {});
-  });
+    test.afterEach(async ({ page }) => {
+      if (articleId) await page.request.delete(`/api/articles/${articleId}`).catch(() => {});
+    });
 
-  test('renders inline and display math in the reader', async ({ page }) => {
-    articleId = await createMathArticle(page);
-    await page.goto(`/reader/${articleId}`);
-    await expect(page.getByTestId('article-content')).toBeVisible();
+    test('renders inline and display math in the reader', async ({ page }) => {
+      articleId = await createMathArticle(page);
+      await page.goto(`/reader/${articleId}`);
+      await expect(page.getByTestId('article-content')).toBeVisible();
 
-    // KaTeX renders lazily after mount; wait for the rendered output to appear.
-    await page.waitForFunction(() => !!document.querySelector('.katex'), null, { timeout: 15000 });
+      // KaTeX renders lazily after mount; wait for the rendered output to appear.
+      await page.waitForFunction(() => !!document.querySelector('.katex'), null, {
+        timeout: 15000,
+      });
 
-    // At least two math instances rendered (inline $E=mc^2$ + the display integral).
-    const katexCount = await page.locator('.katex').count();
-    expect(katexCount).toBeGreaterThanOrEqual(2);
+      // At least two math instances rendered (inline $E=mc^2$ + the display integral).
+      const katexCount = await page.locator('.katex').count();
+      expect(katexCount).toBeGreaterThanOrEqual(2);
 
-    // The display block is wrapped in .katex-display (the load-bearing class the
-    // highlight extractor uses to reconstruct $$...$$ delimiters).
-    await expect(page.locator('.katex-display').first()).toBeVisible();
-  });
+      // The display block is wrapped in .katex-display (the load-bearing class the
+      // highlight extractor uses to reconstruct $$...$$ delimiters).
+      await expect(page.locator('.katex-display').first()).toBeVisible();
+    });
 
-  test('highlight spanning a display-math block survives reload and re-anchors', async ({
-    page,
-  }) => {
-    articleId = await createMathArticle(page);
-    await page.goto(`/reader/${articleId}`);
-    await expect(page.locator('[data-testid="highlight-layer"]')).toBeVisible();
-    await expect(page.getByTestId('article-content')).toBeVisible();
-    await page.waitForFunction(() => !!document.querySelector('.katex'), null, { timeout: 15000 });
+    test('highlight spanning a display-math block survives reload and re-anchors', async ({
+      page,
+    }) => {
+      articleId = await createMathArticle(page);
+      await page.goto(`/reader/${articleId}`);
+      await expect(page.locator('[data-testid="highlight-layer"]')).toBeVisible();
+      await expect(page.getByTestId('article-content')).toBeVisible();
+      await page.waitForFunction(() => !!document.querySelector('.katex'), null, {
+        timeout: 15000,
+      });
 
-    // Double-click the paragraph holding the display-math block to highlight it whole.
-    // The reader's dblclick handler selects the paragraph and creates a highlight whose
-    // range spans the .katex-display subtree.
-    await page.locator('[data-testid="para-3"]').dblclick();
-    await waitForMarks(page, 1);
-    const highlightId = await page
-      .locator('mark[data-highlight-id]')
-      .first()
-      .getAttribute('data-highlight-id');
-    expect(highlightId).toBeTruthy();
+      // Double-click the paragraph holding the display-math block to highlight it whole.
+      // The reader's dblclick handler selects the paragraph and creates a highlight whose
+      // range spans the .katex-display subtree.
+      await page.locator('[data-testid="para-3"]').dblclick();
+      await waitForMarks(page, 1);
+      const highlightId = await page
+        .locator('mark[data-highlight-id]')
+        .first()
+        .getAttribute('data-highlight-id');
+      expect(highlightId).toBeTruthy();
 
-    // Reload: the highlight must re-anchor against the freshly parsed + re-rendered
-    // math DOM (KaTeX re-splits text nodes on every mount), proving the anchor is
-    // durable across the math rendering pass.
-    await page.goto(`/reader/${articleId}`);
-    await expect(page.locator('[data-testid="highlight-layer"]')).toBeVisible({ timeout: 10000 });
-    await expect(page.getByTestId('article-content')).toBeVisible();
-    await page.waitForFunction(() => !!document.querySelector('.katex'), null, { timeout: 15000 });
-    await waitForMarks(page, 1);
-    await expect(page.locator(`mark[data-highlight-id="${highlightId}"]`).first()).toBeVisible();
-  });
-});
+      // Reload: the highlight must re-anchor against the freshly parsed + re-rendered
+      // math DOM (KaTeX re-splits text nodes on every mount), proving the anchor is
+      // durable across the math rendering pass.
+      await page.goto(`/reader/${articleId}`);
+      await expect(page.locator('[data-testid="highlight-layer"]')).toBeVisible({ timeout: 10000 });
+      await expect(page.getByTestId('article-content')).toBeVisible();
+      await page.waitForFunction(() => !!document.querySelector('.katex'), null, {
+        timeout: 15000,
+      });
+      await waitForMarks(page, 1);
+      await expect(page.locator(`mark[data-highlight-id="${highlightId}"]`).first()).toBeVisible();
+    });
+  },
+);
