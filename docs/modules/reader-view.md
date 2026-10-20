@@ -1,7 +1,7 @@
 # Module 4: Reader View
 
 **Status**: Done
-**Last verified against code**: 2026-04 (docs reconciliation)
+**Last verified against code**: 2026-10 (docs session)
 **Schema tables**: `articles`, `highlights`
 **Unimplemented sections**: none
 
@@ -138,24 +138,25 @@ When a user drags handles to extend a highlight so it overlaps with an adjacent 
 
 ### Anchoring Strategy
 
-Highlights are anchored using child-index paths relative to the article content root:
+Highlights are stored as a v2 **text-quote + text-position** anchor (Module 20, see [highlight-anchoring.md](highlight-anchoring.md)):
 
 ```json
 {
-  "startContainerPath": [0, 0],
-  "startOffset": 10,
-  "endContainerPath": [0, 0],
-  "endOffset": 19,
-  "text": "brown fox"
+  "v": 2,
+  "exact": "brown fox",
+  "prefix": "The quick ",
+  "suffix": " jumps over",
+  "start": 10,
+  "end": 19
 }
 ```
 
-- **Path**: Array of child node indices from root to the text node (e.g., `[0, 1, 0]` = root → 1st child → 2nd child → 1st child)
-- **Offset**: Character offset within the text node
-- **Text**: Stored for verification
-- **Library**: `src/lib/highlight-anchoring.ts` — `serializeRange()`, `deserializeRange()`, `getNodePath()`, `getNodeFromPath()`
+- **`exact` / `prefix` / `suffix`**: the quote and up to `ANCHOR_CONTEXT_LEN` (32) chars of context on each side
+- **`start` / `end`**: char offsets into the content root's text stream (`getRootText()`), used as a fast path
+- **Resolution**: position fast path, then fuzzy quote match (`approx-string-match`, max error ratio `ANCHOR_MAX_ERROR_RATIO`), else the highlight is flagged `anchor_status = 'orphaned'`
+- **Library**: `src/lib/highlight-anchoring.ts` — `describeRange()`, `anchorToRange()`, `recoverAnchorFromText()`, `isV2Anchor()`; the legacy v1 child-index helpers (`serializeRange()`, `deserializeRange()`, `getNodePath()`, `getNodeFromPath()`) remain for the transitional v1 fallback (see `TECH_DEBT.md`)
 
-Article content is immutable after save, so child-index paths are stable.
+Article content can change after save (AI cleanup, reformat, re-extraction); the text-quote anchor is what lets highlights survive it.
 
 ### Additional Components (not in original spec)
 
@@ -177,7 +178,7 @@ Article content is immutable after save, so child-index paths are stable.
 - Debounce PATCH calls (every 5 seconds while scrolling)
 - Persist on page unload via `fetch` with `keepalive: true`
 - **Content anchor**: each save also sends a `ReadingAnchor` (`src/lib/reading-anchor.ts`), describing the furthest point reached: the index of the first block element (`BLOCK_SELECTORS`, shared with the TTS word highlighter) in `.article-content` whose bottom is below the viewport top, plus the fraction (0–1) of that block scrolled past. Stored as `reading_anchor_block` / `reading_anchor_offset`; cleared by a reset to 0. The scroll handler only records the `scrollY` at which progress last advanced; the anchor is computed from it (`computeReadingAnchor(container, scrollY)`) when a save is sent (debounce timer or unload), so scrolling stays free of layout reads and the anchor still matches `maxProgress` after the reader scrolls back up.
-- **Restore**: on open, `ArticleReader` scrolls to the saved anchor (`anchorToScrollY`). It falls back to `readingProgress × scrollable height` for legacy articles without an anchor, when the anchored block no longer exists (content re-parsed or AI-cleaned), or when there is no `.article-content` (PDF original view). The ratio alone overshot because images without dimensions and async KaTeX had not laid out yet one frame after mount.
+- **Restore**: on open, `ArticleReader` scrolls to the saved anchor (`anchorToScrollY`). It falls back to `readingProgress × scrollable height` for legacy articles without an anchor, when the anchored block no longer exists (content re-parsed or AI-cleaned), or when there is no `.article-content` (PDF original view). The ratio alone overshot because images without dimensions and async KaTeX had not laid out yet one frame after mount. See [ADR-009](../adrs/ADR-009-reading-position-content-anchor.md).
 - **Restore window**: for up to 3 s after the first restore, a `ResizeObserver` on the content and `<html>` re-applies the same target whenever late layout (image loads, KaTeX) changes the size, so browsers without scroll anchoring (Safari) do not drift. The first `wheel`, `touchstart`, `keydown` or `pointerdown` ends the window, and so does any `scroll` event that leaves the page more than 1 px from the saved position as it maps onto the current layout (scrollbar drags, hash navigation, TTS auto-scroll), or a progress reset. Comparing against the current target rather than the last restore lets the browser's own scroll-anchoring adjustments and end-of-page clamping through.
 - The saved `readingProgress` stays rounded to whole percent and still drives the progress bar.
 

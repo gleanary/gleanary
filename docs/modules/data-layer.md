@@ -1,7 +1,7 @@
 # Module 1: Data Layer + API
 
 **Status**: Done
-**Last verified against code**: 2026-07 (docs session)
+**Last verified against code**: 2026-10 (docs session)
 **Schema tables**: `sources`, `articles`, `highlights`, `tags`, `highlight_tags`, `settings`, `audit_log`
 **Unimplemented sections**: none
 
