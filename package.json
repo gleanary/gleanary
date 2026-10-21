@@ -38,7 +38,7 @@
     "better-sqlite3": "^12.11.1",
     "class-variance-authority": "^0.7.1",
     "cn": "^0.5.0",
-    "defuddle": "^0.19.2",
+    "defuddle": "^0.19.5",
     "drizzle-orm": "^0.45.2",
     "imapflow": "^1.6.1",
     "isomorphic-dompurify": "^3.19.0",
