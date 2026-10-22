@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { isSpokenToken } from '@/lib/tts-tokens';
 import type { TTSPosition, TTSStatus } from '@/types';
 
 /** Supported playback speed values */
@@ -10,6 +11,33 @@ export const TTS_SPEEDS = [0.5, 0.75, 1.0, 1.25, 1.5] as const;
 const TTS_WPM = 150;
 /** Fallback duration estimate per paragraph when word count is unavailable */
 const FALLBACK_SECONDS_PER_PARAGRAPH = 30;
+
+/** Estimated duration (seconds) of a paragraph at the TTS speaking rate */
+function estimatedParagraphDuration(wordCount: number): number {
+  return (wordCount / TTS_WPM) * 60;
+}
+
+/** Estimated absolute start time (seconds) of a paragraph; 0 when word counts are unknown */
+function estimatedParagraphStart(wordCounts: number[] | null, paragraphIndex: number): number {
+  if (!wordCounts) return 0;
+  let start = 0;
+  for (let i = 0; i < paragraphIndex; i++) start += estimatedParagraphDuration(wordCounts[i] ?? 0);
+  return start;
+}
+
+/** Paragraph whose estimated [start, start + duration) range contains `time` (clamped to the last) */
+function estimatedParagraphAt(
+  wordCounts: number[],
+  time: number,
+): { index: number; start: number } {
+  let start = 0;
+  for (let i = 0; i < wordCounts.length; i++) {
+    const duration = estimatedParagraphDuration(wordCounts[i] ?? 0);
+    if (time < start + duration || i === wordCounts.length - 1) return { index: i, start };
+    start += duration;
+  }
+  return { index: 0, start: 0 };
+}
 
 interface ParagraphData {
   buffer: AudioBuffer;
@@ -64,6 +92,13 @@ export function useTTSPlayer(onComplete?: () => void): UseTTSPlayerReturn {
   const articleIdRef = useRef<number | null>(null);
   const startOffsetRef = useRef<number>(0);
   const onCompleteRef = useRef(onComplete);
+  // Read by the rAF tracking loop, which must not close over stale render values
+  const speedRef = useRef(1.0);
+  const estimatedTotalTimeRef = useRef(0);
+  // Whole-article word counts from metadata (null for servers that don't send them)
+  const paragraphWordCountsRef = useRef<number[] | null>(null);
+  // Paragraph the current SSE stream started at; its estimated start is the timeline base
+  const streamStartParagraphRef = useRef(0);
   const playbackStateRef = useRef({
     paragraphStartTime: 0,
     currentParagraphIndex: 0,
@@ -193,7 +228,7 @@ export function useTTSPlayer(onComplete?: () => void): UseTTSPlayerReturn {
         return;
       }
 
-      const elapsed = (ctx.currentTime - state.paragraphStartTime) * speed;
+      const elapsed = (ctx.currentTime - state.paragraphStartTime) * speedRef.current;
       const clampedElapsed = Math.min(elapsed, data.duration);
 
       // Find current word via linear scan with early exit (sorted arrays)
@@ -214,8 +249,9 @@ export function useTTSPlayer(onComplete?: () => void): UseTTSPlayerReturn {
       // Update overall progress/time
       const totalElapsed = state.cumulativeDuration + clampedElapsed;
       setCurrentTime((prev) => (Math.abs(prev - totalElapsed) < 0.05 ? prev : totalElapsed));
-      if (estimatedTotalTime > 0) {
-        const newProgress = Math.min(totalElapsed / estimatedTotalTime, 1);
+      const estimatedTotal = estimatedTotalTimeRef.current;
+      if (estimatedTotal > 0) {
+        const newProgress = Math.min(totalElapsed / estimatedTotal, 1);
         setProgress((prev) => (Math.abs(prev - newProgress) < 0.005 ? prev : newProgress));
       }
 
@@ -224,7 +260,7 @@ export function useTTSPlayer(onComplete?: () => void): UseTTSPlayerReturn {
 
     cancelAnimationFrame(rafIdRef.current);
     rafIdRef.current = requestAnimationFrame(track);
-  }, [speed, estimatedTotalTime]);
+  }, []);
 
   /** Parse an SSE event line pair */
   const parseSSEEvent = useCallback(
@@ -233,15 +269,24 @@ export function useTTSPlayer(onComplete?: () => void): UseTTSPlayerReturn {
         const parsed = JSON.parse(data);
 
         switch (eventType) {
-          case 'metadata':
+          case 'metadata': {
             playbackStateRef.current.totalParagraphs = parsed.totalParagraphs;
-            // Estimate duration from word count at typical TTS speaking rate
-            setEstimatedTotalTime(
-              parsed.totalWords
-                ? (parsed.totalWords / TTS_WPM) * 60
-                : parsed.totalParagraphs * FALLBACK_SECONDS_PER_PARAGRAPH,
+            paragraphWordCountsRef.current = Array.isArray(parsed.paragraphWordCounts)
+              ? parsed.paragraphWordCounts
+              : null;
+            // Absolute timeline: a stream started mid-article begins at its estimated position
+            playbackStateRef.current.cumulativeDuration = estimatedParagraphStart(
+              paragraphWordCountsRef.current,
+              streamStartParagraphRef.current,
             );
+            // Estimate duration from word count at typical TTS speaking rate
+            const estimatedTotal = parsed.totalWords
+              ? estimatedParagraphDuration(parsed.totalWords)
+              : parsed.totalParagraphs * FALLBACK_SECONDS_PER_PARAGRAPH;
+            estimatedTotalTimeRef.current = estimatedTotal;
+            setEstimatedTotalTime(estimatedTotal);
             break;
+          }
 
           case 'audio': {
             const ctx = getAudioContext();
@@ -250,10 +295,20 @@ export function useTTSPlayer(onComplete?: () => void): UseTTSPlayerReturn {
             for (let i = 0; i < binary.length; i++) {
               bytes[i] = binary.charCodeAt(i);
             }
-            // Capture timestamps synchronously before async decode
-            const words: string[] = parsed.words ?? [];
-            const startTimes: number[] = parsed.startTimes ?? [];
-            const endTimes: number[] = parsed.endTimes ?? [];
+            // Capture timestamps synchronously before async decode, keeping only
+            // spoken words (Inworld also emits whitespace/punctuation tokens)
+            const rawWords: string[] = parsed.words ?? [];
+            const rawStartTimes: number[] = parsed.startTimes ?? [];
+            const rawEndTimes: number[] = parsed.endTimes ?? [];
+            const words: string[] = [];
+            const startTimes: number[] = [];
+            const endTimes: number[] = [];
+            rawWords.forEach((word, i) => {
+              if (!isSpokenToken(word)) return;
+              words.push(word);
+              startTimes.push(rawStartTimes[i] ?? 0);
+              endTimes.push(rawEndTimes[i] ?? 0);
+            });
             ctx
               .decodeAudioData(bytes.buffer.slice(0))
               .then((audioBuffer) => {
@@ -286,7 +341,9 @@ export function useTTSPlayer(onComplete?: () => void): UseTTSPlayerReturn {
           }
 
           case 'complete':
-            if (parsed.totalDuration) {
+            // A stream started mid-article only measured part of it: keep the estimate
+            if (parsed.totalDuration && streamStartParagraphRef.current === 0) {
+              estimatedTotalTimeRef.current = parsed.totalDuration;
               setEstimatedTotalTime(parsed.totalDuration);
             }
             break;
@@ -313,6 +370,7 @@ export function useTTSPlayer(onComplete?: () => void): UseTTSPlayerReturn {
       playbackStateRef.current.cumulativeDuration = 0;
       playbackStateRef.current.waitingForParagraph = -1;
       playbackStateRef.current.currentParagraphIndex = startParagraph;
+      streamStartParagraphRef.current = startParagraph;
       articleIdRef.current = articleId;
       startOffsetRef.current = startOffset;
 
@@ -501,9 +559,12 @@ export function useTTSPlayer(onComplete?: () => void): UseTTSPlayerReturn {
         const prevData = paragraphDataRef.current.get(prevIdx);
         if (!prevData) break;
         if (remaining <= prevData.duration) {
-          // Land within this previous paragraph
-          state.cumulativeDuration = 0;
-          for (let i = 0; i < prevIdx; i++) {
+          // Land within this previous paragraph (stream base + loaded durations before it)
+          state.cumulativeDuration = estimatedParagraphStart(
+            paragraphWordCountsRef.current,
+            streamStartParagraphRef.current,
+          );
+          for (let i = streamStartParagraphRef.current; i < prevIdx; i++) {
             const d = paragraphDataRef.current.get(i);
             if (d) state.cumulativeDuration += d.duration;
           }
@@ -522,7 +583,10 @@ export function useTTSPlayer(onComplete?: () => void): UseTTSPlayerReturn {
 
       // Couldn't go back further — restart from beginning of first available paragraph
       const firstIdx = prevIdx + 1;
-      state.cumulativeDuration = 0;
+      state.cumulativeDuration = estimatedParagraphStart(
+        paragraphWordCountsRef.current,
+        streamStartParagraphRef.current,
+      );
       if (ctx.state === 'suspended') ctx.resume();
       playParagraphBuffer(Math.max(firstIdx, 0), 0);
       if (status === 'paused') {
@@ -543,12 +607,32 @@ export function useTTSPlayer(onComplete?: () => void): UseTTSPlayerReturn {
 
       const state = playbackStateRef.current;
       const clampedTarget = Math.max(0, Math.min(targetTime, estimatedTotalTime));
+      const wordCounts = paragraphWordCountsRef.current;
 
-      // Walk paragraphs to find which one contains the target time
-      let accumulated = 0;
-      for (let i = 0; i < state.totalParagraphs; i++) {
+      /** Target not loaded: restart the stream at its estimated paragraph (no-op without word counts) */
+      const restartStreamAtTarget = () => {
+        const articleId = articleIdRef.current;
+        if (!wordCounts || articleId === null) return;
+        const { index, start } = estimatedParagraphAt(wordCounts, clampedTarget);
+        if (ctx.state === 'suspended') ctx.resume();
+        play(articleId, index, clampedTarget - start);
+        // Show the target on the bar while the new stream loads
+        setCurrentTime(clampedTarget);
+        setProgress(estimatedTotalTime > 0 ? Math.min(clampedTarget / estimatedTotalTime, 1) : 0);
+      };
+
+      // Walk loaded paragraphs from the stream's start (its estimated absolute base)
+      let accumulated = estimatedParagraphStart(wordCounts, streamStartParagraphRef.current);
+      if (clampedTarget < accumulated) {
+        restartStreamAtTarget();
+        return;
+      }
+      for (let i = streamStartParagraphRef.current; i < state.totalParagraphs; i++) {
         const data = paragraphDataRef.current.get(i);
-        if (!data) return; // Buffer not loaded yet, bail
+        if (!data) {
+          restartStreamAtTarget();
+          return;
+        }
 
         if (accumulated + data.duration > clampedTarget) {
           // Target is within this paragraph
@@ -580,11 +664,12 @@ export function useTTSPlayer(onComplete?: () => void): UseTTSPlayerReturn {
         startTracking();
       }
     },
-    [estimatedTotalTime, playParagraphBuffer, startTracking],
+    [estimatedTotalTime, play, playParagraphBuffer, startTracking],
   );
 
   /** Update playback speed */
   const setSpeed = useCallback((newSpeed: number) => {
+    speedRef.current = newSpeed;
     setSpeedState(newSpeed);
     // Apply to current source if playing
     if (sourceNodeRef.current) {

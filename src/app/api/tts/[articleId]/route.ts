@@ -102,6 +102,9 @@ export async function GET(req: NextRequest, context: TTSRouteContext) {
           sseEvent('metadata', {
             totalParagraphs: paragraphs.length,
             totalWords: paragraphs.reduce((sum, p) => sum + p.wordCount, 0),
+            // Whole article (independent of startParagraph) so the client can
+            // estimate paragraph start times for seeking and resume
+            paragraphWordCounts: paragraphs.map((p) => p.wordCount),
             articleTitle: article.title,
             language,
           }),

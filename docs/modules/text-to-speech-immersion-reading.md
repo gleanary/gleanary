@@ -63,7 +63,7 @@ Streams TTS audio and word timestamps for an article. Returns a Server-Sent Even
 
 ```
 event: metadata
-data: {"totalParagraphs": 12, "articleTitle": "How to Do Great Work", "language": "en"}
+data: {"totalParagraphs": 12, "totalWords": 1840, "paragraphWordCounts": [42, 180, ...], "articleTitle": "How to Do Great Work", "language": "en"}
 
 event: audio
 data: {"paragraphIndex": 0, "audioContent": "<base64>", "format": "mp3"}
@@ -302,6 +302,8 @@ interface UseTTSPlayerReturn {
 6. Emit `currentParagraph` and `currentWordIndex` for the highlighter
 7. Handle pause/resume via `audioContext.suspend()` / `audioContext.resume()`
 8. Skip forward/back: calculate target time, find corresponding paragraph + word, seek
+9. **Word tokens:** Inworld returns whitespace and punctuation as their own word tokens (`["Building", " ", "better", ", "]`, sometimes a leading `""`). The hook drops every token without a letter or digit (`isSpokenToken()` in `src/lib/tts-tokens.ts`) along with its timestamps, and the highlighter indexes only DOM parts that pass the same check, so both sides number the same words
+10. **Absolute timeline + seek:** the `metadata` event's `paragraphWordCounts` give each paragraph an estimated start time (150 WPM). A stream started mid-article (resume or seek) begins its timeline at that estimate, so the progress bar shows the true position. `seekTo` plays loaded audio directly; if the target isn't loaded yet (or is before the stream's start paragraph) it restarts the stream at the estimated paragraph and in-paragraph offset
 
 ### `src/components/reader/listen-button.tsx`
 

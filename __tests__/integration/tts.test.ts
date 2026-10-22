@@ -19,6 +19,7 @@ vi.mock('@/db', () => dbMock.mock);
 import { POST as createArticle } from '@/app/api/articles/route';
 import { GET as ttsStream } from '@/app/api/tts/[articleId]/route';
 import { GET as ttsVoices } from '@/app/api/tts/voices/route';
+import { prepareArticleFromHtml } from '@/lib/tts-text';
 
 setupHandlers(
   http.post('https://api.inworld.ai/tts/v1/voice:stream', () => {
@@ -119,6 +120,20 @@ describe('TTS API', () => {
       expect(metadata.articleTitle).toBe('TTS Test Article');
       expect(metadata.totalParagraphs).toBeGreaterThan(0);
       expect(metadata.language).toBeTruthy();
+    });
+
+    it('includes per-paragraph word counts in metadata for the whole article', async () => {
+      const res = await ttsStream(getReq(`/api/tts/${articleId}?startParagraph=1`), {
+        params: Promise.resolve({ articleId: String(articleId) }),
+      });
+      const text = await res.text();
+
+      const metadataMatch = text.match(/event: metadata\ndata: (.+)\n/);
+      expect(metadataMatch).not.toBeNull();
+      const metadata = JSON.parse(metadataMatch![1]!);
+      const paragraphs = prepareArticleFromHtml(validArticle.contentHtml, validArticle.contentText);
+      expect(metadata.paragraphWordCounts).toEqual(paragraphs.map((p) => p.wordCount));
+      expect(metadata.paragraphWordCounts).toHaveLength(metadata.totalParagraphs);
     });
 
     it('returns 404 for nonexistent article', async () => {
