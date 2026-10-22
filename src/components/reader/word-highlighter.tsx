@@ -2,6 +2,7 @@
 
 import { useEffect, useRef } from 'react';
 import { BLOCK_SELECTORS } from '@/lib/reading-anchor';
+import { isSpokenToken } from '@/lib/tts-tokens';
 import type { TTSStatus } from '@/types';
 
 const ACTIVE_CLASS = 'tts-active-word';
@@ -127,7 +128,8 @@ function findBlockByText(container: HTMLElement, ttsWords: string[]): HTMLElemen
     if (!text.trim()) continue;
 
     // Extract first N words from the block's text
-    const blockWords = text.trim().split(/\s+/).slice(0, sampleSize);
+    // Skip emoji/punctuation-only parts: TTS words are already filtered the same way
+    const blockWords = text.trim().split(/\s+/).filter(isSpokenToken).slice(0, sampleSize);
     const blockFingerprint = blockWords.map(normalizeWord).join(' ');
 
     // Score based on common prefix length
@@ -181,14 +183,16 @@ function wrapWordsInBlock(block: HTMLElement): void {
     const fragment = document.createDocumentFragment();
 
     for (const part of parts) {
-      if (/^\s+$/.test(part) || part === '') {
-        fragment.appendChild(document.createTextNode(part));
-      } else {
+      // Only spoken words get an index, so punctuation like "," or "—" can't
+      // shift the highlight away from the TTS word index
+      if (isSpokenToken(part)) {
         const span = document.createElement('span');
         span.setAttribute(WORD_ATTR, String(wordIndex));
         span.textContent = part;
         fragment.appendChild(span);
         wordIndex++;
+      } else {
+        fragment.appendChild(document.createTextNode(part));
       }
     }
 
