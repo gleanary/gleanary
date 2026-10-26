@@ -37,6 +37,7 @@ import {
   manifestChangeIsScoped,
   parseUpdatedDependencies,
   pendingChecks,
+  registryFact,
   updatesKey,
 } from './gate.mjs';
 import {
@@ -98,7 +99,7 @@ const rawFile = (path, ref) =>
 
 async function getJson(url) {
   const res = await fetch(url, { signal: AbortSignal.timeout(60_000) });
-  if (!res.ok) throw new Error(`${url}: HTTP ${res.status}`);
+  if (!res.ok) throw Object.assign(new Error(`${url}: HTTP ${res.status}`), { status: res.status });
   return res.json();
 }
 
@@ -143,7 +144,10 @@ const slimPackument = (doc) => ({
 const packument = (name) => {
   if (!packuments.has(name)) {
     const url = `https://registry.npmjs.org/${name.replace('/', '%2f')}`;
-    packuments.set(name, getJson(url).then(slimPackument, () => null));
+    // A 404 is an answer (the package or version is not on npm: escalate via the empty
+    // packument); anything else (timeout, 5xx) is an outage (null: the gate waits).
+    const missing = { time: {}, versions: {} };
+    packuments.set(name, getJson(url).then(slimPackument, (err) => (err.status === 404 ? missing : null)));
   }
   return packuments.get(name);
 };
@@ -166,27 +170,7 @@ async function registryFacts(changes, direct) {
     while (next < changes.length) {
       const i = next++;
       const { name, from, to } = changes[i];
-      const doc = await packument(name);
-      const prev = from ? doc?.versions?.[from] : null;
-      const cur = doc?.versions?.[to];
-      facts[i] = {
-        name,
-        version: to,
-        direct: direct.has(name),
-        publishedAt: doc?.time[to] ?? null,
-        prevAttested: Boolean(prev?.attested),
-        attested: Boolean(cur?.attested),
-        prevPublisher: prev?.publisher ?? null,
-        publisher: cur?.publisher ?? null,
-        prevInstallCmd: prev?.installCmd ?? null,
-        installCmd: cur?.installCmd ?? null,
-        prevRepo: prev?.repo ?? null,
-        repo: cur?.repo ?? null,
-        repoUrl: cur?.repo ? `https://${cur.repo}` : null,
-        // The registry did not answer at all (outage), as opposed to answering without this
-        // version's publish time: the gate waits on the first and escalates on the second.
-        registryError: doc === null,
-      };
+      facts[i] = registryFact({ name, from, to, direct: direct.has(name), doc: await packument(name) });
     }
   };
   await Promise.all(Array.from({ length: REGISTRY_CONCURRENCY }, worker));
@@ -482,7 +466,7 @@ async function evaluatePr(number, { main, now, assessment, slotFree, by = 'agent
   let outcome = decide({
     rules,
     mode: MODE,
-    waived: new Set(override?.waive ?? []),
+    waived: new Map((override?.waive ?? []).map((w) => [w.id, w.detail])),
     held: meta.labels.includes(LABEL.hold),
     slotFree,
   });
@@ -822,14 +806,21 @@ const commands = {
         dispatch();
         return;
       }
-      const waive = record.rules.filter((r) => r.kind === 'soft' && r.status !== 'pass').map((r) => r.id);
+      // Only rules that FAIL now, each with the reason it fails: a pending rule (the review
+      // has not run yet) is not something the owner has seen, so it is never waived.
+      const waive = record.rules
+        .filter((r) => r.kind === 'soft' && r.status === 'fail')
+        .map((r) => ({ id: r.id, detail: r.detail }));
       const hard = record.rules.filter((r) => r.kind === 'hard' && r.status === 'fail').map((r) => r.id);
+      const pending = record.rules.filter((r) => r.status === 'pending').map((r) => r.id);
       if (!waive.length) {
         comment(
           number,
           hard.length
-            ? `\`/deps merge\` only waives soft gates, and none is blocking. Hard gates block this PR: ${hard.join(', ')}.`
-            : 'Nothing for `/deps merge` to waive: no soft gate is blocking this PR.',
+            ? `\`/deps merge\` only waives soft gates, and none is failing. Hard gates block this PR: ${hard.join(', ')}.`
+            : pending.length
+              ? `Nothing is failing yet: still waiting on ${pending.join(', ')}. Reply \`/deps merge\` once the decision record shows what fails.`
+              : 'Nothing for `/deps merge` to waive: no soft gate is failing on this PR.',
         );
         return;
       }

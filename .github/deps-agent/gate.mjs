@@ -183,6 +183,42 @@ export function diffLockfiles(base, head) {
 }
 
 /**
+ * One registry fact, built from a slimmed packument (cli.mjs `slimPackument`). Pure, and
+ * the only place the fact shape is defined: the CLI maps over it and the tests call it, so
+ * a test fixture can never drift from what the CLI produces.
+ * @param {object} p
+ * @param {string} p.name - package name
+ * @param {string|null} p.from - previous version (null for a new package)
+ * @param {string} p.to - introduced version
+ * @param {boolean} p.direct - declared by the PR
+ * @param {{time: Record<string, string>, versions: Record<string, {attested: boolean,
+ *   publisher: string|null, installCmd: string|null, repo: string|null}>}|null} p.doc
+ *   slimmed packument; null when the registry did not answer (an outage), as opposed to an
+ *   answer without this version: the gate waits on the first and escalates on the second
+ * @returns {object} the registry fact the gate rules read
+ */
+export function registryFact({ name, from, to, direct, doc }) {
+  const prev = from ? doc?.versions?.[from] : null;
+  const cur = doc?.versions?.[to];
+  return {
+    name,
+    version: to,
+    direct,
+    publishedAt: doc?.time[to] ?? null,
+    prevAttested: Boolean(prev?.attested),
+    attested: Boolean(cur?.attested),
+    prevPublisher: prev?.publisher ?? null,
+    publisher: cur?.publisher ?? null,
+    prevInstallCmd: prev?.installCmd ?? null,
+    installCmd: cur?.installCmd ?? null,
+    prevRepo: prev?.repo ?? null,
+    repo: cur?.repo ?? null,
+    repoUrl: cur?.repo ? `https://${cur.repo}` : null,
+    registryError: doc === null,
+  };
+}
+
+/**
  * What the published-code review diffs: declared updates with an old and a new version,
  * and transitive version changes, riskiest (install scripts) first. Shared by the diff
  * step (cli.mjs `package-diffs`) and the codeReview rule, so "what should have been
@@ -225,9 +261,8 @@ export const TRUSTED_INSTALL_SCRIPTS = new Set(['better-sqlite3', 'esbuild', 'ms
 export function installScriptChanges(lock, registry = []) {
   const gained = new Set(lock.newInstallScripts.map((key) => key.replace(/^.*node_modules\//, '')));
   const facts = new Map(registry.map((r) => [label(r), r]));
-  const unchangedAndAttested = (c) => {
+  const unchangedAndAttested = (c, r) => {
     if (!TRUSTED_INSTALL_SCRIPTS.has(c.name)) return false;
-    const r = facts.get(`${c.name}@${c.to}`);
     return (
       Boolean(r?.prevAttested && r.attested && r.installCmd) &&
       r.installCmd === r.prevInstallCmd &&
@@ -239,7 +274,10 @@ export function installScriptChanges(lock, registry = []) {
   // A package that gains a script while changing version is reported once, as "new script".
   for (const c of lock.changed) {
     if (!c.installScript || !c.from || gained.has(c.name)) continue;
-    if (unchangedAndAttested(c)) trusted.push(`${c.name}@${c.to}`);
+    const r = facts.get(`${c.name}@${c.to}`);
+    // Registry down: the install command is unknown, not changed. Cooldown keeps the PR waiting.
+    if (r?.registryError) continue;
+    if (unchangedAndAttested(c, r)) trusted.push(`${c.name}@${c.to}`);
     else offenders.push(`${c.name} ${c.from}→${c.to} (runs an install script)`);
   }
   return { offenders, trusted };
@@ -276,9 +314,11 @@ const label = (r) => `${r.name}@${r.version}`;
  * npm only accepts a provenance publish when package.json's `repository.url` matches the
  * attestation's source repo. So a stolen token publishing "with provenance" from the
  * attacker's own GitHub repo has to change `repository`: comparing it with the previous
- * version's catches that, where a bare "has an attestation" check does not.
+ * version's catches that, where a bare "has an attestation" check does not. Only attested
+ * versions are compared: without an attestation `repository` is free text an attacker would
+ * simply keep, while legitimate moves (org renames, transfers) would escalate for nothing.
  */
-const repoChanged = (r) => Boolean(r.prevRepo && r.repo && r.prevRepo !== r.repo);
+const repoChanged = (r) => Boolean(r.attested && r.prevRepo && r.repo && r.prevRepo !== r.repo);
 
 /** Author email of every commit Dependabot creates (GitHub signs them). */
 export const DEPENDABOT_COMMIT_EMAIL = '49699333+dependabot[bot]@users.noreply.github.com';
@@ -425,6 +465,9 @@ export function evaluateRules(f) {
   const injected = Boolean(f.assessment?.injectionSuspected);
   const targets = diffTargets(f);
   const scripts = installScriptChanges(f.lock, f.registry);
+  // An npm registry outage leaves facts empty, not suspicious: rules that read them skip
+  // those entries, and the cooldown rule keeps the PR waiting until the registry answers.
+  const reachable = f.registry.filter((r) => !r.registryError);
 
   return [
     authorRule(f),
@@ -480,7 +523,7 @@ export function evaluateRules(f) {
     cooldownRule(f.registry, f.now),
     unless(
       'provenance',
-      f.registry.flatMap((r) => {
+      reachable.flatMap((r) => {
         if (repoChanged(r)) return [`${label(r)} (source repo ${r.prevRepo} → ${r.repo})`];
         return r.prevAttested && !r.attested ? [`${label(r)} (provenance dropped)`] : [];
       }),
@@ -492,7 +535,7 @@ export function evaluateRules(f) {
     // malware and (within budget) the code review instead.
     unless(
       'publisher',
-      f.registry
+      reachable
         .filter((r) => r.direct && (!r.publisher || (r.prevPublisher && r.publisher !== r.prevPublisher)))
         .map((r) => `${r.name} (${r.prevPublisher ?? '?'} → ${r.publisher ?? '?'})`),
       'publisher changed',
@@ -522,19 +565,20 @@ export function evaluateRules(f) {
  * @param {object} p
  * @param {{kind: string, status: string}[]} p.rules - from evaluateRules
  * @param {'off'|'shadow'|'merge'} p.mode - DEPS_AGENT_MODE
- * @param {Set<string>} [p.waived] - soft rule ids the owner's `/deps merge` waived for this
- *   exact lockfile; only those are skipped, so a soft rule that starts failing after the
- *   override (e.g. a rebase pulled a new transitive version) escalates again
+ * @param {Map<string, string>} [p.waived] - soft rules the owner's `/deps merge` waived for
+ *   this exact lockfile, each with the detail it failed with at the time. A rule is skipped
+ *   only while it still fails with that same detail: a rule that starts failing later, or
+ *   fails for a different reason (e.g. a re-assessment that finds suspicious code), or is
+ *   merely pending (not assessed yet), is not covered
  * @param {boolean} p.held - the PR carries the deps:hold label
  * @param {boolean} p.slotFree - no merge has happened yet in this run
  * @returns {'held'|'escalate'|'wait'|'would-merge'|'queued'|'merge'} the outcome
  */
-export function decide({ rules, mode, waived = new Set(), held, slotFree }) {
+export function decide({ rules, mode, waived = new Map(), held, slotFree }) {
   if (held) return 'held';
-  const isWaived = (r) => r.kind === 'soft' && waived.has(r.id);
+  const isWaived = (r) => r.kind === 'soft' && r.status === 'fail' && waived.get(r.id) === r.detail;
   if (rules.some((r) => r.kind === 'hard' && r.status === 'fail')) return 'escalate';
   if (rules.some((r) => r.kind === 'soft' && r.status === 'fail' && !isWaived(r))) return 'escalate';
-  // A waived rule that is merely pending (e.g. the verdict, not assessed yet) does not block.
   const blocking = rules.filter((r) => r.status !== 'pass' && !isWaived(r));
   if (blocking.length) return 'wait';
   if (mode !== 'merge') return 'would-merge';

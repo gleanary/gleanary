@@ -38,6 +38,7 @@ interface Comment {
 interface FakeState {
   withMs: boolean;
   msPublishedAt: string;
+  registryStatus: number;
   headSha: string;
   mergeable: boolean;
   fresh: boolean;
@@ -192,6 +193,13 @@ const record = () =>
   decodeRecord(state.comments.find((c) => c.body.includes('deps-agent:record'))?.body ?? '') as {
     outcome?: string;
   } | null;
+/** The override `/deps merge` records after an escalation on the verdict. */
+const verdictOverride = () => ({
+  versions: 'zod@4.6.7',
+  lock: headFingerprint(),
+  waive: [{ id: 'verdict', detail: 'assessment: escalate' }],
+  by: 'owner',
+});
 const assessed = (verdict: 'merge' | 'escalate') => ({
   key: assessmentKey({
     updates: [{ name: 'zod', version: '4.6.7' }],
@@ -202,7 +210,7 @@ const assessed = (verdict: 'merge' | 'escalate') => ({
   assessment: {
     verdict,
     summary: 'test',
-    codeReview: { coverage: 'full', suspicious: [] },
+    codeReview: { coverage: 'full', suspicious: [] as { file: string; finding: string }[] },
     ...(verdict === 'escalate'
       ? { escalation: { question: 'Take it?', recommendation: 'Hold', options: ['merge', 'hold'] } }
       : {}),
@@ -222,6 +230,7 @@ beforeAll(async () => {
   vi.stubGlobal(
     'fetch',
     vi.fn(async (url: string) => {
+      if (state.registryStatus !== 200) return new Response('{}', { status: state.registryStatus });
       const doc = String(url).endsWith('/ms')
         ? {
             time: { '2.1.3': '2026-01-01T00:00:00Z', '2.1.4': state.msPublishedAt },
@@ -243,6 +252,7 @@ beforeEach(() => {
   state = {
     withMs: false,
     msPublishedAt: '2026-10-01T00:00:00Z',
+    registryStatus: 200,
     headSha: 'head1',
     mergeable: true,
     fresh: true,
@@ -287,10 +297,7 @@ describe('evaluatePr', () => {
   it('applies an override written by the App, and survives a rebase', async () => {
     state.comments.push({
       id: 1,
-      body: renderOverride(
-        { versions: 'zod@4.6.7', lock: headFingerprint(), waive: ['verdict'], by: 'owner' },
-        '',
-      ),
+      body: renderOverride(verdictOverride(), ''),
       user: { login: BOT, type: 'Bot' },
     });
     await cli.evaluatePr(PR, {
@@ -305,10 +312,7 @@ describe('evaluatePr', () => {
   it('ignores an override marker pasted by anyone else', async () => {
     state.comments.push({
       id: 1,
-      body: renderOverride(
-        { versions: 'zod@4.6.7', lock: headFingerprint(), waive: ['verdict'], by: 'owner' },
-        '',
-      ),
+      body: renderOverride(verdictOverride(), ''),
       user: { login: 'mallory', type: 'User' },
     });
     const { outcome } = await cli.evaluatePr(PR, {
@@ -324,10 +328,7 @@ describe('evaluatePr', () => {
   it('drops an override once a rebase changes the lockfile, and says why', async () => {
     state.comments.push({
       id: 1,
-      body: renderOverride(
-        { versions: 'zod@4.6.7', lock: headFingerprint(), waive: ['verdict'], by: 'owner' },
-        '',
-      ),
+      body: renderOverride(verdictOverride(), ''),
       user: { login: BOT, type: 'Bot' },
     });
     state.withMs = true; // the rebase re-resolved the lockfile: ms is now introduced too
@@ -424,6 +425,24 @@ describe('plan', () => {
     state.withMs = true;
     state.headSha = 'head3';
     expect(await planned()).toEqual([PR]);
+  });
+});
+
+describe('npm registry failures', () => {
+  const evaluate = () =>
+    cli.evaluatePr(PR, { main: healthy, now: NOW, assessment: assessed('merge'), slotFree: true });
+
+  it('waits through a registry outage instead of pinging the owner', async () => {
+    state.registryStatus = 503;
+    const { outcome } = await evaluate();
+    expect(outcome).toBe('wait');
+    expect(pings()).toHaveLength(0);
+  });
+
+  it('escalates when npm answers 404 (the package is not on the registry)', async () => {
+    state.registryStatus = 404;
+    const { outcome } = await evaluate();
+    expect(outcome).toBe('escalate');
   });
 });
 
@@ -528,6 +547,29 @@ describe('command', () => {
     expect(merges()).toHaveLength(0);
     // The command only appended the override comment: the record is left to `act`.
     expect(state.writes.slice(writesBefore).every((w) => w.method === 'POST')).toBe(true);
+  });
+
+  it('does not waive what was still pending: a later suspicious review escalates', async () => {
+    // First evaluation before the review: verdict and codeReview are pending, nothing fails.
+    await cli.evaluatePr(PR, { main: healthy, now: NOW, slotFree: true });
+    await run('/deps merge');
+    expect(overrideComments()).toHaveLength(0);
+    expect(state.comments.at(-1)?.body).toContain('Nothing is failing yet');
+
+    // Then the assessment arrives on the same lockfile and flags suspicious code.
+    const flagged = assessed('escalate');
+    flagged.assessment.codeReview = {
+      coverage: 'full',
+      suspicious: [{ file: 'install.js', finding: 'downloads and runs a remote script' }],
+    };
+    const { outcome } = await cli.evaluatePr(PR, {
+      main: healthy,
+      now: NOW,
+      assessment: flagged,
+      slotFree: true,
+    });
+    expect(outcome).toBe('escalate');
+    expect(merges()).toHaveLength(0);
   });
 
   it('refuses to approve when the PR moved since the last evaluation', async () => {

@@ -49,10 +49,14 @@ Run the babysitter as a scheduled GitHub Actions workflow (`deps-agent.yml`) spl
 8. **An owner override approves one evaluated state.** `/deps merge` records the declared
    versions, the lockfile fingerprint and the soft rules failing in the last evaluation, and
    it refuses if the PR changed since then (Dependabot can push a newer version after the
-   escalation). Only those rules are waived, only for that lockfile. A rebase that brings
-   in different dependency versions, or a soft rule that starts failing later, escalates
-   again, with an explanation. An earlier version waived every soft rule for the declared
-   versions, so a rebase could slip a new transitive problem past the owner unseen.
+   escalation). Only those rules are waived, each only while it fails for the reason the
+   owner saw, and only for that lockfile; a rule that was merely pending is never waived.
+   A rebase that brings in different dependency versions, a soft rule that starts failing
+   later, or a waived rule failing for another reason escalates again, with an explanation.
+   Two earlier versions were too broad: the first waived every soft rule for the declared
+   versions (a rebase could slip a new transitive problem past the owner); the second also
+   waived pending rules, so an override given before the review ran covered whatever the
+   review found.
 9. **Roll out in `shadow` mode first.** Shadow mode runs everything (assessments, gates,
    decision records, escalations, the dashboard) except the merge: a PR that would merge
    shows "would merge" instead. The owner compares those verdicts with their own judgment
@@ -255,7 +259,10 @@ review, so it is not the preferred lever.
   A rebase that re-resolves the lockfile triggers a new assessment.
 - Hard gates also check where the change came from: the head commit must be a signed
   Dependabot commit, and every introduced version must resolve from registry.npmjs.org.
-- An npm registry outage makes PRs wait (like a malware-feed outage) instead of escalating
-  every open PR.
+- An npm registry outage (timeout, 5xx) makes PRs wait, like a malware-feed outage, instead
+  of escalating every open PR: the registry-based rules skip the versions they could not
+  check, and the cooldown rule waits. A 404 is an answer (the version is not on npm) and
+  escalates. A first attempt only made the cooldown wait, and the publisher rule still
+  escalated on the empty facts; the tests now build outage facts exactly as the CLI does.
 - Requires a GitHub App, an Anthropic API key (with its own spend limit), and repository
   variables; see `docs/deps/README.md`.

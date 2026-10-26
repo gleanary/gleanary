@@ -72,7 +72,9 @@ export function fromApp(c, bot) {
  * versions, the exact set of introduced lockfile versions, and the soft rules that were
  * failing when the owner looked. Anything that changes after that (a rebase that pulls new
  * transitive versions, a soft rule that starts failing) is not covered.
- * @typedef {{versions: string, lock: string, waive: string[], by: string}} Override
+ * Each waived rule keeps the detail it failed with: the same rule failing for another
+ * reason later (e.g. a re-assessment flagging different code) is not covered.
+ * @typedef {{versions: string, lock: string, waive: {id: string, detail: string}[], by: string}} Override
  */
 
 /**
@@ -83,10 +85,12 @@ export function fromApp(c, bot) {
  */
 export function renderOverride(override, reason) {
   const encoded = Buffer.from(JSON.stringify(override)).toString('base64');
-  const waived = override.waive.length ? override.waive.map((id) => `\`${id}\``).join(', ') : 'none';
+  const waived = override.waive.length
+    ? override.waive.map((w) => `\`${w.id}\` (${neutralize(w.detail, 120)})`).join(', ')
+    : 'none';
   return [
     `Override recorded by ${neutralize(override.by, 60)} for \`${neutralize(override.versions, 300)}\`, waiving: ${waived}.`,
-    'It covers this exact lockfile: if a rebase brings in different dependency versions, or another soft gate starts failing, deps-agent asks again. Hard gates always apply. A run has been started to act on it.',
+    'It covers this exact lockfile and these exact failures: if a rebase brings in different dependency versions, another gate starts failing, or a waived gate fails for a different reason, deps-agent asks again. Hard gates always apply. A run has been started to act on it.',
     reason.trim() ? `\n> ${neutralize(reason, 300)}` : '',
     `<!-- deps-agent:override ${encoded} -->`,
   ].join('\n');
@@ -107,7 +111,8 @@ export function overridesFrom(comments, bot) {
     if (!m) continue;
     try {
       const o = JSON.parse(Buffer.from(m[1], 'base64').toString('utf8'));
-      if (typeof o.versions === 'string' && typeof o.lock === 'string' && Array.isArray(o.waive)) overrides.push(o);
+      const waiveOk = Array.isArray(o.waive) && o.waive.every((w) => typeof w?.id === 'string' && typeof w?.detail === 'string');
+      if (typeof o.versions === 'string' && typeof o.lock === 'string' && waiveOk) overrides.push(o);
     } catch {
       // corrupt marker: ignore
     }

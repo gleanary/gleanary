@@ -37,8 +37,8 @@ PR declares (direct) **and** the dependency versions that change with them (tran
 | semver         | soft      | patch or minor; 0.x minors, 0.0.x and prereleases count as major                |
 | installScripts | soft      | no package gains an install script, and no package that runs one changes version. Exception (option B): a new version of `better-sqlite3`, `esbuild`, `msw` or `unrs-resolver` passes when its install command is identical to the previous version's and both versions have npm provenance (cooldown and the code review still apply) |
 | newPackages    | soft      | ≤ 15 new packages in the lockfile                                               |
-| cooldown       | soft      | every introduced version is ≥ 7 days old. A young transitive version **waits** until it ages; a young direct version (a security update) or a publish time the registry omits escalates; a registry that does not answer makes the PR **wait** |
-| provenance     | soft      | no introduced version lost the npm provenance its previous version had, or changed source repository (`repository.url`). npm ties provenance to that field, so a stolen token publishing "with provenance" from another repo has to change it |
+| cooldown       | soft      | every introduced version is ≥ 7 days old. A young transitive version **waits** until it ages; a young direct version (a security update) or a version npm does not know (404, no publish time) escalates. When the registry does not answer (timeout, 5xx), the PR **waits**, and the registry-based rules (provenance, publisher, install scripts) skip the versions they could not check |
+| provenance     | soft      | no introduced version lost the npm provenance its previous version had, and no attested version changed source repository (`repository.url`). npm ties provenance to that field, so a stolen token publishing "with provenance" from another repo has to change it. Unattested versions are not compared: their `repository` is free text |
 | publisher      | soft      | each direct package has the same npm publisher as its previous version (direct only: transitive maintainer changes are too common) |
 | audit          | soft      | `npm audit` finds no advisory that main does not already have                   |
 | codeReview     | soft      | Claude's review of the published code diff found nothing suspicious. Covers the direct packages and up to 10 transitive versions (install-script packages first); coverage is reported, and coverage "none" fails when there were version changes to review (a review that saw nothing is not a pass) |
@@ -49,9 +49,11 @@ PR declares (direct) **and** the dependency versions that change with them (tran
 
 A failing **hard** or **soft** rule escalates. A failing **transient** rule waits for the
 next run. The owner's `/deps merge` approves the exact state the owner last saw: it waives
-only the **soft** rules that were failing in that evaluation, for those package versions
-and that exact lockfile. A rebase that brings in different dependency versions, or a soft
-rule that starts failing later, escalates again. If the PR changed since the last
+only the **soft** rules that were failing in that evaluation, each for the exact reason it
+failed, for those package versions and that exact lockfile. A rule that was only pending
+(the review had not run yet) is never waived. A rebase that brings in different dependency
+versions, a soft rule that starts failing later, or a waived rule failing for a different
+reason (e.g. a re-assessment that flags suspicious code) escalates again. If the PR changed since the last
 evaluation, `/deps merge` refuses and asks the owner to look again. Hard rules are
 re-checked on every commit and can never be waived.
 

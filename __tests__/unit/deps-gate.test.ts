@@ -14,6 +14,7 @@ import {
   lockFingerprint,
   manifestChangeIsScoped,
   parseUpdatedDependencies,
+  registryFact,
   updatesKey,
 } from '../../.github/deps-agent/gate.mjs';
 import {
@@ -63,29 +64,46 @@ function cleanFacts(overrides: Record<string, unknown> = {}): Facts {
   } as Facts;
 }
 
+/** A registry fact as the CLI builds it when the registry does not answer (same builder). */
+const outageFact = (name: string, version: string, direct: boolean) =>
+  registryFact({ name, from: null, to: version, direct, doc: null });
+
 const statusOf = (facts: Facts, id: string) =>
   evaluateRules(facts).find((r) => r.id === id)?.status;
+const detailOf = (facts: Facts, id: string) =>
+  evaluateRules(facts).find((r) => r.id === id)?.detail ?? '';
+/** A 0.x minor bump: fails `semver` (no compatibility promise below 1.0). */
+const SDK_BUMP = {
+  name: '@anthropic-ai/sdk',
+  type: 'direct:production',
+  from: '0.115.0',
+  to: '0.135.0',
+};
 
 const SOFT_RULES = Object.entries(RULE_KIND)
   .filter(([, kind]) => kind === 'soft')
   .map(([id]) => id);
 
-/** `override: true` waives every soft rule (what an owner override can at most do). */
+/** `override: true` waives every soft rule as it fails now (the most an override can do). */
 const outcome = (
   facts: Facts,
   opts: Partial<{
     mode: string;
     override: boolean;
-    waived: Set<string>;
+    waived: Map<string, string>;
     held: boolean;
     slotFree: boolean;
   }> = {},
 ) => {
   const { override, ...rest } = opts;
+  const rules = evaluateRules(facts);
+  const everySoft = new Map(
+    rules.filter((r) => SOFT_RULES.includes(r.id)).map((r) => [r.id, r.detail]),
+  );
   return decide({
-    rules: evaluateRules(facts),
+    rules,
     mode: 'merge',
-    waived: override ? new Set(SOFT_RULES) : new Set(),
+    waived: override ? everySoft : new Map(),
     held: false,
     slotFree: true,
     ...rest,
@@ -561,23 +579,18 @@ describe('evaluateRules + decide', () => {
     const reg = () => cleanFacts().registry[0]!;
 
     it('waives only the soft rules the override names', () => {
-      const sdk = {
-        name: '@anthropic-ai/sdk',
-        type: 'direct:production',
-        from: '0.115.0',
-        to: '0.135.0',
-      };
-      const facts = cleanFacts({ updates: [sdk] });
-      expect(outcome(facts, { waived: new Set(['semver']) })).toBe('merge');
+      const facts = cleanFacts({ updates: [SDK_BUMP] });
+      const semver = detailOf(facts, 'semver');
+      expect(outcome(facts, { waived: new Map([['semver', semver]]) })).toBe('merge');
       // After a rebase, a new transitive version drops provenance: not covered, escalate.
       const later = cleanFacts({
-        updates: [sdk],
+        updates: [SDK_BUMP],
         registry: [
           reg(),
           { ...reg(), name: 'esbuild', version: '0.28.3', direct: false, attested: false },
         ],
       });
-      expect(outcome(later, { waived: new Set(['semver']) })).toBe('escalate');
+      expect(outcome(later, { waived: new Map([['semver', semver]]) })).toBe('escalate');
     });
 
     it('fails a head commit that is not a signed Dependabot commit, even with an override', () => {
@@ -621,9 +634,86 @@ describe('evaluateRules + decide', () => {
     });
 
     it('waits, rather than escalating, when the npm registry is unreachable', () => {
-      const down = cleanFacts({ registry: [{ ...reg(), publishedAt: null, registryError: true }] });
+      const down = cleanFacts({ registry: [outageFact('zod', '4.6.7', true)] });
       expect(statusOf(down, 'cooldown')).toBe('pending');
+      expect(statusOf(down, 'publisher')).toBe('pass');
+      expect(statusOf(down, 'provenance')).toBe('pass');
       expect(outcome(down)).toBe('wait');
+    });
+
+    it('waits during an outage even when a trusted install-script package is bumped', () => {
+      const down = cleanFacts({
+        lock: {
+          added: [],
+          newInstallScripts: [],
+          changed: [
+            {
+              name: 'esbuild',
+              from: '0.28.1',
+              to: '0.28.2',
+              installScript: true,
+              resolved: 'https://registry.npmjs.org/esbuild/-/esbuild-0.28.2.tgz',
+              bundled: false,
+            },
+          ],
+        },
+        registry: [reg(), outageFact('esbuild', '0.28.2', false)],
+      });
+      expect(statusOf(down, 'installScripts')).not.toBe('fail');
+      expect(outcome(down)).toBe('wait');
+    });
+
+    it('ignores a repository change on a version without provenance (free text, nothing to verify)', () => {
+      const moved = cleanFacts({
+        registry: [
+          reg(),
+          {
+            ...reg(),
+            name: 'ms',
+            version: '2.1.4',
+            direct: false,
+            prevAttested: false,
+            attested: false,
+            prevRepo: 'github.com/vercel/ms',
+            repo: 'github.com/vercel-labs/ms',
+          },
+        ],
+      });
+      expect(statusOf(moved, 'provenance')).toBe('pass');
+    });
+  });
+
+  describe('fourth review: an override covers exactly what the owner saw', () => {
+    const verdictFail = { id: 'verdict', detail: 'assessment: escalate' };
+
+    it('does not let an override taken before the assessment cover what the assessment finds', () => {
+      // The owner waived `verdict` as it failed then; the review now flags suspicious code.
+      const suspicious = cleanFacts({
+        assessment: {
+          verdict: 'escalate',
+          codeReview: {
+            coverage: 'full',
+            suspicious: [{ file: 'install.js', finding: 'fetches a remote script' }],
+          },
+        },
+      });
+      expect(outcome(suspicious, { waived: new Map([[verdictFail.id, verdictFail.detail]]) })).toBe(
+        'escalate',
+      );
+    });
+
+    it('treats a waived rule failing for a different reason as a new failure', () => {
+      const facts = cleanFacts({ updates: [SDK_BUMP] });
+      const detail = detailOf(facts, 'semver');
+      expect(outcome(facts, { waived: new Map([['semver', detail]]) })).toBe('merge');
+      expect(outcome(facts, { waived: new Map([['semver', 'something else']]) })).toBe('escalate');
+    });
+
+    it('never waives a rule that is only pending (not assessed yet)', () => {
+      const unassessed = cleanFacts({ assessment: null });
+      expect(outcome(unassessed, { waived: new Map([['verdict', 'not assessed yet']]) })).toBe(
+        'wait',
+      );
     });
   });
 
@@ -640,8 +730,9 @@ describe('evaluateRules + decide', () => {
     expect(outcome(cleanFacts({ assessment: null }))).toBe('wait');
   });
 
-  it('lets an owner override stand in for a missing assessment', () => {
-    expect(outcome(cleanFacts({ assessment: null }), { override: true })).toBe('merge');
+  it('does not let an owner override stand in for a missing assessment', () => {
+    // Only failing rules can be waived: the review must run before anything merges.
+    expect(outcome(cleanFacts({ assessment: null }), { override: true })).toBe('wait');
   });
 
   it('waits (does not escalate) on conflicts, stale lockfile or unhealthy main', () => {
