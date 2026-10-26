@@ -1,0 +1,190 @@
+# Unattended Dependabot babysitter. Policy: .github/deps-agent/policy.md
+#
+# plan    (read-only)         which PRs need a fresh assessment
+# assess  (read-only, LLM)    one job per PR; output is a validated JSON artifact
+# act     (GitHub App token)  deterministic gate, records, escalations, <= 1 merge
+# command (GitHub App token)  the owner's `/deps ...` replies on a PR
+#
+# The LLM never holds a write token: assess gets a read-only GITHUB_TOKEN and no
+# id-token permission (which the action could trade for a write-capable app token).
+# Merges use the App token because merges made with GITHUB_TOKEN do not trigger the
+# push CI run that Deploy depends on.
+#
+# Setup: vars DEPS_AGENT_MODE (off|shadow|merge, default shadow), DEPS_AGENT_OWNER,
+# DEPS_AGENT_APP_ID, DEPS_AGENT_APP_SLUG, optional DEPS_AGENT_MODEL; secrets
+# ANTHROPIC_API_KEY, DEPS_AGENT_APP_KEY.
+name: Deps agent
+
+on:
+  schedule:
+    - cron: '23 */3 * * *'
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: Re-assess and evaluate only this PR number
+        required: false
+  issue_comment:
+    types: [created]
+
+permissions: {}
+
+env:
+  MODE: ${{ vars.DEPS_AGENT_MODE || 'shadow' }}
+  OWNER_LOGIN: ${{ vars.DEPS_AGENT_OWNER }}
+  APP_SLUG: ${{ vars.DEPS_AGENT_APP_SLUG }}
+  RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+jobs:
+  plan:
+    name: Plan
+    if: github.event_name != 'issue_comment' && vars.DEPS_AGENT_MODE != 'off'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+      issues: read
+      checks: read
+    outputs:
+      prs: ${{ steps.plan.outputs.prs }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/deps-agent
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+      - id: plan
+        run: node .github/deps-agent/cli.mjs plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ONLY_PR: ${{ inputs.pr }}
+
+  assess:
+    name: "Assess #${{ matrix.pr }}"
+    needs: plan
+    if: needs.plan.outputs.prs != '[]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        pr: ${{ fromJSON(needs.plan.outputs.prs) }}
+    permissions:
+      contents: read
+      pull-requests: read
+      issues: read
+      checks: read
+      actions: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      # main, never the PR head: no Dependabot-supplied code runs in this job.
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+      - name: Collect facts
+        run: node .github/deps-agent/cli.mjs facts --pr ${{ matrix.pr }} > "$RUNNER_TEMP/facts.json"
+      # `npm diff` only downloads the two published tarballs; no package code runs.
+      - name: Diff published code
+        run: node .github/deps-agent/cli.mjs package-diffs --facts "$RUNNER_TEMP/facts.json" --out .deps-agent-diffs
+      - id: prompt
+        name: Build prompt
+        run: >-
+          node .github/deps-agent/cli.mjs prompt --pr ${{ matrix.pr }}
+          --facts "$RUNNER_TEMP/facts.json" --diffs .deps-agent-diffs
+        env:
+          MODEL: ${{ vars.DEPS_AGENT_MODEL }}
+      - id: assess
+        uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          github_token: ${{ github.token }}
+          prompt: ${{ steps.prompt.outputs.prompt }}
+          claude_args: ${{ steps.prompt.outputs.claude_args }}
+      - name: Save assessment
+        run: >-
+          node .github/deps-agent/cli.mjs save-assessment --pr ${{ matrix.pr }}
+          --facts "$RUNNER_TEMP/facts.json" --out "$RUNNER_TEMP/assessment-${{ matrix.pr }}.json"
+        env:
+          ASSESSMENT: ${{ steps.assess.outputs.structured_output }}
+      - uses: actions/upload-artifact@v7
+        with:
+          name: assessment-${{ matrix.pr }}
+          path: ${{ runner.temp }}/assessment-${{ matrix.pr }}.json
+          retention-days: 7
+
+  act:
+    name: Act
+    needs: [plan, assess]
+    # Run even if some assessments failed: one PR must not block the others.
+    if: always() && needs.plan.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    concurrency:
+      group: deps-agent-act
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - id: app
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.DEPS_AGENT_APP_ID }}
+          private-key: ${{ secrets.DEPS_AGENT_APP_KEY }}
+      - uses: actions/checkout@v7
+        with:
+          token: ${{ steps.app.outputs.token }}
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+      - uses: actions/download-artifact@v7
+        continue-on-error: true
+        with:
+          pattern: assessment-*
+          merge-multiple: true
+          path: ${{ runner.temp }}/assessments
+      - run: node .github/deps-agent/cli.mjs act --assessments "$RUNNER_TEMP/assessments"
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+
+  command:
+    name: Owner command
+    if: >-
+      github.event_name == 'issue_comment' &&
+      github.event.issue.pull_request &&
+      vars.DEPS_AGENT_MODE != 'off' &&
+      startsWith(github.event.comment.body, '/deps') &&
+      github.event.comment.user.login == vars.DEPS_AGENT_OWNER
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    concurrency:
+      group: deps-agent-act
+      cancel-in-progress: false
+    permissions:
+      contents: read
+    steps:
+      - id: app
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.DEPS_AGENT_APP_ID }}
+          private-key: ${{ secrets.DEPS_AGENT_APP_KEY }}
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/deps-agent
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+      - run: node .github/deps-agent/cli.mjs command
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          PR: ${{ github.event.issue.number }}
+          COMMENTER: ${{ github.event.comment.user.login }}
+          COMMENT_BODY: ${{ github.event.comment.body }}

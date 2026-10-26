@@ -6,6 +6,12 @@ allowed-tools: Bash, Read, Grep, Glob, WebFetch, AskUserQuestion, Edit, Write, W
 
 # Babysit Dependabot PRs
 
+> **Unattended counterpart:** `.github/workflows/deps-agent.yml` runs this triage every 3 h
+> with the shared policy in `.github/deps-agent/policy.md` (deterministic gate, one merge per
+> run, decision records on each PR). Use this command for hands-on triage. Before merging
+> by hand, read the PR's deps-agent decision record, and never merge a PR labeled
+> `deps:hold`. Majors and 0.x minors follow the same escalation rules as the agent.
+
 You are triaging Dependabot dependency-bump PRs for Gleanary. Three phases: preflight →
 dossiers (fanned out, read-only) → decide (inline, serial). Workers gather evidence; **you**
 make every call and perform every mutation. Be decisive within the policy; only stop to ask
@@ -57,8 +63,10 @@ candidates, then escalations. **Never act on two PRs concurrently** — every np
   **non-attributable** to the PR — it neither blocks nor validates that PR. If main is red,
   ask the user ONCE (batched, AskUserQuestion) whether to merge the clean PRs over the
   known-pre-existing red; never treat either answer as standing policy for future runs.
-- ✅ **Auto-merge** when ALL hold: `packageRisk: clean`, and CI is green (or set to pass, or
-  red only with baseline-matching failures the user approved merging over).
+- ✅ **Auto-merge** when ALL hold: `packageRisk: clean`, CI is green (or set to pass, or
+  red only with baseline-matching failures the user approved merging over), and the
+  supply-chain checks of the local-execution fence (step 2) pass: a 7-day-old release, no
+  malware advisory, no new install script. The same checks gate deps-agent's merges.
   → `gh pr merge <n> --squash --auto`. Prefer `--auto` so branch protection is respected.
   Green CI is the verification signal — it runs the same gates as a local checkout; do not
   check out green PRs locally.
@@ -76,14 +84,34 @@ before acting (`gh pr checks <n>` / `gh run view <id> --log-failed`).
 
 - **Mechanical** (fix, push, re-wait for green): lockfile drift / peer-dep resolution,
   test snapshot updates, a type signature that shifted, an ESLint/Prettier auto-fixable nit,
-  a renamed export with a 1:1 replacement. This is the ONE case for local checkout:
-  `gh pr checkout <n>`, make the fix, run the affected gates locally
+  a renamed export with a 1:1 replacement. This is the ONE case for local checkout, and it
+  must pass the **local-execution fence** first (below): `gh pr checkout <n>`, install with
+  `npm ci --ignore-scripts`, then `npm rebuild better-sqlite3` (the only install script we
+  rely on; skip the rebuild if the bump IS better-sqlite3 and escalate instead), make the
+  fix, run the affected gates locally
   (`npm run lint && npm run typecheck && npm run test`), commit
   (`fix(deps): adapt to <pkg> <B>`), push, restore with `git checkout <original-branch>`,
   and re-monitor. Sequential only — never while another PR is mid-checkout or mid-merge.
 - **Real** (STOP, escalate): behavior/logic changes, removed APIs with no drop-in, failing
   assertions that reflect changed semantics, anything security-relevant. Ask the user with
   the log excerpt and your read of it.
+
+**Local-execution fence.** Checking out a PR and running npm or the tests executes the new
+package code on this laptop, which holds real credentials (`.env`, SSH keys, the `gh`
+token). A compromised release would run here before any gate sees it. Check out and run a
+PR locally ONLY when all of these hold for its current head commit:
+
+1. The PR's deps-agent decision record (the comment by the deps-agent App) shows
+   `cooldown`, `malware`, `installScripts`, `provenance`, `publisher` and `codeReview` all
+   passing for this head SHA. Without a current record, check it yourself:
+   - every updated version is at least 7 days old (`npm view <pkg> time --json`);
+   - no malware advisory: `gh api -X GET /advisories -f type=malware -f ecosystem=npm -f affects=<pkg>@<version>`
+     returns `[]` for each updated version;
+   - the lockfile diff adds no `"hasInstallScript": true` entry.
+2. You install with `--ignore-scripts`, as above.
+
+If any check fails, do NOT check out. Escalate to the user with the proposed fix as a patch
+in your message, and let CI (which has no secrets) be the only place the new code runs.
 
 ### 3. After every merge — overlap the rebases, refresh before acting
 
@@ -113,6 +141,8 @@ Then list: merged, escalated (with the open questions), and tracking issues open
 - **Workers never mutate**: no checkout, no merge, no push, no file edits, no `npm ci`, no
   touching `data/`. All mutations happen here in Phase C, serially. (The workflow prompt
   enforces this too — but if a dossier reports it changed something, stop and tell the user.)
+- Never run a PR's dependency code on this machine unless it passed the local-execution
+  fence (step 2).
 - Never merge a **major** bump without explicit user confirmation.
 - Never merge while required checks are pending/failing (use `--auto`, don't force).
 - Never edit `.github/workflows/`, `.env`, `infra/`, or `docs/architecture.md` to make a bump

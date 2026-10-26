@@ -6,6 +6,8 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
+- **deps-agent: unattended Dependabot babysitter** (ADR-010): `.github/workflows/deps-agent.yml` assesses each Dependabot PR with Claude on a read-only token, then a deterministic gate (`.github/deps-agent/gate.mjs`: author/files/manifest scope, required CI, semver with 0.x minors as majors, 7-day cooldown, GitHub malware feed, Claude's review of the published `npm diff`, npm provenance and publisher, new install scripts, new advisories) merges at most one PR per run once main's CI, Deploy and health check are green; escalations ping the owner, who answers with `/deps merge|hold|unhold|recheck`; decisions are recorded in a sticky PR comment and a dashboard issue; assessments and owner overrides are keyed on the package versions (not the commit), so Dependabot rebases don't re-run Claude or re-ping the owner. Starts in `shadow` mode. Process guide with sequence diagrams and runbooks: `docs/deps/README.md`. `deploy.yml` now fails when `/api/health` does not come up; `dependabot.yml` adds a 7-day cooldown and groups dev-dependency patch/minor bumps; `/babysit-deps` no longer runs PR code locally unless the release passes the same supply-chain checks, and installs with `--ignore-scripts`.
+
 - **Shared articles open automatically after saving** (mobile-save): when `/save` is opened from the Android share sheet (or an iOS Shortcut), a successful or duplicate save now navigates straight to `/reader/<id>` (history-replacing, so Back doesn't re-save); the URL is also extracted from the share `text` param (`"Title https://…"`) via `extractSharedUrl()`. Manual saves are unchanged.
 
 ### Changed

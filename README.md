@@ -253,6 +253,13 @@ Tune the per-phase model, effort, and fan-out cap in the
 See [docs/architecture.md](docs/architecture.md) for the complete system
 architecture.
 
+### Unattended dependency updates (optional)
+
+[`deps-agent.yml`](.github/workflows/deps-agent.yml) assesses Dependabot PRs
+with Claude and merges the safe ones through a deterministic gate. It is off
+unless configured. See [`docs/deps/README.md`](docs/deps/README.md) for how it
+works and the setup steps.
+
 ## Importing PDFs
 
 PDFs are first-class articles with full highlighting, AI features, and a

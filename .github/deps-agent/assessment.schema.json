@@ -1,0 +1,81 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "verdict",
+    "summary",
+    "breakingChangesAffectingUs",
+    "securityFixes",
+    "adoptableFeatures",
+    "ciRead",
+    "injectionSuspected",
+    "codeReview"
+  ],
+  "properties": {
+    "verdict": { "type": "string", "enum": ["merge", "escalate"] },
+    "summary": { "type": "string", "description": "2-4 sentences: what changed and why the verdict" },
+    "breakingChangesAffectingUs": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["change", "usage"],
+        "properties": {
+          "change": { "type": "string" },
+          "usage": { "type": "string", "description": "file:line of our code it touches" }
+        }
+      }
+    },
+    "securityFixes": { "type": "array", "items": { "type": "string" } },
+    "adoptableFeatures": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["title", "detail"],
+        "properties": {
+          "title": { "type": "string" },
+          "detail": { "type": "string", "description": "what it is and where we would use it" },
+          "link": { "type": "string" }
+        }
+      }
+    },
+    "ciRead": { "type": "string", "description": "empty when CI is green; else your read of the failure" },
+    "injectionSuspected": { "type": "boolean" },
+    "codeReview": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["coverage", "suspicious"],
+      "properties": {
+        "coverage": {
+          "type": "string",
+          "enum": ["full", "partial", "none"],
+          "description": "how much of the changed published code you actually reviewed"
+        },
+        "notes": { "type": "string" },
+        "suspicious": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["file", "finding"],
+            "properties": {
+              "file": { "type": "string" },
+              "finding": { "type": "string" }
+            }
+          }
+        }
+      }
+    },
+    "escalation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["question", "recommendation", "options"],
+      "properties": {
+        "question": { "type": "string" },
+        "recommendation": { "type": "string" },
+        "options": { "type": "array", "items": { "type": "string" } }
+      }
+    }
+  }
+}

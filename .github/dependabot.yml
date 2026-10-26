@@ -6,8 +6,29 @@ updates:
       interval: "weekly"
     open-pull-requests-limit: 10
     labels: ["dependencies"]
+    # Versions we deliberately skip: one entry per decision, with a comment giving the
+    # reason and when to revisit (see docs/deps/README.md). Uncomment to use:
+    # ignore:
+    #   # typescript-eslint does not support eslint 10 yet. Revisit when it does. (2026-10)
+    #   - dependency-name: "eslint"
+    #     versions: [">=10"]
+    # Supply-chain buffer: most hijacked releases are caught and pulled within days, and a
+    # week also gives malware feeds time to list them. Security updates ignore cooldown.
+    # deps-agent re-checks release age and the malware feed (policy.md).
+    cooldown:
+      default-days: 7
+    groups:
+      # Dev-only patch/minor bumps ship together; production bumps stay one per PR
+      # so a production regression maps to exactly one package.
+      dev-dependencies:
+        dependency-type: "development"
+        update-types: ["minor", "patch"]
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
       interval: "weekly"
     labels: ["ci"]
+    groups:
+      # Always human-reviewed (workflow edits): one PR a week, not one per action.
+      actions:
+        patterns: ["*"]

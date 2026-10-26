@@ -1,0 +1,171 @@
+// Decision records and comment rendering for the Dependabot agent.
+//
+// Each Dependabot PR carries ONE sticky comment by the agent's GitHub App: a
+// human-readable decision record plus a base64 JSON payload the next run reads
+// back. Only comments authored by the app are trusted (see cli.mjs), so a
+// forged record in a public-repo comment is ignored.
+
+export const MARKER = '<!-- deps-agent:record -->';
+const DATA = /<!-- deps-agent:data ([A-Za-z0-9+/=]+) -->/;
+const HISTORY_LIMIT = 20;
+
+const ICON = { pass: '✅', fail: '❌', pending: '⏳' };
+const OUTCOME_LABEL = {
+  merge: '🚀 merged',
+  'would-merge': '👀 would merge (shadow mode)',
+  queued: '⏭️ mergeable, queued behind another merge',
+  wait: '⏳ waiting',
+  escalate: '🙋 needs a human',
+  held: '⏸️ on hold',
+};
+
+/**
+ * Neutralize untrusted text (LLM output derived from changelogs) before it lands
+ * in a comment: HTML escaped, no @-mentions, bounded length.
+ * @param {unknown} text - text to embed
+ * @param {number} [max] - maximum length
+ * @returns {string} safe markdown text
+ */
+export function neutralize(text, max = 1500) {
+  const s = String(text ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/@/g, '@\u200b');
+  return s.length > max ? `${s.slice(0, max)}…` : s;
+}
+
+/** neutralize() for a markdown table cell: also keeps `|` and newlines from breaking the row. */
+const cell = (text, max) => neutralize(text, max).replace(/\|/g, '\\|').replace(/\n/g, ' ');
+
+/**
+ * Read the JSON payload back from a record comment body.
+ * @param {string} body - comment body
+ * @returns {object|null} the record, or null when absent or corrupt
+ */
+export function decodeRecord(body) {
+  const m = body.match(DATA);
+  if (!m) return null;
+  try {
+    return JSON.parse(Buffer.from(m[1], 'base64').toString('utf8'));
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Append a history entry when the outcome, SHA or decider changed.
+ * @param {object} record - record to mutate
+ * @param {{at: string, sha: string, outcome: string, by: string, note?: string}} entry
+ * @returns {object} the same record
+ */
+export function pushHistory(record, entry) {
+  const history = record.history ?? [];
+  const last = history[history.length - 1];
+  if (!last || last.sha !== entry.sha || last.outcome !== entry.outcome || last.by !== entry.by) {
+    history.push(entry);
+  }
+  record.history = history.slice(-HISTORY_LIMIT);
+  return record;
+}
+
+/**
+ * Render the sticky decision-record comment.
+ * @param {object} record - persisted record (headSha, outcome, rules, assessment, history)
+ * @param {{mode: string, runUrl: string}} ctx - run context
+ * @returns {string} comment body
+ */
+export function renderRecord(record, ctx) {
+  const a = record.assessment;
+  const lines = [
+    MARKER,
+    `### deps-agent decision: ${OUTCOME_LABEL[record.outcome] ?? record.outcome}`,
+    '',
+    `Head \`${record.headSha.slice(0, 7)}\` · mode \`${ctx.mode}\` · [last run](${ctx.runUrl}) · updated ${record.updatedAt}`,
+    '',
+    '| Gate | Kind | Result | Detail |',
+    '| --- | --- | --- | --- |',
+    ...record.rules.map(
+      (r) => `| ${r.id} | ${r.kind} | ${ICON[r.status]} | ${cell(r.detail, 300)} |`,
+    ),
+  ];
+  if (a) {
+    lines.push('', `**Assessment** (\`${a.verdict}\`): ${neutralize(a.summary)}`);
+    for (const b of a.breakingChangesAffectingUs ?? []) {
+      lines.push(`- ⚠️ ${neutralize(b.change, 300)} → ${neutralize(b.usage, 300)}`);
+    }
+    if (a.ciRead) lines.push(`- CI: ${neutralize(a.ciRead, 500)}`);
+    if (a.injectionSuspected) lines.push('- 🚩 changelog/PR text looked like instructions to the agent');
+  }
+  lines.push(
+    '',
+    '<details><summary>Decision history</summary>',
+    '',
+    ...(record.history ?? []).map(
+      (h) => `- ${h.at} \`${h.sha.slice(0, 7)}\` ${h.outcome} by ${h.by}${h.note ? `: ${neutralize(h.note, 200)}` : ''}`,
+    ),
+    '',
+    '</details>',
+    '',
+    `<!-- deps-agent:data ${Buffer.from(JSON.stringify(record)).toString('base64')} -->`,
+  );
+  return lines.join('\n');
+}
+
+/**
+ * Render the one-off escalation comment (a new comment, because GitHub only
+ * notifies @-mentions on creation, not on edits of the sticky record).
+ * @param {object} record - the record being escalated
+ * @param {string} owner - login to mention
+ * @returns {string} comment body
+ */
+export function renderEscalation(record, owner) {
+  const failing = record.rules.filter((r) => r.status === 'fail');
+  const hard = failing.filter((r) => r.kind === 'hard');
+  const a = record.assessment;
+  const lines = [
+    `@${owner} deps-agent needs a decision on \`${record.headSha.slice(0, 7)}\`.`,
+    '',
+    '**Blocking gates:**',
+    ...failing.map((r) => `- ${r.id} (${r.kind}): ${neutralize(r.detail, 300)}`),
+  ];
+  if (a?.escalation) {
+    lines.push(
+      '',
+      `**Question:** ${neutralize(a.escalation.question, 500)}`,
+      `**Recommendation:** ${neutralize(a.escalation.recommendation, 500)}`,
+      ...(a.escalation.options ?? []).map((o) => `- ${neutralize(o, 200)}`),
+    );
+  }
+  lines.push(
+    '',
+    hard.length
+      ? '`/deps merge` cannot override hard gates; fix the cause or close the PR.'
+      : 'Reply `/deps merge` to override the soft gates for these package versions (it survives rebases),',
+    '`/deps hold <reason>` to park it, `/deps recheck` to re-assess, or `@dependabot ignore this major version`.',
+    'Guide: [reading an escalation](../blob/main/docs/deps/README.md#reading-an-escalation).',
+  );
+  return lines.join('\n');
+}
+
+/**
+ * Render the dashboard issue body.
+ * @param {{number: number, title: string, outcome: string, blocking: string}[]} rows
+ * @param {{state: string, detail: string, sha: string}} main - main state
+ * @param {{mode: string, runUrl: string, at: string}} ctx - run context
+ * @returns {string} issue body
+ */
+export function renderDashboard(rows, main, ctx) {
+  return [
+    `Maintained by deps-agent. Mode \`${ctx.mode}\` · main \`${main.sha.slice(0, 7)}\` is **${main.state}** (${main.detail}) · [last run](${ctx.runUrl}) · ${ctx.at}`,
+    '',
+    'How this works: [`docs/deps/README.md`](../blob/main/docs/deps/README.md) · skipped versions: [`dependabot.yml`](../blob/main/.github/dependabot.yml) · rules: [`policy.md`](../blob/main/.github/deps-agent/policy.md).',
+    '',
+    '| PR | Update | Outcome | Blocking |',
+    '| --- | --- | --- | --- |',
+    ...rows.map(
+      (r) =>
+        `| #${r.number} | ${cell(r.title, 120)} | ${OUTCOME_LABEL[r.outcome] ?? r.outcome} | ${cell(r.blocking, 200) || '-'} |`,
+    ),
+  ].join('\n');
+}
