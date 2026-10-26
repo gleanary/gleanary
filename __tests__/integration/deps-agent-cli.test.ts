@@ -47,6 +47,7 @@ interface FakeState {
   extraFiles: string[];
   compareCapped: boolean;
   deployConclusion: string;
+  deployRuns: { status: string; conclusion: string }[] | null;
   auditFails: boolean;
   recordSaveFails: boolean;
   npmCalls: number;
@@ -171,7 +172,11 @@ function get(path: string): unknown {
     ],
     [
       /workflows\/deploy\.yml\/runs/,
-      () => ({ workflow_runs: [{ status: 'completed', conclusion: state.deployConclusion }] }),
+      () => ({
+        workflow_runs: state.deployRuns ?? [
+          { status: 'completed', conclusion: state.deployConclusion },
+        ],
+      }),
     ],
     [/issues\?state=open&labels=deps:dashboard/, () => []],
   ];
@@ -210,6 +215,7 @@ function fakeExec(cmd: string, args: string[], opts?: { input?: string }): strin
   const arg = (i: number) => args[i] ?? '';
   if (cmd === 'npm') {
     state.npmCalls++;
+    if (args[0] === 'pack') return '';
     if (args[0] === 'diff') {
       if (args.includes('--diff-name-only')) return state.npmDiffFiles.join('\n');
       state.npmDiffs.push(args);
@@ -341,6 +347,7 @@ beforeEach(() => {
     extraFiles: [],
     compareCapped: false,
     deployConclusion: 'success',
+    deployRuns: null,
     auditFails: false,
     recordSaveFails: false,
     npmCalls: 0,
@@ -1105,5 +1112,86 @@ describe('tenth review: published-code review', () => {
       }
       expect(JSON.parse(readFileSync(out, 'utf8')).assessment.codeReview.coverage).toBe('partial');
     });
+  });
+});
+
+describe('eleventh review: published-code review', () => {
+  const withDir = async (run: (dir: string) => Promise<void>) => {
+    const dir = mkdtempSync(join(tmpdir(), 'deps-new-'));
+    try {
+      await run(dir);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  };
+
+  it('diffs a new transitive package against an empty package', async () => {
+    state.npmDiffFiles = ['package.json', 'index.js', 'prebuilt/fresh.node'];
+    await withDir(async (dir) => {
+      const facts = join(dir, 'facts.json');
+      writeFileSync(
+        facts,
+        JSON.stringify({
+          meta: { headSha: 'h' },
+          facts: {
+            updates: [],
+            checks: [],
+            lock: { changed: [{ name: 'fresh', from: null, to: '0.1.0', installScript: false }] },
+          },
+        }),
+      );
+      const out = join(dir, 'diffs');
+      await cli.commands['package-diffs']({ facts, out });
+      const [entry] = JSON.parse(readFileSync(join(out, 'index.json'), 'utf8')).diffs;
+      expect(entry).toMatchObject({
+        name: 'fresh',
+        from: null,
+        unreviewable: ['prebuilt/fresh.node'],
+      });
+      expect(entry.error).toBeUndefined();
+      const [, previous, next] = state.npmDiffs[0]!;
+      expect(previous).toMatch(/^--diff=.*deps-agent-empty-0\.0\.0\.tgz$/);
+      expect(next).toBe('--diff=fresh@0.1.0');
+    });
+  });
+
+  it('records coverage "none" when no diff could be produced', async () => {
+    await withDir(async (dir) => {
+      const diffs = join(dir, 'diffs');
+      const out = join(dir, 'assessment.json');
+      const facts = join(dir, 'facts.json');
+      mkdirSync(diffs);
+      writeFileSync(
+        join(diffs, 'index.json'),
+        JSON.stringify({ diffs: [{ name: 'zod', error: 'ETIMEDOUT' }], transitiveNotReviewed: 0 }),
+      );
+      writeFileSync(
+        facts,
+        JSON.stringify({
+          meta: { headSha: 'h' },
+          facts: { updates: [], checks: [], lock: { changed: [] } },
+        }),
+      );
+      vi.stubEnv(
+        'ASSESSMENT',
+        JSON.stringify({ verdict: 'merge', codeReview: { coverage: 'full', suspicious: [] } }),
+      );
+      try {
+        await cli.commands['save-assessment']({ pr: '7', facts, out, diffs });
+      } finally {
+        vi.unstubAllEnvs();
+      }
+      expect(JSON.parse(readFileSync(out, 'utf8')).assessment.codeReview.coverage).toBe('none');
+    });
+  });
+});
+
+describe('eleventh review: main', () => {
+  it('does not let a skipped Deploy run hide a failed one on the same commit', () => {
+    state.deployRuns = [
+      { status: 'completed', conclusion: 'skipped' },
+      { status: 'completed', conclusion: 'failure' },
+    ];
+    expect(cli.mainState(NOW).state).toBe('broken');
   });
 });

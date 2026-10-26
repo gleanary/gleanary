@@ -223,7 +223,7 @@ function malwareAdvisories(specs) {
   const hits = [];
   for (let i = 0; i < specs.length; i += 100) {
     const affects = encodeURIComponent(specs.slice(i, i + 100).join(','));
-    const found = api(`advisories?type=malware&ecosystem=npm&per_page=100&affects=${affects}`);
+    const found = apiPaged(`advisories?type=malware&ecosystem=npm&per_page=100&affects=${affects}`);
     for (const a of found.filter((x) => !x.withdrawn_at)) {
       hits.push(`${a.ghsa_id} (${a.vulnerabilities.map((v) => v.package.name).join(', ')})`);
     }
@@ -239,10 +239,29 @@ function diffPriority(file) {
   return file.includes('/') ? 3 : 2;
 }
 
-/** Capped diff of the published tarballs. Downloads only; runs no package code. */
+let emptyTarball = null;
+/**
+ * An empty package's tarball, the "previous version" of a package new to the lockfile, so
+ * it goes through the same `npm diff` (every published file shows as added). Built once.
+ */
+function emptyPackage() {
+  if (!emptyTarball) {
+    const dir = mkdtempSync(join(tmpdir(), 'deps-empty-'));
+    writeFileSync(join(dir, 'package.json'), JSON.stringify({ name: 'deps-agent-empty', version: '0.0.0' }));
+    execFileSync('npm', ['pack', '--ignore-scripts', '--silent', '--pack-destination', dir], { cwd: dir, encoding: 'utf8' });
+    emptyTarball = join(dir, 'deps-agent-empty-0.0.0.tgz');
+  }
+  return emptyTarball;
+}
+
+/**
+ * Capped diff of the published tarballs. Downloads only; runs no package code.
+ * `from` null (a package new to the lockfile) diffs against an empty package.
+ */
 function packageDiff(name, from, to, maxBytes = DIFF_MAX_BYTES) {
+  const previous = from ? `${name}@${from}` : emptyPackage();
   const npmDiff = (maxBuffer, ...args) =>
-    execFileSync('npm', ['diff', `--diff=${name}@${from}`, `--diff=${name}@${to}`, ...args], {
+    execFileSync('npm', ['diff', `--diff=${previous}`, `--diff=${name}@${to}`, ...args], {
       cwd: tmpdir(),
       encoding: 'utf8',
       maxBuffer,
@@ -280,11 +299,16 @@ function packageDiff(name, from, to, maxBytes = DIFF_MAX_BYTES) {
   };
 }
 
+
 function mainState(now) {
   const sha = api(`repos/${REPO}/git/ref/heads/main`).object.sha;
-  const latest = (wf, event) =>
-    api(`repos/${REPO}/actions/workflows/${wf}/runs?head_sha=${sha}&event=${event}&per_page=1`)
-      .workflow_runs[0] ?? null;
+  // Newest run first. A skipped one (Deploy skips itself for a fork PR's CI) is only used
+  // when nothing ran for real, so it cannot hide a failed deploy of the same commit.
+  const latest = (wf, event) => {
+    const runs = api(`repos/${REPO}/actions/workflows/${wf}/runs?head_sha=${sha}&event=${event}&per_page=20`)
+      .workflow_runs;
+    return runs.find((r) => r.conclusion !== 'skipped') ?? runs[0] ?? null;
+  };
   const ci = latest('ci.yml', 'push');
   const pushedAt = ci ? null : (gitCommit(sha).committer?.date ?? null);
   return { sha, ...classifyMain(ci, latest('deploy.yml', 'workflow_run'), now, pushedAt) };
@@ -303,18 +327,21 @@ function findRecord(number, comments = prComments(number)) {
   return { comment, record: comment ? decodeRecord(comment.body) : null };
 }
 
-/** Whether package-diffs showed every changed file it was asked to (index missing = no). */
-function diffsComplete(dir) {
+const COVERAGE = ['none', 'partial', 'full'];
+/** The best coverage package-diffs made possible: none if every diff failed or there is no
+ * index (the step did not run), partial if any diff was cut, failed or had unreviewable files. */
+function diffCoverage(dir) {
   let index;
   try {
     index = JSON.parse(readFileSync(join(dir, 'index.json'), 'utf8'));
   } catch {
-    return false;
+    return 'none';
   }
-  return (
+  if (index.diffs.length && index.diffs.every((d) => d.error)) return 'none';
+  const complete =
     !index.transitiveNotReviewed &&
-    index.diffs.every((d) => !d.error && !d.truncated && !d.unreviewable?.length)
-  );
+    index.diffs.every((d) => !d.error && !d.truncated && !d.unreviewable?.length);
+  return complete ? 'full' : 'partial';
 }
 
 const ASSESSMENT_SCHEMA = JSON.parse(readFileSync(join(HERE, 'assessment.schema.json'), 'utf8'));
@@ -855,10 +882,10 @@ const commands = {
     if (!assessment || !['merge', 'escalate'].includes(assessment.verdict)) {
       throw new Error(`PR #${pr}: invalid assessment output`);
     }
-    // "full" is the model's claim; what package-diffs could not show it caps that at partial.
-    if (assessment.codeReview?.coverage === 'full' && !diffsComplete(diffs)) {
-      assessment.codeReview.coverage = 'partial';
-    }
+    // The coverage is the model's claim; what package-diffs could not show caps it.
+    const possible = diffCoverage(diffs);
+    const review = assessment.codeReview;
+    if (review && COVERAGE.indexOf(possible) < COVERAGE.indexOf(review.coverage)) review.coverage = possible;
     const key = keyFor(f.updates, f.checks, f.lock.changed);
     const assessedAt = new Date().toISOString();
     writeFileSync(
@@ -982,7 +1009,7 @@ function clearRunCaches() {
   lockCache.clear();
 }
 
-export { POLICY_HASH, clearRunCaches, commands, evaluatePr, handleMain, schemaArg };
+export { POLICY_HASH, clearRunCaches, commands, evaluatePr, handleMain, mainState, schemaArg };
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const { positionals, values } = parseArgs({

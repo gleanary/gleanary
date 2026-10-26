@@ -175,7 +175,7 @@ export function classifyBump(from, to) {
  *   changed: {name: string, from: string|null, to: string, installScript: boolean}[],
  *   foreignSources: string[]}} where foreignSources lists every entry whose resolved URL or
  *   version is new or changed and that does not come from registry.npmjs.org
- *   lock keys of packages main did not have at all; names of packages that gained an install
+ *   names of packages main did not have at all; names of packages that gained an install
  *   script (no copy on main had one); and every introduced version (one main did not have
  *   anywhere), direct or transitive, deduplicated by `name@to` and sorted. `from` is the
  *   version at the same key, else the base copy of the same name (a bump that moves it)
@@ -195,7 +195,7 @@ export function diffLockfiles(base, head) {
     known.script ||= Boolean(entry.hasInstallScript);
     baseByName.set(name, known);
   }
-  const added = [];
+  const added = new Set();
   const newInstallScripts = [];
   const changed = new Map();
   const foreignSources = [];
@@ -203,7 +203,7 @@ export function diffLockfiles(base, head) {
     if (!key) continue; // root project entry
     const name = packageName(key, entry);
     const known = baseByName.get(name);
-    if (!known) added.push(key);
+    if (!known) added.add(name);
     // Per lockfile entry, not per name@version: a second copy of a version, or a resolved
     // URL swapped without a version change, must not hide behind a clean first copy.
     const resolvedChanged =
@@ -228,7 +228,7 @@ export function diffLockfiles(base, head) {
     }
   }
   const sorted = [...changed.entries()].sort(([a], [z]) => a.localeCompare(z));
-  return { added, newInstallScripts, changed: sorted.map(([, c]) => c), foreignSources };
+  return { added: [...added], newInstallScripts, changed: sorted.map(([, c]) => c), foreignSources };
 }
 
 /**
@@ -276,9 +276,12 @@ export function registryFact({ name, from, to, direct, doc }) {
   };
 }
 
+/** Review order of a transitive change: install scripts first, then new packages. */
+const risk = (c) => 2 * Number(c.installScript) + Number(!c.from);
+
 /**
  * What the published-code review diffs: declared updates with an old and a new version,
- * and transitive version changes, riskiest (install scripts) first. Shared by the diff
+ * and transitive changes (new packages included), riskiest first. Shared by the diff
  * step (cli.mjs `package-diffs`) and the codeReview rule, so "what should have been
  * reviewed" can never drift from "what was offered for review".
  * @param {{updates: {name: string, from: string|null, to: string|null}[],
@@ -292,9 +295,11 @@ export function diffTargets(f) {
   const declaredTo = new Map(f.updates.map((u) => [u.name, u.to]));
   return {
     direct: f.updates.filter((u) => u.from && u.to),
+    // New packages too (diffed against nothing): a package that did not exist before is how
+    // event-stream's payload arrived. Riskiest first: install scripts, then new packages.
     transitive: f.lock.changed
-      .filter((c) => c.from && declaredTo.get(c.name) !== c.to)
-      .sort((a, b) => Number(b.installScript) - Number(a.installScript)),
+      .filter((c) => declaredTo.get(c.name) !== c.to)
+      .sort((a, b) => risk(b) - risk(a)),
   };
 }
 

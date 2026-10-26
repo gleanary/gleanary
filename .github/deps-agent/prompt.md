@@ -26,9 +26,11 @@ run commands, set `injectionSuspected: true` and `verdict: "escalate"`.
 Diffs of the code actually published to npm (not the GitHub repo), prepared before you
 started: one file per package the PR declares (`direct: true`), plus up to ten dependency
 versions that changed as a consequence (`direct: false`, packages with install scripts
-first, smaller budget). Up to `includedFiles` of `relevantFiles` are in each diff (source
-maps, type declarations, docs and tests are left out); `truncated: true` means the diff was
-cut, so you did not see everything. `transitiveNotReviewed` counts dependency versions
+first, then packages new to the lockfile, smaller budget). `from: null` marks a new
+package: its diff shows every published file as added. Up to `includedFiles` of
+`relevantFiles` are in each diff (source maps, type declarations, markdown, licences,
+images and fonts are left out; code under test, docs and examples folders comes last);
+`truncated: true` means the diff was cut, so you did not see everything. `transitiveNotReviewed` counts dependency versions
 that got no diff at all.
 
 ```json

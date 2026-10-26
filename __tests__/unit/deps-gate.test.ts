@@ -194,7 +194,7 @@ describe('diffLockfiles', () => {
       },
     };
     expect(diffLockfiles(base, head)).toMatchObject({
-      added: ['node_modules/b'],
+      added: ['b'],
       newInstallScripts: ['a'],
       changed: [
         {
@@ -1224,5 +1224,38 @@ describe('tenth review: gate', () => {
     expect(statusOf(recent, 'checks')).toBe('pending');
     // a cancelled run is not a red CI for the assessment cache
     expect(failedChecks(cancelledAt())).toEqual([]);
+  });
+});
+
+describe('eleventh review: gate', () => {
+  it('reviews new transitive packages too, after install-script ones', () => {
+    const lock = {
+      added: ['fresh'],
+      newInstallScripts: [],
+      foreignSources: [],
+      changed: [
+        { name: 'bumped', from: '1.0.0', to: '1.0.1', installScript: false },
+        { name: 'fresh', from: null, to: '0.1.0', installScript: false },
+        { name: 'native', from: '2.0.0', to: '2.0.1', installScript: true },
+      ],
+    };
+    expect(diffTargets({ updates: [], lock }).transitive.map((c) => c.name)).toEqual([
+      'native',
+      'fresh',
+      'bumped',
+    ]);
+  });
+
+  it('counts a new package once, however many places it is installed in', () => {
+    const base = { packages: {} };
+    const head = {
+      packages: Object.fromEntries(
+        Array.from({ length: 16 }, (_, i) => [
+          `node_modules/p${i}/node_modules/x`,
+          { version: '1.0.0' },
+        ]),
+      ),
+    };
+    expect(diffLockfiles(base, head).added).toEqual(['x']);
   });
 });

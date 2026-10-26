@@ -304,6 +304,14 @@ review, so it is not the preferred lever.
 - A cancelled or stale required check waits for a re-run (up to 24 h after
   the cancellation)
   instead of failing the hard `checks` rule, which nobody can waive.
+- Packages new to the lockfile are code-reviewed too, ranked after install-script packages
+  in the transitive budget: a dependency that did not exist before is how the event-stream
+  payload arrived. With no previous version, `npm diff` runs against an empty placeholder
+  package, so the new package goes through the same file selection and caps, every
+  published file shown as added. When no diff at all could be produced,
+  the recorded coverage is `none`, which fails the code review.
+- main's state picks the newest Deploy run that was not skipped (Deploy skips itself for
+  CI on a fork PR, which a public repo can receive from a branch named `main`).
 - Waivers match a hash of each rule's full failure detail (`waiverKey`), stored with the rule
   before the record is trimmed for display: an earlier version compared details, and a
   record trimmed to fit a comment produced overrides that could never match, silently. The
