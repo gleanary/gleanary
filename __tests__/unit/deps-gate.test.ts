@@ -17,8 +17,11 @@ import {
   registryFact,
   updatesKey,
 } from '../../.github/deps-agent/gate.mjs';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import {
   MARKER,
+  clampAssessment,
   decodeRecord,
   neutralize,
   pushHistory,
@@ -27,6 +30,9 @@ import {
 } from '../../.github/deps-agent/record.mjs';
 
 const NOW = new Date('2026-10-23T12:00:00Z');
+const ASSESSMENT_SCHEMA = JSON.parse(
+  readFileSync(join(process.cwd(), '.github/deps-agent/assessment.schema.json'), 'utf8'),
+);
 
 /** Facts for a clean, mergeable patch bump; each test overrides one dimension. */
 type Facts = Parameters<typeof evaluateRules>[0];
@@ -101,7 +107,6 @@ const outcome = (
     mode: string;
     override: boolean;
     waived: Map<string, string>;
-    held: boolean;
     slotFree: boolean;
   }> = {},
 ) => {
@@ -114,7 +119,6 @@ const outcome = (
     rules,
     mode: 'merge',
     waived: override ? everySoft : new Map(),
-    held: false,
     slotFree: true,
     ...rest,
   } as Parameters<typeof decide>[0]);
@@ -319,10 +323,6 @@ describe('evaluateRules + decide', () => {
 
   it('queues a second mergeable PR in the same run', () => {
     expect(outcome(cleanFacts(), { slotFree: false })).toBe('queued');
-  });
-
-  it('never acts on a held PR', () => {
-    expect(outcome(cleanFacts(), { held: true, override: true })).toBe('held');
   });
 
   it('escalates a 0.x minor bump, and the owner can override it', () => {
@@ -684,6 +684,30 @@ describe('evaluateRules + decide', () => {
     });
   });
 
+  describe('overdue cooldown', () => {
+    const young = () => ({
+      ...cleanFacts().registry[0]!,
+      name: 'ms',
+      version: '2.1.4',
+      direct: false,
+      publishedAt: '2026-10-22T12:00:00Z', // a day before NOW
+    });
+    const withYoung = (since: string | null) =>
+      cleanFacts({ registry: [cleanFacts().registry[0]!, young()], cooldownWaitSince: since });
+
+    it('waits while young transitive versions age, then fails once waiting is overdue', () => {
+      expect(statusOf(withYoung(null), 'cooldown')).toBe('pending');
+      expect(statusOf(withYoung('2026-10-15T12:00:00Z'), 'cooldown')).toBe('pending'); // 8 days
+      const overdue = withYoung('2026-10-08T12:00:00Z'); // 15 days
+      expect(statusOf(overdue, 'cooldown')).toBe('fail');
+      expect(outcome(overdue)).toBe('escalate');
+      // A failure can be waived (a pending rule never could): /deps merge works.
+      expect(
+        outcome(overdue, { waived: new Map([['cooldown', detailOf(overdue, 'cooldown')]]) }),
+      ).toBe('merge');
+    });
+  });
+
   describe('fifth review: no waiver can hide an unchecked version or a new reason', () => {
     it('waits on a registry outage even when a waived cooldown failure hides it', () => {
       // A security update: zod published a day ago fails cooldown; the owner waived that.
@@ -840,6 +864,33 @@ describe('advisoryKeys', () => {
   });
 });
 
+describe('clampAssessment', () => {
+  it('bounds strings and lists to the schema limits and drops unknown keys', () => {
+    const long = 'z'.repeat(10_000);
+    const clamped = clampAssessment(
+      {
+        verdict: 'escalate',
+        summary: long,
+        securityFixes: Array.from({ length: 50 }, () => long),
+        smuggled: long,
+        codeReview: { coverage: 'full', suspicious: [{ file: long, finding: long, extra: long }] },
+      },
+      ASSESSMENT_SCHEMA,
+    ) as Record<string, unknown> & {
+      securityFixes: string[];
+      codeReview: { suspicious: Record<string, string>[] };
+    };
+    expect((clamped.summary as string).length).toBe(1500);
+    expect(clamped.securityFixes).toHaveLength(10);
+    expect(clamped.securityFixes[0]).toHaveLength(200);
+    expect(clamped).not.toHaveProperty('smuggled');
+    expect(clamped.codeReview.suspicious[0]).toEqual({
+      file: long.slice(0, 200),
+      finding: long.slice(0, 400),
+    });
+  });
+});
+
 describe('decision records', () => {
   const rules = evaluateRules(cleanFacts({ newAdvisories: ['GHSA-9'] }));
   const record = {
@@ -878,9 +929,43 @@ describe('decision records', () => {
     expect(r.history).toHaveLength(2);
   });
 
+  it('always renders a record that fits in a GitHub comment', () => {
+    const huge = 'y'.repeat(20_000);
+    const big = {
+      ...record,
+      rules: record.rules.map((r) => ({ ...r, detail: huge })),
+      // Stored assessments always pass through the schema-driven clamp first.
+      assessment: clampAssessment(
+        {
+          ...record.assessment,
+          summary: huge,
+          breakingChangesAffectingUs: [{ change: huge, usage: huge }],
+        },
+        ASSESSMENT_SCHEMA,
+      ),
+      history: Array.from({ length: 20 }, (_, i) => ({
+        at: `t${i}`,
+        sha: 'abcdef1',
+        outcome: 'wait',
+        by: 'agent',
+        note: huge,
+      })),
+    };
+    const body = renderRecord(big, { mode: 'shadow', runUrl: 'https://example.test/run' });
+    expect(body.length).toBeLessThanOrEqual(60_000);
+    expect((decodeRecord(body) as { headSha?: string } | null)?.headSha).toBe(record.headSha);
+  });
+
+  it('does not claim an override survives every rebase', () => {
+    expect(renderEscalation(record, 'owner')).not.toContain('survives rebases');
+    expect(renderEscalation(record, 'owner')).toContain('this exact lockfile');
+  });
+
   it('tells the owner when an override cannot help', () => {
     const hardFail = { ...record, rules: evaluateRules(cleanFacts({ author: 'mallory' })) };
-    expect(renderEscalation(record, 'owner')).toContain('`/deps merge` to override');
+    expect(renderEscalation(record, 'owner')).toContain(
+      '`/deps merge` to waive the failing soft gates',
+    );
     expect(renderEscalation(hardFail, 'owner')).toContain('cannot override hard gates');
   });
 });

@@ -23,6 +23,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
 import {
   DEPENDABOT_LOGIN,
+  LIMITS,
   LOCK_FILES,
   NPM_BRANCH_PREFIX,
   advisoryKeys,
@@ -43,20 +44,24 @@ import {
 } from './gate.mjs';
 import {
   MARKER,
+  clampAssessment,
   decodeRecord,
   fromApp,
+  latestRecheckAt,
   neutralize,
   pushHistory,
   renderDashboard,
   renderEscalation,
   overridesFrom,
   renderOverride,
+  renderRecheck,
   renderRecord,
 } from './record.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO = process.env.GITHUB_REPOSITORY;
-const MODE = process.env.MODE || 'shadow';
+/** MODE env var (DEPS_AGENT_MODE in the workflow), read per call: tests switch it. */
+const mode = () => process.env.MODE || 'shadow';
 const OWNER = process.env.OWNER_LOGIN || '';
 const BOT = `${process.env.APP_SLUG || 'deps-agent'}[bot]`;
 const RUN_URL = process.env.RUN_URL || '';
@@ -83,10 +88,11 @@ const REGISTRY_CONCURRENCY = 8;
 const REGISTRY_MAX_PACKAGES = 300;
 // Hours to wait for Dependabot to act on our `@dependabot rebase` before asking the owner.
 const REBASE_STUCK_HOURS = 24;
-// Days a PR may wait on young transitive versions before the owner is asked.
-const COOLDOWN_WAIT_ESCALATE_DAYS = 14;
 // Hours a PR may wait on an npm registry that does not answer for one of its versions.
-const REGISTRY_WAIT_ESCALATE_HOURS = 48;
+const OUTAGE_WAIT_ESCALATE_HOURS = 48;
+// Rules that go pending when an external source (npm registry, malware feed, npm audit)
+// does not answer. They only ever wait, so they share one clock that pings the owner.
+const OUTAGE_RULES = new Set(['registry', 'malware', 'audit']);
 
 // ── GitHub / registry I/O ────────────────────────────────────────────────────
 
@@ -279,6 +285,8 @@ function findRecord(number, comments = prComments(number)) {
   return { comment, record: comment ? decodeRecord(comment.body) : null };
 }
 
+const ASSESSMENT_SCHEMA = JSON.parse(readFileSync(join(HERE, 'assessment.schema.json'), 'utf8'));
+
 /** Fingerprint of everything that shapes an assessment; editing any of it re-assesses. */
 const POLICY_HASH = shortHash(
   ['policy.md', 'prompt.md', 'assessment.schema.json'].map((f) => readFileSync(join(HERE, f), 'utf8')).join('\0'),
@@ -323,8 +331,17 @@ function baseSide(sha) {
   return baseCache.get(sha);
 }
 
-async function collectFacts(number, main, now) {
-  let pr = api(`repos/${REPO}/pulls/${number}`);
+/** What every caller needs to know about a PR, beyond the gate facts. */
+const metaOf = (pr) => ({
+  number: pr.number,
+  title: pr.title,
+  url: pr.html_url,
+  headSha: pr.head.sha,
+  labels: pr.labels.map((l) => l.name),
+});
+
+async function collectFacts(pr, main, now) {
+  const number = pr.number;
   if (pr.mergeable === null) {
     // GitHub computes mergeability lazily: the first read only starts the job.
     await new Promise((r) => setTimeout(r, 5000));
@@ -356,13 +373,7 @@ async function collectFacts(number, main, now) {
     main: main.state,
     now,
   };
-  const meta = {
-    number,
-    title: pr.title,
-    url: pr.html_url,
-    headSha: pr.head.sha,
-    labels: pr.labels.map((l) => l.name),
-  };
+  const meta = metaOf(pr);
   if (!pr.head.ref.startsWith(NPM_BRANCH_PREFIX) || !declared.length) return { meta, facts };
 
   // Compare against the PR's own base, so the diff is exactly what Dependabot changed;
@@ -385,7 +396,8 @@ async function collectFacts(number, main, now) {
     if (before instanceof Error) throw before;
     facts.newAdvisories = auditAdvisories(headPkg, headLock).filter((k) => !before.has(k));
   } catch (err) {
-    facts.newAdvisories = [`audit unavailable: ${err.message}`];
+    console.error(`PR #${number}: npm audit failed: ${err.message}`);
+    facts.newAdvisories = null; // could not run: the gate waits instead of failing
   }
   return { meta, facts };
 }
@@ -412,9 +424,12 @@ function setLabel(number, name, on, labels) {
 const comment = (number, body) => apiWrite('POST', `repos/${REPO}/issues/${number}/comments`, { body });
 
 function saveRecord(number, existing, record) {
-  const body = renderRecord(record, { mode: MODE, runUrl: RUN_URL });
-  if (existing) apiWrite('PATCH', `repos/${REPO}/issues/comments/${existing.id}`, { body });
-  else comment(number, body);
+  const body = renderRecord(record, { mode: mode(), runUrl: RUN_URL });
+  if (existing) {
+    apiWrite('PATCH', `repos/${REPO}/issues/comments/${existing.id}`, { body });
+    return existing;
+  }
+  return comment(number, body);
 }
 
 function merge(meta) {
@@ -436,10 +451,22 @@ function merge(meta) {
  * @returns {Promise<{outcome: string, record: {outcome?: string, rules: object[]}, meta: object}>}
  */
 async function evaluatePr(number, { main, now, assessment, slotFree, by = 'agent', note }) {
-  const { meta, facts } = await collectFacts(number, main, now);
   const comments = prComments(number);
   const { comment: existing, record: prior } = findRecord(number, comments);
   const record = prior ?? { pr: number };
+
+  // A held PR is left alone: record it, but collect no registry, audit or diff facts.
+  const pr = api(`repos/${REPO}/pulls/${number}`);
+  if (pr.labels.some((l) => l.name === LABEL.hold)) {
+    const meta = metaOf(pr);
+    Object.assign(record, { headSha: meta.headSha, outcome: 'held', rules: record.rules ?? [], updatedAt: now.toISOString() });
+    pushHistory(record, { at: now.toISOString(), sha: meta.headSha, outcome: 'held', by });
+    setLabel(number, LABEL.escalated, false, meta.labels);
+    saveRecord(number, existing, record);
+    return { outcome: 'held', record, meta };
+  }
+
+  const { meta, facts } = await collectFacts(pr, main, now);
   // Assessments and owner overrides belong to the evaluated dependency state (declared
   // versions + introduced lockfile versions), not the commit: a rebase that leaves the
   // lockfile alone keeps them, one that re-resolves it does not. Every gate is still
@@ -449,13 +476,28 @@ async function evaluatePr(number, { main, now, assessment, slotFree, by = 'agent
   if (assessment && assessment.key === key) {
     record.assessment = assessment.assessment;
     record.assessmentKey = key;
+    record.assessedAt = now.toISOString(); // a pending /deps recheck is now satisfied
   }
   const current = record.assessmentKey === key ? record.assessment : null;
-  const rules = evaluateRules({ ...facts, assessment: current });
+  // An assessment made for another state is kept (it may match again) but never shown as live.
+  record.assessmentStale = Boolean(record.assessment) && !current;
+  const rules = evaluateRules({ ...facts, assessment: current, cooldownWaitSince: record.cooldownWaitSince ?? null });
+  const waitedLonger = (since, ms) => now.getTime() - new Date(since).getTime() > ms;
+
+  // Rules that only ever wait get a clock. While an external source is down, the cooldown
+  // rule only sees what answered, so its clock is left alone rather than reset.
+  const coolingDown = rules.find((r) => r.id === 'cooldown' && r.waiting);
+  const outage = rules.filter((r) => OUTAGE_RULES.has(r.id) && r.status === 'pending');
+  if (coolingDown) record.cooldownWaitSince ??= now.toISOString();
+  else if (!outage.length) delete record.cooldownWaitSince;
+  if (outage.length) record.outageWaitSince ??= now.toISOString();
+  else delete record.outageWaitSince;
+  // The gate turns a cooldown waiting longer than LIMITS.cooldownWaitDays into a failure.
+  const coolingTooLong = coolingDown?.status === 'fail';
+
   const versions = updatesKey(facts.updates);
-  // An override waives only the soft rules the owner saw failing, and only for the exact
-  // lockfile they approved. A rule that starts failing later, or a rebase that brings in
-  // different dependency versions, escalates again instead of riding on the override.
+  // An override waives only the soft rules the owner saw failing, for the exact reasons and
+  // the exact lockfile they approved. Anything else escalates again.
   const forVersions = overridesFrom(comments, BOT).filter((o) => o.versions === versions);
   const override = forVersions.findLast((o) => o.lock === fingerprint);
   const overrideStale = !override && forVersions.length > 0;
@@ -466,51 +508,32 @@ async function evaluatePr(number, { main, now, assessment, slotFree, by = 'agent
   }
   let outcome = decide({
     rules,
-    mode: MODE,
+    mode: mode(),
     waived: new Map((override?.waive ?? []).map((w) => [w.id, w.detail])),
-    held: meta.labels.includes(LABEL.hold),
     slotFree,
   });
 
   // Our `@dependabot rebase` may be ignored (Dependabot might not take commands from an
   // App): after REBASE_STUCK_HOURS on the same commit, hand it to the owner.
   const needsRebase = !facts.fresh || facts.mergeable === false;
-  const waitedLonger = (since, ms) => now.getTime() - new Date(since).getTime() > ms;
   const stuck =
     outcome === 'wait' &&
     needsRebase &&
     record.rebaseSha === meta.headSha &&
     waitedLonger(record.rebaseAt ?? now, REBASE_STUCK_HOURS * 3_600_000);
-  // A young transitive version only ever makes the PR wait. If every Dependabot rebase pulls
-  // in an even newer version of a fast-moving dependency, it would wait forever, visible
-  // only on the dashboard. The clock lives in the record, so it survives rebases.
-  const coolingDown = rules.find((r) => r.id === 'cooldown' && r.status === 'pending');
-  // The registry outage rule has the same blind spot (it only ever waits), so it gets the
-  // same kind of clock. While the registry is down, the cooldown rule only sees reachable
-  // versions, so its clock is left alone rather than reset.
-  const registryDown = rules.find((r) => r.id === 'registry' && r.status === 'pending');
-  if (coolingDown) record.cooldownWaitSince ??= now.toISOString();
-  else if (!registryDown) delete record.cooldownWaitSince;
-  if (registryDown) record.registryWaitSince ??= now.toISOString();
-  else delete record.registryWaitSince;
-  const coolingTooLong =
+  const outageTooLong =
     outcome === 'wait' &&
-    coolingDown &&
-    waitedLonger(record.cooldownWaitSince, COOLDOWN_WAIT_ESCALATE_DAYS * 86_400_000);
-  const registryTooLong =
-    outcome === 'wait' &&
-    registryDown &&
-    waitedLonger(record.registryWaitSince, REGISTRY_WAIT_ESCALATE_HOURS * 3_600_000);
+    outage.length > 0 &&
+    waitedLonger(record.outageWaitSince, OUTAGE_WAIT_ESCALATE_HOURS * 3_600_000);
   let why = '';
   if (stuck) {
     outcome = 'escalate';
     why = `Dependabot has not rebased this PR ${REBASE_STUCK_HOURS} h after deps-agent asked. Comment \`@dependabot rebase\` yourself.`;
-  } else if (coolingTooLong) {
+  } else if (outageTooLong) {
     outcome = 'escalate';
-    why = `This PR has waited ${COOLDOWN_WAIT_ESCALATE_DAYS} days for dependency versions to age (${coolingDown.detail}); a fast-moving dependency may keep resetting the clock. \`/deps merge\` to take it as is, or \`/deps hold\`.`;
-  } else if (registryTooLong) {
-    outcome = 'escalate';
-    why = `The npm registry has not answered for ${REGISTRY_WAIT_ESCALATE_HOURS} h (${registryDown.detail}), so those versions' provenance, publisher and install scripts are still unchecked. Check the package on npm, then \`/deps recheck\` or \`/deps hold\`.`;
+    why = `A source deps-agent depends on has not answered for ${OUTAGE_WAIT_ESCALATE_HOURS} h (${outage.map((r) => `${r.id}: ${r.detail}`).join('; ')}), so part of this PR is still unchecked. Check the package on npm, then \`/deps recheck\` or \`/deps hold\`.`;
+  } else if (outcome === 'escalate' && coolingTooLong) {
+    why = `This PR has waited ${LIMITS.cooldownWaitDays} days for dependency versions to age; a fast-moving dependency may keep resetting the clock. \`/deps merge\` to take it as is, or \`/deps hold\`.`;
   } else if (outcome === 'escalate' && overrideStale) {
     why = 'Your earlier `/deps merge` covered a different lockfile: a rebase brought in different dependency versions, so it no longer applies. Review this state and reply `/deps merge` again if it is fine.';
   }
@@ -535,38 +558,37 @@ async function evaluatePr(number, { main, now, assessment, slotFree, by = 'agent
   });
   pushHistory(record, { at: now.toISOString(), sha: meta.headSha, outcome, by, ...(note ? { note } : {}) });
 
-  // Ping once per reason: a rebase with the same versions and the same failing gates stays quiet.
-  // Each failing hard/soft rule with its reason (hashed to keep the key short): a waived rule
-  // that fails again for a new reason is a new escalation and pings. Transient rules (main
-  // busy, branch behind, conflict) describe the world, not the PR: they flip on their own
-  // and must not re-ping the owner about the same problem.
+  // Ping once per reason. Each failing hard/soft rule with its reason (hashed to keep the key
+  // short): a waived rule that fails again for a new reason is a new escalation and pings.
+  // Transient rules (main busy, branch behind, conflict) describe the world, not the PR: they
+  // flip on their own and must not re-ping the owner about the same problem.
   const failing = shortHash(
     rules
       .filter((r) => r.status === 'fail' && r.kind !== 'transient')
       .map((r) => `${r.id}:${r.detail}`)
       .join('\n'),
   );
-  const escalation = [
-    approved,
-    failing,
-    stuck && 'rebase-stuck',
-    coolingTooLong && 'cooldown-wait',
-    registryTooLong && 'registry-wait',
-    overrideStale && 'override-stale',
-  ]
+  const escalation = [approved, failing, stuck && 'rebase-stuck', outageTooLong && 'outage-wait', overrideStale && 'override-stale']
     .filter(Boolean)
     .join('|');
-  if (outcome === 'escalate' && record.escalatedKey !== escalation && OWNER) {
+  const ping = outcome === 'escalate' && record.escalatedKey !== escalation && OWNER;
+  // Rebase requests change the PR, so only in merge mode (shadow only observes).
+  const rebase = needsRebase && mode() === 'merge' && record.rebaseSha !== meta.headSha;
+  setLabel(number, LABEL.escalated, outcome === 'escalate', meta.labels);
+
+  // Save the record BEFORE posting: if the save fails, nothing is posted, so nothing is
+  // repeated every run. The "already sent" markers are saved only once the comments exist.
+  const saved = saveRecord(number, existing, record);
+  if (ping) {
     comment(number, renderEscalation(record, OWNER, why));
     record.escalatedKey = escalation;
   }
-  if (needsRebase && record.rebaseSha !== meta.headSha) {
+  if (rebase) {
     comment(number, '@dependabot rebase');
     record.rebaseSha = meta.headSha;
     record.rebaseAt = now.toISOString();
   }
-  setLabel(number, LABEL.escalated, outcome === 'escalate', meta.labels);
-  saveRecord(number, existing, record);
+  if (ping || rebase) saveRecord(number, saved, record);
   return { outcome, record, meta };
 }
 
@@ -643,7 +665,7 @@ function handleMain(main) {
 }
 
 function updateDashboard(rows, main, now) {
-  const body = renderDashboard(rows, main, { mode: MODE, runUrl: RUN_URL, at: now.toISOString() });
+  const body = renderDashboard(rows, main, { mode: mode(), runUrl: RUN_URL, at: now.toISOString() });
   const existing = apiPaged(`repos/${REPO}/issues?state=open&labels=${LABEL.dashboard}&per_page=10`).find(
     (i) => i.user.login === BOT,
   );
@@ -684,14 +706,20 @@ const commands = {
       if (pendingChecks(checks).length) continue;
       const updates = parseUpdatedDependencies(commitMessage(pr.head.sha));
       const key = keyFor(updates, checks, lockDiff(pr, updates).changed);
-      if (findRecord(pr.number).record?.assessmentKey !== key) queue.push(pr.number);
+      const comments = prComments(pr.number);
+      const { record } = findRecord(pr.number, comments);
+      // A /deps recheck newer than the last stored assessment is still owed, even if the run
+      // it dispatched was cancelled while queued behind another one.
+      const recheckOwed = latestRecheckAt(comments, BOT) > (record?.assessedAt ?? '');
+      if (record?.assessmentKey !== key || recheckOwed) queue.push(pr.number);
     }
     output('prs', JSON.stringify(queue.slice(0, MAX_ASSESS_PER_RUN)));
   },
 
   async facts({ pr }) {
     const now = new Date();
-    process.stdout.write(JSON.stringify(await collectFacts(Number(pr), mainState(now), now), null, 2));
+    const prObj = api(`repos/${REPO}/pulls/${Number(pr)}`);
+    process.stdout.write(JSON.stringify(await collectFacts(prObj, mainState(now), now), null, 2));
   },
 
   async 'package-diffs'({ facts, out }) {
@@ -758,11 +786,11 @@ const commands = {
       throw new Error(`PR #${pr}: invalid assessment output`);
     }
     const key = keyFor(f.updates, f.checks, f.lock.changed);
-    writeFileSync(out, JSON.stringify({ pr: Number(pr), headSha: meta.headSha, key, assessment }));
+    writeFileSync(out, JSON.stringify({ pr: Number(pr), headSha: meta.headSha, key, assessment: clampAssessment(assessment, ASSESSMENT_SCHEMA) }));
   },
 
   async act({ assessments }) {
-    if (MODE === 'off') return;
+    if (mode() === 'off') return;
     const now = new Date();
     ensureLabels();
     const main = mainState(now);
@@ -849,7 +877,7 @@ const commands = {
       comment(number, renderOverride({ versions: record.versions, lock: record.lockFingerprint, waive, by }, reason));
       dispatch();
     } else if (verb === 'recheck') {
-      comment(number, `Re-assessment requested by ${by}; a run has been started.`);
+      comment(number, renderRecheck(by));
       dispatch('-f', `pr=${number}`); // pr=N bypasses the assessment cache in \`plan\`
     } else {
       setLabel(number, LABEL.hold, verb === 'hold', labels);

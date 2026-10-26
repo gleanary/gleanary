@@ -275,8 +275,27 @@ review, so it is not the preferred lever.
   branch behind, conflict) are left out of that key: they flip on their own, and an early
   version re-pinged the owner about the same escalation each time main's CI ran or a sibling
   merged.
-- Rules that only ever wait get a clock, so nothing waits silently forever: young transitive
-  versions ping after 14 days, an npm registry outage after 48 hours, an unanswered
-  `@dependabot rebase` after 24 hours.
+- Rules that only ever wait get a clock, so nothing waits silently forever: an unanswered
+  `@dependabot rebase` pings after 24 hours, and an outage of any external source (npm
+  registry, malware feed, npm audit) after 48 hours. A cooldown that has not settled after
+  14 days turns into a failure rather than a ping, because only a failure can be waived:
+  the escalation tells the owner to `/deps merge`, and that has to work.
+- A failed `npm audit` run is an outage (the PR waits), not an advisory: recording the error
+  as an advisory pinged the owner over network hiccups and let an override waive an audit
+  that never ran.
+- The decision record is saved before the escalation and rebase comments are posted, and the
+  "already sent" markers only after they are: a record that cannot be saved (e.g. over
+  GitHub's 65,536-character comment limit) can then never cause the same comments to be
+  posted on every run. Assessments are clamped to fixed field lengths when stored, and the
+  record renderer drops history, then the assessment's free text, then long rule details
+  until the comment fits; dropping text changes the verdict fingerprint, so a waiver tied to
+  it stops applying (the safe direction).
+- In shadow mode, and on held PRs, deps-agent does not ask Dependabot to rebase: shadow only
+  observes, and a hold means hands off. Held PRs skip fact collection entirely.
+- A `/deps recheck` is an append-only App comment, and `plan` re-assesses any PR whose
+  latest recheck is newer than its last stored assessment: a dispatched run cancelled while
+  queued behind another one can no longer lose the request.
+- An assessment made for an earlier state of the PR is kept (it may match again) but shown
+  as outdated in the decision record, never as a live recommendation.
 - Requires a GitHub App, an Anthropic API key (with its own spend limit), and repository
   variables; see `docs/deps/README.md`.

@@ -26,6 +26,8 @@ export const REQUIRED_CHECKS = [
 export const LIMITS = {
   /** Days a release must have been public before we merge it (detection window). */
   cooldownDays: 7,
+  /** Days a PR may wait on young transitive versions before the cooldown fails (escalates). */
+  cooldownWaitDays: 14,
   /** New transitive packages one bump may add before a human looks. */
   maxNewPackages: 15,
 };
@@ -398,7 +400,7 @@ function checksRule(checks, headCommittedAt, now) {
  * security update, which skips Dependabot's cooldown) escalates so the owner can
  * fast-track it; an unknown publish time escalates.
  */
-function cooldownRule(registry, now) {
+function cooldownRule(registry, now, waitingSince) {
   const cutoff = now.getTime() - LIMITS.cooldownDays * 86_400_000;
   const young = (r) => r.publishedAt && new Date(r.publishedAt).getTime() > cutoff;
   // The registry answered but has no publish time for this version: suspicious, escalate.
@@ -407,9 +409,24 @@ function cooldownRule(registry, now) {
     return unless('cooldown', blocking.map(label), `published < ${LIMITS.cooldownDays}d ago (or unknown)`, '');
   }
   const aging = registry.filter(young);
-  return aging.length
-    ? result('cooldown', 'pending', `waiting for dependency versions to age: ${aging.map(label).join(', ')}`)
-    : result('cooldown', 'pass', `all ${registry.length} introduced versions older than ${LIMITS.cooldownDays}d`);
+  if (!aging.length) {
+    return result('cooldown', 'pass', `all ${registry.length} introduced versions older than ${LIMITS.cooldownDays}d`);
+  }
+  // `waiting` marks the aging state for the CLI's clock. Waiting too long (a fast-moving
+  // dependency can reset the clock with every rebase) becomes a failure: it escalates, and
+  // the owner can waive it with /deps merge, which a pending rule could never be.
+  const overdue =
+    waitingSince && now.getTime() - new Date(waitingSince).getTime() > LIMITS.cooldownWaitDays * 86_400_000;
+  return overdue
+    ? {
+        ...result(
+          'cooldown',
+          'fail',
+          `still not ${LIMITS.cooldownDays} days old after ${LIMITS.cooldownWaitDays} days of waiting: ${aging.map(label).join(', ')}`,
+        ),
+        waiting: true,
+      }
+    : { ...result('cooldown', 'pending', `waiting for dependency versions to age: ${aging.map(label).join(', ')}`), waiting: true };
 }
 
 /**
@@ -468,7 +485,8 @@ function codeReviewRule(assessment, diffsExpected) {
  * @param {{name: string, version: string, direct: boolean, publishedAt: string|null,
  *   prevAttested: boolean, attested: boolean, prevPublisher: string|null,
  *   publisher: string|null}[]} f.registry - one per introduced version (direct and transitive)
- * @param {string[]} f.newAdvisories - advisory ids present on head but not on main
+ * @param {string[]|null} f.newAdvisories - advisory ids present on head but not on main
+ *   (null = npm audit could not run)
  * @param {string[]|null} f.malware - GitHub malware advisories for introduced versions
  *   (null = feed unavailable)
  * @param {boolean|null} f.mergeable - GitHub mergeability (null = still computing)
@@ -477,6 +495,7 @@ function codeReviewRule(assessment, diffsExpected) {
  * @param {{verdict: string, injectionSuspected?: boolean,
  *   codeReview?: {coverage: string, suspicious: {file: string, finding: string}[]}}|null} f.assessment
  *   LLM assessment for this head
+ * @param {string|null} [f.cooldownWaitSince] - when the PR started waiting on young versions
  * @param {Date} f.now - evaluation time
  * @returns {{id: string, kind: string, status: 'pass'|'fail'|'pending', detail: string}[]}
  */
@@ -551,7 +570,7 @@ export function evaluateRules(f) {
     unreachable.length
       ? result('registry', 'pending', `npm registry unavailable for: ${unreachable.map(label).join(', ')}`)
       : result('registry', 'pass', 'npm registry answered for every introduced version'),
-    cooldownRule(reachable, f.now),
+    cooldownRule(reachable, f.now, f.cooldownWaitSince),
     unless(
       'provenance',
       reachable.flatMap((r) => {
@@ -572,7 +591,11 @@ export function evaluateRules(f) {
       'publisher changed',
       'same npm publisher as the previous version',
     ),
-    unless('audit', f.newAdvisories, 'new advisories', 'no new advisories'),
+    // A failed audit run is an outage, not a finding: it waits like the registry and the
+    // malware feed, so it can neither ping the owner over a network hiccup nor be waived.
+    f.newAdvisories
+      ? unless('audit', f.newAdvisories, 'new advisories', 'no new advisories')
+      : result('audit', 'pending', 'npm audit could not run, retrying next run'),
     codeReviewRule(f.assessment, targets.direct.length + targets.transitive.length > 0),
     f.assessment
       ? result('verdict', TRI[f.assessment.verdict === 'merge'], verdictDetail(f.assessment))
@@ -601,12 +624,10 @@ export function evaluateRules(f) {
  *   only while it still fails with that same detail: a rule that starts failing later, or
  *   fails for a different reason (e.g. a re-assessment that finds suspicious code), or is
  *   merely pending (not assessed yet), is not covered
- * @param {boolean} p.held - the PR carries the deps:hold label
  * @param {boolean} p.slotFree - no merge has happened yet in this run
- * @returns {'held'|'escalate'|'wait'|'would-merge'|'queued'|'merge'} the outcome
+ * @returns {'escalate'|'wait'|'would-merge'|'queued'|'merge'} the outcome (held PRs never reach it)
  */
-export function decide({ rules, mode, waived = new Map(), held, slotFree }) {
-  if (held) return 'held';
+export function decide({ rules, mode, waived = new Map(), slotFree }) {
   const isWaived = (r) => r.kind === 'soft' && r.status === 'fail' && waived.get(r.id) === r.detail;
   if (rules.some((r) => r.kind === 'hard' && r.status === 'fail')) return 'escalate';
   if (rules.some((r) => r.kind === 'soft' && r.status === 'fail' && !isWaived(r))) return 'escalate';

@@ -10,6 +10,11 @@ const DATA = /<!-- deps-agent:data ([A-Za-z0-9+/=]+) -->/;
 // Owner overrides are separate, append-only App comments, never fields of the sticky
 // record: `/deps merge` and the scheduled run can then never overwrite each other.
 const OVERRIDE = /<!-- deps-agent:override ([A-Za-z0-9+/=]+) -->/;
+// A `/deps recheck` request, also an append-only App comment: it survives even if the run
+// it dispatched is cancelled while queued.
+const RECHECK = '<!-- deps-agent:recheck -->';
+// GitHub rejects comments over 65,536 characters; stay well below it.
+const MAX_COMMENT = 60_000;
 const HISTORY_LIMIT = 20;
 
 const ICON = { pass: '✅', fail: '❌', pending: '⏳' };
@@ -121,6 +126,54 @@ export function overridesFrom(comments, bot) {
 }
 
 /**
+ * Bound an assessment before it is stored, guided by assessment.schema.json: every string
+ * is clipped to its `x-maxLength`, every list to its `x-maxItems`, and keys the schema does
+ * not define are dropped. The schema is the single source of the assessment's shape and
+ * limits; the model's output is untrusted and unbounded, and the record must fit a comment.
+ * @param {unknown} value - assessment (or part of it)
+ * @param {object} schema - the matching (sub)schema
+ * @returns {unknown} the clamped value
+ */
+export function clampAssessment(value, schema) {
+  if (!schema) return value;
+  if (typeof value === 'string') return schema['x-maxLength'] ? value.slice(0, schema['x-maxLength']) : value;
+  if (Array.isArray(value)) {
+    return value.slice(0, schema['x-maxItems'] ?? value.length).map((v) => clampAssessment(v, schema.items));
+  }
+  if (value && typeof value === 'object') {
+    const props = schema.properties ?? {};
+    return Object.fromEntries(
+      Object.entries(value)
+        .filter(([k]) => k in props)
+        .map(([k, v]) => [k, clampAssessment(v, props[k])]),
+    );
+  }
+  return value;
+}
+
+/**
+ * Render the comment that records a `/deps recheck` request.
+ * @param {string} by - owner login
+ * @returns {string} comment body
+ */
+export function renderRecheck(by) {
+  return `Re-assessment requested by ${neutralize(by, 60)}; a run has been started.\n${RECHECK}`;
+}
+
+/**
+ * When the latest `/deps recheck` was requested (App comments only), or '' if never.
+ * @param {{body: string, created_at?: string, user: {login: string, type: string}}[]} comments
+ * @param {string} bot - the App's bot login
+ * @returns {string} ISO timestamp, comparable as a string
+ */
+export function latestRecheckAt(comments, bot) {
+  return comments
+    .filter((c) => fromApp(c, bot) && c.body.includes(RECHECK))
+    .map((c) => c.created_at ?? '')
+    .reduce((a, b) => (b > a ? b : a), '');
+}
+
+/**
  * Append a history entry when the outcome, SHA or decider changed.
  * @param {object} record - record to mutate
  * @param {{at: string, sha: string, outcome: string, by: string, note?: string}} entry
@@ -143,7 +196,29 @@ export function pushHistory(record, entry) {
  * @returns {string} comment body
  */
 export function renderRecord(record, ctx) {
-  const a = record.assessment;
+  // Progressively smaller versions until the comment fits. Only display detail is lost:
+  // trimmed rule details in the payload can at worst stop a waiver matching (re-escalate).
+  for (const trimmed of fitSteps(record)) {
+    const body = renderRecordBody(trimmed, ctx);
+    if (body.length <= MAX_COMMENT) return body;
+  }
+  throw new Error(`decision record for PR #${record.pr} does not fit in a comment`);
+}
+
+function* fitSteps(record) {
+  // The assessment is already bounded when stored (clampAssessment); what can still grow is
+  // the history (notes) and rule details (e.g. long version lists).
+  yield record;
+  const r = {
+    ...record,
+    history: (record.history ?? []).slice(-5).map((h) => ({ ...h, ...(h.note ? { note: String(h.note).slice(0, 200) } : {}) })),
+  };
+  yield r;
+  yield { ...r, rules: (record.rules ?? []).map((x) => ({ ...x, detail: String(x.detail).slice(0, 300) })) };
+}
+
+function renderRecordBody(record, ctx) {
+  const a = record.assessmentStale ? null : record.assessment;
   const lines = [
     MARKER,
     `### deps-agent decision: ${OUTCOME_LABEL[record.outcome] ?? record.outcome}`,
@@ -163,6 +238,8 @@ export function renderRecord(record, ctx) {
     }
     if (a.ciRead) lines.push(`- CI: ${neutralize(a.ciRead, 500)}`);
     if (a.injectionSuspected) lines.push('- 🚩 changelog/PR text looked like instructions to the agent');
+  } else if (record.assessmentStale) {
+    lines.push('', '**Assessment:** outdated (the PR changed since it was made); a fresh one is pending.');
   }
   lines.push(
     '',
@@ -211,7 +288,7 @@ export function renderEscalation(record, owner, note = '') {
     '',
     hard.length
       ? '`/deps merge` cannot override hard gates; fix the cause or close the PR.'
-      : 'Reply `/deps merge` to override the soft gates for these package versions (it survives rebases),',
+      : 'Reply `/deps merge` to waive the failing soft gates for this exact lockfile (a rebase that changes it asks again),',
     '`/deps hold <reason>` to park it, `/deps recheck` to re-assess, or `@dependabot ignore this major version`.',
     'Guide: [reading an escalation](../blob/main/docs/deps/README.md#reading-an-escalation).',
   );

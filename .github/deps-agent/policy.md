@@ -37,15 +37,15 @@ PR declares (direct) **and** the dependency versions that change with them (tran
 | semver         | soft      | patch or minor; 0.x minors, 0.0.x and prereleases count as major                |
 | installScripts | soft      | no package gains an install script, and no package that runs one changes version. Exception (option B): a new version of `better-sqlite3`, `esbuild`, `msw` or `unrs-resolver` passes when its install command is identical to the previous version's and both versions have npm provenance (cooldown and the code review still apply) |
 | newPackages    | soft      | ≤ 15 new packages in the lockfile                                               |
-| cooldown       | soft      | every introduced version the registry answered for is ≥ 7 days old. A young transitive version **waits** until it ages; a young direct version (a security update) or a version npm does not know (404, no publish time) escalates |
+| cooldown       | soft      | every introduced version the registry answered for is ≥ 7 days old. A young transitive version **waits** until it ages; after 14 days of waiting (a fast-moving dependency can reset the clock with each rebase) the rule fails, so it escalates and `/deps merge` can waive it. A young direct version (a security update) or a version npm does not know (404, no publish time) escalates at once |
 | provenance     | soft      | no introduced version lost the npm provenance its previous version had, and no attested version changed source repository (`repository.url`). npm ties provenance to that field, so a stolen token publishing "with provenance" from another repo has to change it. Unattested versions are not compared: their `repository` is free text |
 | publisher      | soft      | each direct package has the same npm publisher as its previous version (direct only: transitive maintainer changes are too common) |
-| audit          | soft      | `npm audit` finds no advisory that main does not already have                   |
+| audit          | soft      | `npm audit` finds no advisory that main does not already have. If the audit itself cannot run, the PR **waits** (an outage, not a finding: it can neither ping nor be waived) |
 | codeReview     | soft      | Claude's review of the published code diff found nothing suspicious. Covers the direct packages and up to 10 transitive versions (install-script packages first); coverage is reported, and coverage "none" fails when there were version changes to review (a review that saw nothing is not a pass) |
 | verdict        | soft      | the assessment says `merge`                                                     |
 | mergeable      | transient | no conflict (Dependabot rebases on its own)                                     |
 | fresh          | transient | main has not changed `package*.json` since the PR was built                     |
-| registry       | transient | the npm registry answered for every introduced version. During an outage (timeout, 5xx) the PR **waits**, and the registry-based rules (cooldown, provenance, publisher, install scripts) skip what they could not check; after 48 h of waiting the owner is pinged. Transient, so no override can waive it |
+| registry       | transient | the npm registry answered for every introduced version. During an outage (timeout, 5xx) the PR **waits**, and the registry-based rules (cooldown, provenance, publisher, install scripts) skip what they could not check. Transient, so no override can waive it |
 | mainHealthy    | transient | main's latest CI and Deploy succeeded                                           |
 
 A failing **hard** or **soft** rule escalates. A failing **transient** rule waits for the
@@ -80,8 +80,12 @@ re-checked on every commit and can never be waived.
   or not. `/deps unhold` restores the override.
 - If a PR waits on a rebase that Dependabot has not done 24 h after deps-agent asked, the
   owner is pinged to comment `@dependabot rebase` themselves.
-- If a PR has waited 14 days on young transitive versions (a fast-moving dependency can
-  keep resetting the clock with each rebase), the owner is pinged to decide.
+- If an external source (npm registry, malware feed, npm audit) has not answered for a PR
+  for 48 h, the owner is pinged: part of that PR is still unchecked.
+- deps-agent only asks Dependabot to rebase in `merge` mode, and never on a held PR. A held
+  PR is recorded as held without collecting any facts.
+- A `/deps recheck` is stored as an App comment: if the run it starts is cancelled, the next
+  run still re-assesses the PR.
 - Every PR carries one sticky **decision record** comment (gates, assessment, history of who
   decided what). The **Dependency dashboard** issue lists every open PR's state.
 - Versions we deliberately skip are `ignore` entries in `.github/dependabot.yml`, each

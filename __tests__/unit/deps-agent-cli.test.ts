@@ -35,11 +35,16 @@ interface Comment {
   id: number;
   body: string;
   user: { login: string; type: string };
+  created_at?: string;
 }
 interface FakeState {
   withMs: boolean;
   msPublishedAt: string;
   registryStatus: number;
+  auditFails: boolean;
+  recordSaveFails: boolean;
+  npmCalls: number;
+  fetchCalls: number;
   headSha: string;
   mergeable: boolean;
   fresh: boolean;
@@ -140,9 +145,17 @@ function get(path: string): unknown {
 }
 
 function write(method: string, path: string, body: Record<string, unknown>): unknown {
+  if (state.recordSaveFails && String(body.body ?? '').includes('deps-agent:record')) {
+    throw new Error('Validation Failed: body is too long (maximum is 65536 characters)');
+  }
   state.writes.push({ method, path, body });
   if (method === 'POST' && path.endsWith(`issues/${PR}/comments`)) {
-    const c = { id: nextId++, body: String(body.body), user: { login: BOT, type: 'Bot' } };
+    const c = {
+      id: nextId++,
+      body: String(body.body),
+      user: { login: BOT, type: 'Bot' },
+      created_at: new Date().toISOString(),
+    };
     state.comments.push(c);
     return c;
   }
@@ -159,7 +172,14 @@ function write(method: string, path: string, body: Record<string, unknown>): unk
 
 function fakeExec(cmd: string, args: string[], opts?: { input?: string }): string {
   const arg = (i: number) => args[i] ?? '';
-  if (cmd === 'npm') return JSON.stringify({ vulnerabilities: {} }); // npm audit
+  if (cmd === 'npm') {
+    state.npmCalls++;
+    if (state.auditFails)
+      throw Object.assign(new Error('npm audit: ETIMEDOUT'), {
+        stdout: '{"error":{"summary":"network"}}',
+      });
+    return JSON.stringify({ vulnerabilities: {} }); // npm audit
+  }
   if (cmd === 'git') {
     state.git.push(args);
     return '';
@@ -231,6 +251,7 @@ beforeAll(async () => {
   vi.stubGlobal(
     'fetch',
     vi.fn(async (url: string) => {
+      state.fetchCalls++;
       if (state.registryStatus !== 200) return new Response('{}', { status: state.registryStatus });
       const doc = String(url).endsWith('/ms')
         ? {
@@ -254,6 +275,10 @@ beforeEach(() => {
     withMs: false,
     msPublishedAt: '2026-10-01T00:00:00Z',
     registryStatus: 200,
+    auditFails: false,
+    recordSaveFails: false,
+    npmCalls: 0,
+    fetchCalls: 0,
     headSha: 'head1',
     mergeable: true,
     fresh: true,
@@ -494,7 +519,159 @@ describe('cooldown wait', () => {
     const { outcome } = await cli.evaluatePr(PR, { main: healthy, now: later, slotFree: true });
     expect(outcome).toBe('escalate');
     expect(pings()[0]?.body).toContain('waited 14 days');
-    expect(pings()[0]?.body).not.toContain('Blocking gates');
+
+    // The suggested `/deps merge` must actually work: it waives the overdue cooldown.
+    Object.assign(process.env, { PR: String(PR), COMMENTER: 'owner', COMMENT_BODY: '/deps merge' });
+    await cli.commands.command();
+    expect(state.comments.some((c) => c.body.includes('deps-agent:override'))).toBe(true);
+    cli.clearRunCaches();
+    const after = await cli.evaluatePr(PR, { main: healthy, now: later, slotFree: true });
+    expect(after.outcome).toBe('merge');
+  });
+});
+
+describe('seventh review', () => {
+  const evaluate = (over: Record<string, unknown> = {}) =>
+    cli.evaluatePr(PR, {
+      main: healthy,
+      now: NOW,
+      assessment: assessed('escalate'),
+      slotFree: true,
+      ...over,
+    });
+  const rebaseRequests = () => state.comments.filter((c) => c.body === '@dependabot rebase');
+  const recordBody = () =>
+    state.comments.find((c) => c.body.includes('deps-agent:record'))?.body ?? '';
+
+  it('posts no ping or rebase request when the record cannot be saved, so nothing repeats', async () => {
+    state.recordSaveFails = true;
+    state.fresh = false;
+    await expect(evaluate()).rejects.toThrow(/too long/);
+    await expect(evaluate()).rejects.toThrow(/too long/);
+    expect(pings()).toHaveLength(0);
+    expect(rebaseRequests()).toHaveLength(0);
+  });
+
+  it('clamps oversized assessment fields before they reach the record', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'deps-clamp-'));
+    const facts = join(dir, 'facts.json');
+    const out = join(dir, 'assessment.json');
+    writeFileSync(
+      facts,
+      JSON.stringify({
+        meta: { headSha: 'h' },
+        facts: { updates: [], checks: [], lock: { changed: [] } },
+      }),
+    );
+    const huge = 'x'.repeat(200_000);
+    vi.stubEnv(
+      'ASSESSMENT',
+      JSON.stringify({
+        verdict: 'escalate',
+        summary: huge,
+        breakingChangesAffectingUs: Array.from({ length: 500 }, () => ({
+          change: huge,
+          usage: huge,
+        })),
+        securityFixes: [],
+        adoptableFeatures: [],
+        ciRead: huge,
+        injectionSuspected: false,
+        codeReview: { coverage: 'full', suspicious: [{ file: huge, finding: huge }] },
+      }),
+    );
+    try {
+      await cli.commands['save-assessment']({ pr: '7', facts, out });
+      expect(readFileSync(out, 'utf8').length).toBeLessThan(40_000);
+    } finally {
+      vi.unstubAllEnvs();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('does not ask Dependabot to rebase a held PR, nor in shadow mode', async () => {
+    state.fresh = false;
+    state.labels = ['deps:hold'];
+    await evaluate();
+    expect(rebaseRequests()).toHaveLength(0);
+    state.labels = [];
+    vi.stubEnv('MODE', 'shadow');
+    try {
+      await evaluate();
+    } finally {
+      vi.unstubAllEnvs();
+    }
+    expect(rebaseRequests()).toHaveLength(0);
+  });
+
+  it('waits when npm audit itself fails, and pings once that has lasted 48 hours', async () => {
+    state.auditFails = true;
+    const first = await evaluate({ assessment: assessed('merge') });
+    expect(first.outcome).toBe('wait');
+    expect(pings()).toHaveLength(0);
+    cli.clearRunCaches();
+    const later = new Date(NOW.getTime() + 49 * 3_600_000);
+    const { outcome } = await cli.evaluatePr(PR, { main: healthy, now: later, slotFree: true });
+    expect(outcome).toBe('escalate');
+    expect(pings()[0]?.body).toContain('audit');
+  });
+
+  it('keeps a /deps recheck request until a fresh assessment is stored', async () => {
+    const plannedNow = async () => {
+      const dir = mkdtempSync(join(tmpdir(), 'deps-plan-'));
+      const file = join(dir, 'out');
+      writeFileSync(file, '');
+      vi.stubEnv('GITHUB_OUTPUT', file);
+      try {
+        await cli.commands.plan();
+        return JSON.parse(readFileSync(file, 'utf8').split('\n')[1] ?? '[]') as number[];
+      } finally {
+        vi.unstubAllEnvs();
+        rmSync(dir, { recursive: true, force: true });
+      }
+    };
+    const t0 = new Date(Date.now() - 60_000);
+    await cli.evaluatePr(PR, {
+      main: healthy,
+      now: t0,
+      assessment: assessed('merge'),
+      slotFree: false,
+    });
+    expect(await plannedNow()).toEqual([]); // assessed, nothing to do
+    Object.assign(process.env, {
+      PR: String(PR),
+      COMMENTER: 'owner',
+      COMMENT_BODY: '/deps recheck',
+    });
+    await cli.commands.command();
+    // The dispatched run's act was cancelled: the next scheduled plan still re-assesses.
+    expect(await plannedNow()).toEqual([PR]);
+    await cli.evaluatePr(PR, {
+      main: healthy,
+      now: new Date(),
+      assessment: assessed('merge'),
+      slotFree: false,
+    });
+    expect(await plannedNow()).toEqual([]);
+  });
+
+  it('marks an assessment as outdated once the PR state no longer matches it', async () => {
+    await evaluate({ assessment: assessed('merge'), slotFree: false });
+    expect(recordBody()).toContain('**Assessment**');
+    state.withMs = true; // a rebase re-resolved the lockfile
+    state.headSha = 'head2';
+    cli.clearRunCaches();
+    await cli.evaluatePr(PR, { main: healthy, now: NOW, slotFree: false });
+    expect(recordBody()).not.toContain('**Assessment**');
+    expect(recordBody()).toContain('outdated');
+  });
+
+  it('records a held PR without collecting registry or audit facts', async () => {
+    state.labels = ['deps:hold'];
+    const { outcome } = await evaluate();
+    expect(outcome).toBe('held');
+    expect(state.npmCalls).toBe(0);
+    expect(state.fetchCalls).toBe(0);
   });
 });
 

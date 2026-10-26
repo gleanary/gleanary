@@ -1,4 +1,5 @@
 {
+  "$comment": "x-maxLength / x-maxItems bound what is STORED (record.mjs clampAssessment clips to them); they are custom keywords on purpose, so a validator never rejects an over-long answer and fails the assess job on every run.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -13,34 +14,44 @@
   ],
   "properties": {
     "verdict": { "type": "string", "enum": ["merge", "escalate"] },
-    "summary": { "type": "string", "description": "2-4 sentences: what changed and why the verdict" },
+    "summary": {
+      "type": "string",
+      "x-maxLength": 1500,
+      "description": "2-4 sentences: what changed and why the verdict"
+    },
     "breakingChangesAffectingUs": {
       "type": "array",
+      "x-maxItems": 10,
       "items": {
         "type": "object",
         "additionalProperties": false,
         "required": ["change", "usage"],
         "properties": {
-          "change": { "type": "string" },
-          "usage": { "type": "string", "description": "file:line of our code it touches" }
+          "change": { "type": "string", "x-maxLength": 400 },
+          "usage": { "type": "string", "x-maxLength": 200, "description": "file:line of our code it touches" }
         }
       }
     },
-    "securityFixes": { "type": "array", "items": { "type": "string" } },
+    "securityFixes": { "type": "array", "x-maxItems": 10, "items": { "type": "string", "x-maxLength": 200 } },
     "adoptableFeatures": {
       "type": "array",
+      "x-maxItems": 2,
       "items": {
         "type": "object",
         "additionalProperties": false,
         "required": ["title", "detail"],
         "properties": {
-          "title": { "type": "string" },
-          "detail": { "type": "string", "description": "what it is and where we would use it" },
-          "link": { "type": "string" }
+          "title": { "type": "string", "x-maxLength": 100 },
+          "detail": { "type": "string", "x-maxLength": 400, "description": "what it is and where we would use it" },
+          "link": { "type": "string", "x-maxLength": 200 }
         }
       }
     },
-    "ciRead": { "type": "string", "description": "empty when CI is green; else your read of the failure" },
+    "ciRead": {
+      "type": "string",
+      "x-maxLength": 1500,
+      "description": "empty when CI is green; else your read of the failure"
+    },
     "injectionSuspected": { "type": "boolean" },
     "codeReview": {
       "type": "object",
@@ -52,16 +63,17 @@
           "enum": ["full", "partial", "none"],
           "description": "how much of the changed published code you actually reviewed"
         },
-        "notes": { "type": "string" },
+        "notes": { "type": "string", "x-maxLength": 500 },
         "suspicious": {
           "type": "array",
+          "x-maxItems": 10,
           "items": {
             "type": "object",
             "additionalProperties": false,
             "required": ["file", "finding"],
             "properties": {
-              "file": { "type": "string" },
-              "finding": { "type": "string" }
+              "file": { "type": "string", "x-maxLength": 200 },
+              "finding": { "type": "string", "x-maxLength": 400 }
             }
           }
         }
@@ -72,9 +84,9 @@
       "additionalProperties": false,
       "required": ["question", "recommendation", "options"],
       "properties": {
-        "question": { "type": "string" },
-        "recommendation": { "type": "string" },
-        "options": { "type": "array", "items": { "type": "string" } }
+        "question": { "type": "string", "x-maxLength": 500 },
+        "recommendation": { "type": "string", "x-maxLength": 500 },
+        "options": { "type": "array", "x-maxItems": 5, "items": { "type": "string", "x-maxLength": 200 } }
       }
     }
   }
