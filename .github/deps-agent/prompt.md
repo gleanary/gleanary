@@ -58,7 +58,10 @@ that got no diff at all.
    Record each concrete finding in `codeReview.suspicious` (file, plus what and why), and
    set `codeReview.coverage` honestly: `full` only if you saw every relevant file of every
    introduced version, `partial` if a diff was truncated, you skimmed bundled output, or
-   `transitiveNotReviewed` is above zero, `none` if no diff was available. Review
+   `transitiveNotReviewed` is above zero or a diff lists `unreviewable` files, `none` if no
+   diff was available. `unreviewable` lists changed binaries and archives that were not
+   diffed: one the changelog or the package's purpose does not
+   explain is a suspicious finding. Review
    dependency diffs (`direct: false`) as carefully as direct ones: a hijacked dependency
    arrives this way. Large compiled bundles (e.g. `next`) are expected to be `partial`:
    say so, and focus on package.json, install/bin scripts and entry points. Any

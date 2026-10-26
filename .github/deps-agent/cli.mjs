@@ -75,10 +75,15 @@ const BUFFER = 512 * 1024 * 1024;
 // Published-code review: a full `npm diff` of a large package (e.g. next) exhausts the heap,
 // so Claude gets package.json, install/bin scripts and top-level files first, then the rest
 // up to these caps, and is told what it did not see.
-// Binaries are excluded too: a text review can't read them, and `npm diff` on a large native
-// binary (e.g. @next/swc-*'s .node file) runs for many minutes at hundreds of MB.
-const DIFF_NOISE =
-  /(\.map|\.d\.[cm]?ts|\.md|(^|\/)LICENSE[^/]*|\.(node|wasm|so|dylib|dll|exe|bin|png|jpe?g|gif|webp|ico|woff2?|ttf|otf|eot|gz|tgz|zip))$|(^|\/)(__tests__|tests?|docs?|examples?)\//i;
+// Noise is only what cannot carry a payload by itself. Code under test/docs/examples folders
+// is kept (index.js can require lib/tests/x.js) but ranked last.
+const DIFF_NOISE = /(\.map|\.d\.[cm]?ts|\.md|(^|\/)LICENSE[^/]*|\.(png|jpe?g|gif|webp|ico|woff2?|ttf|otf|eot))$/i;
+// Binaries and archives are not diffed (a text review can't read them, and `npm diff` on a
+// large native binary, e.g. @next/swc-*'s .node file, runs for many minutes at hundreds of
+// MB), but they are listed so the review knows what it did not see.
+const DIFF_UNREVIEWABLE = /\.(node|wasm|so|dylib|dll|exe|bin|gz|tgz|zip)$/i;
+const DIFF_LOW_PRIORITY = /(^|\/)(__tests__|tests?|docs?|examples?)\//i;
+const DIFF_MAX_LISTED = 20;
 // Hard wall-clock limit per `npm diff` call: a slow package costs coverage, never the job.
 const DIFF_TIMEOUT_MS = 120_000;
 const DIFF_MAX_FILES = 80;
@@ -230,6 +235,7 @@ function malwareAdvisories(specs) {
 function diffPriority(file) {
   if (file === 'package.json') return 0;
   if (/(^|\/)(pre|post)?install|^bin\//.test(file)) return 1;
+  if (DIFF_LOW_PRIORITY.test(file)) return 4;
   return file.includes('/') ? 3 : 2;
 }
 
@@ -243,7 +249,13 @@ function packageDiff(name, from, to, maxBytes = DIFF_MAX_BYTES) {
       timeout: DIFF_TIMEOUT_MS,
     });
   const files = npmDiff(BUFFER, '--diff-name-only').split('\n').filter(Boolean);
-  const relevant = files.filter((f) => !DIFF_NOISE.test(f)).sort((a, b) => diffPriority(a) - diffPriority(b));
+  const unreviewable = [];
+  const relevant = [];
+  for (const f of files) {
+    if (DIFF_UNREVIEWABLE.test(f)) unreviewable.push(f);
+    else if (!DIFF_NOISE.test(f)) relevant.push(f);
+  }
+  relevant.sort((a, b) => diffPriority(a) - diffPriority(b));
   const picked = relevant.slice(0, DIFF_MAX_FILES);
   let text = '';
   let overflow = false;
@@ -263,6 +275,8 @@ function packageDiff(name, from, to, maxBytes = DIFF_MAX_BYTES) {
     relevantFiles: relevant.length,
     includedFiles: picked.length,
     truncated: overflow || picked.length < relevant.length,
+    // Capped list: the review needs the names, not thousands of them.
+    unreviewable: unreviewable.slice(0, DIFF_MAX_LISTED),
   };
 }
 
@@ -287,6 +301,20 @@ const prComments = (number) => apiPaged(`repos/${REPO}/issues/${number}/comments
 function findRecord(number, comments = prComments(number)) {
   const comment = comments.find((c) => fromApp(c, BOT) && c.body.includes(MARKER));
   return { comment, record: comment ? decodeRecord(comment.body) : null };
+}
+
+/** Whether package-diffs showed every changed file it was asked to (index missing = no). */
+function diffsComplete(dir) {
+  let index;
+  try {
+    index = JSON.parse(readFileSync(join(dir, 'index.json'), 'utf8'));
+  } catch {
+    return false;
+  }
+  return (
+    !index.transitiveNotReviewed &&
+    index.diffs.every((d) => !d.error && !d.truncated && !d.unreviewable?.length)
+  );
 }
 
 const ASSESSMENT_SCHEMA = JSON.parse(readFileSync(join(HERE, 'assessment.schema.json'), 'utf8'));
@@ -821,11 +849,15 @@ const commands = {
     );
   },
 
-  async 'save-assessment'({ pr, facts, out }) {
+  async 'save-assessment'({ pr, facts, out, diffs = '.deps-agent-diffs' }) {
     const { meta, facts: f } = JSON.parse(readFileSync(facts, 'utf8'));
     const assessment = JSON.parse(process.env.ASSESSMENT || 'null');
     if (!assessment || !['merge', 'escalate'].includes(assessment.verdict)) {
       throw new Error(`PR #${pr}: invalid assessment output`);
+    }
+    // "full" is the model's claim; what package-diffs could not show it caps that at partial.
+    if (assessment.codeReview?.coverage === 'full' && !diffsComplete(diffs)) {
+      assessment.codeReview.coverage = 'partial';
     }
     const key = keyFor(f.updates, f.checks, f.lock.changed);
     const assessedAt = new Date().toISOString();

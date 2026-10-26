@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   DEPENDABOT_COMMIT_EMAIL,
   REQUIRED_CHECKS,
+  failedChecks,
   RULE_KIND,
   advisoryKeys,
   assessmentKey,
@@ -194,7 +195,7 @@ describe('diffLockfiles', () => {
     };
     expect(diffLockfiles(base, head)).toMatchObject({
       added: ['node_modules/b'],
-      newInstallScripts: ['node_modules/a'],
+      newInstallScripts: ['a'],
       changed: [
         {
           name: 'a',
@@ -886,7 +887,7 @@ describe('latestCheckRuns', () => {
       { id: 1, name: 'Lint', status: 'completed', conclusion: 'failure' },
     ];
     expect(latestCheckRuns(runs)).toEqual([
-      { name: 'Lint', status: 'completed', conclusion: 'success' },
+      { name: 'Lint', status: 'completed', conclusion: 'success', completedAt: null },
     ]);
   });
 });
@@ -1160,5 +1161,68 @@ describe('decision records', () => {
       '`/deps merge` to waive the failing soft gates',
     );
     expect(renderEscalation(hardFail, 'owner')).toContain('cannot override hard gates');
+  });
+});
+
+describe('tenth review: gate', () => {
+  it('diffs a package that moves location against its old version, found by name', () => {
+    const base = {
+      packages: {
+        'node_modules/x': { version: '1.0.0' },
+        'node_modules/y/node_modules/z': { version: '2.0.0' },
+      },
+    };
+    // x goes from hoisted to nested at a new version; z from nested to hoisted
+    const head = {
+      packages: {
+        'node_modules/w/node_modules/x': { version: '1.1.0' },
+        'node_modules/z': { version: '2.1.0' },
+      },
+    };
+    const lock = diffLockfiles(base, head);
+    expect(lock.changed.map((c) => `${c.name} ${c.from}→${c.to}`)).toEqual([
+      'x 1.0.0→1.1.0',
+      'z 2.0.0→2.1.0',
+    ]);
+    expect(lock.added).toEqual([]);
+  });
+
+  it('does not treat a package moved at the same version as new or as a new install script', () => {
+    const esbuild = { version: '0.25.0', hasInstallScript: true };
+    const base = { packages: { 'node_modules/esbuild': esbuild } };
+    const head = { packages: { 'node_modules/vite/node_modules/esbuild': esbuild } };
+    expect(diffLockfiles(base, head)).toMatchObject({
+      added: [],
+      newInstallScripts: [],
+      changed: [],
+    });
+  });
+
+  it('still flags a script gained by a package whose base copies had none', () => {
+    const base = { packages: { 'node_modules/a': { version: '1.0.0' } } };
+    const head = {
+      packages: { 'node_modules/b/node_modules/a': { version: '1.0.1', hasInstallScript: true } },
+    };
+    expect(diffLockfiles(base, head).newInstallScripts).toEqual(['a']);
+  });
+
+  it('waits on a cancelled required check, and escalates if nobody re-runs it within a day', () => {
+    const cancelledAt = (completedAt?: string) =>
+      cleanFacts().checks.map((c, i) =>
+        i === 0 ? { ...c, conclusion: 'cancelled', completedAt } : c,
+      );
+    const fresh = cleanFacts({ checks: cancelledAt(), headCommittedAt: '2026-10-23T10:00:00Z' });
+    expect(statusOf(fresh, 'checks')).toBe('pending');
+    expect(outcome(fresh)).toBe('wait');
+    const old = cleanFacts({ checks: cancelledAt(), headCommittedAt: '2026-10-21T10:00:00Z' });
+    expect(statusOf(old, 'checks')).toBe('fail');
+    // the clock starts at the cancellation: an old head cancelled an hour ago still waits
+    const recent = cleanFacts({
+      checks: cancelledAt('2026-10-23T11:00:00Z'),
+      headCommittedAt: '2026-10-21T10:00:00Z',
+    });
+    expect(statusOf(recent, 'checks')).toBe('pending');
+    // a cancelled run is not a red CI for the assessment cache
+    expect(failedChecks(cancelledAt())).toEqual([]);
   });
 });

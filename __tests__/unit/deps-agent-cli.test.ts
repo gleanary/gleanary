@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeAll, beforeEach, afterAll } from 'vitest';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -50,6 +50,8 @@ interface FakeState {
   auditFails: boolean;
   recordSaveFails: boolean;
   npmCalls: number;
+  npmDiffFiles: string[];
+  npmDiffs: string[][];
   fetchCalls: number;
   headSha: string;
   mergeable: boolean;
@@ -208,6 +210,11 @@ function fakeExec(cmd: string, args: string[], opts?: { input?: string }): strin
   const arg = (i: number) => args[i] ?? '';
   if (cmd === 'npm') {
     state.npmCalls++;
+    if (args[0] === 'diff') {
+      if (args.includes('--diff-name-only')) return state.npmDiffFiles.join('\n');
+      state.npmDiffs.push(args);
+      return 'diff --git a/x b/x\n';
+    }
     if (state.auditFails)
       throw Object.assign(new Error('npm audit: ETIMEDOUT'), {
         stdout: '{"error":{"summary":"network"}}',
@@ -337,6 +344,8 @@ beforeEach(() => {
     auditFails: false,
     recordSaveFails: false,
     npmCalls: 0,
+    npmDiffFiles: [],
+    npmDiffs: [],
     fetchCalls: 0,
     headSha: 'head1',
     mergeable: true,
@@ -1035,5 +1044,66 @@ describe('command', () => {
     await run('/deps merge', 'mallory');
     expect(state.writes).toEqual([]);
     expect(state.dispatches).toEqual([]);
+  });
+});
+
+describe('tenth review: published-code review', () => {
+  const withDir = async (run: (dir: string) => Promise<void>) => {
+    const dir = mkdtempSync(join(tmpdir(), 'deps-diffs-'));
+    try {
+      await run(dir);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  };
+  const writeFacts = (dir: string) => {
+    const facts = join(dir, 'facts.json');
+    writeFileSync(
+      facts,
+      JSON.stringify({
+        meta: { headSha: 'h' },
+        facts: {
+          updates: [{ name: 'zod', type: 'direct:production', from: '4.4.3', to: '4.6.7' }],
+          checks: [],
+          lock: { changed: [{ name: 'zod', from: '4.4.3', to: '4.6.7', installScript: false }] },
+        },
+      }),
+    );
+    return facts;
+  };
+
+  it('shows code under test/docs folders, and lists binaries it cannot review', async () => {
+    state.npmDiffFiles = ['lib/tests/x.js', 'README.md', 'prebuilt/zod.node', 'index.js'];
+    await withDir(async (dir) => {
+      const out = join(dir, 'diffs');
+      await cli.commands['package-diffs']({ facts: writeFacts(dir), out });
+      expect(state.npmDiffs[0]).toEqual(expect.arrayContaining(['lib/tests/x.js', 'index.js']));
+      expect(state.npmDiffs[0]).not.toContain('README.md');
+      const index = JSON.parse(readFileSync(join(out, 'index.json'), 'utf8'));
+      expect(index.diffs[0].unreviewable).toEqual(['prebuilt/zod.node']);
+    });
+  });
+
+  it('records the code review as partial when files could not be reviewed', async () => {
+    await withDir(async (dir) => {
+      const diffs = join(dir, 'diffs');
+      const out = join(dir, 'assessment.json');
+      mkdirSync(diffs);
+      const index = {
+        diffs: [{ name: 'zod', unreviewable: ['prebuilt/zod.node'] }],
+        transitiveNotReviewed: 0,
+      };
+      writeFileSync(join(diffs, 'index.json'), JSON.stringify(index));
+      vi.stubEnv(
+        'ASSESSMENT',
+        JSON.stringify({ verdict: 'merge', codeReview: { coverage: 'full', suspicious: [] } }),
+      );
+      try {
+        await cli.commands['save-assessment']({ pr: '7', facts: writeFacts(dir), out, diffs });
+      } finally {
+        vi.unstubAllEnvs();
+      }
+      expect(JSON.parse(readFileSync(out, 'utf8')).assessment.codeReview.coverage).toBe('partial');
+    });
   });
 });

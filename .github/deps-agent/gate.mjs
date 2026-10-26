@@ -175,40 +175,53 @@ export function classifyBump(from, to) {
  *   changed: {name: string, from: string|null, to: string, installScript: boolean}[],
  *   foreignSources: string[]}} where foreignSources lists every entry whose resolved URL or
  *   version is new or changed and that does not come from registry.npmjs.org
- *   lock keys added; keys that gained an install script (new package, or existing one that
- *   did not have one); and every introduced version, direct or transitive (added, or version
- *   changed), deduplicated by `name@to` and sorted
+ *   lock keys of packages main did not have at all; names of packages that gained an install
+ *   script (no copy on main had one); and every introduced version (one main did not have
+ *   anywhere), direct or transitive, deduplicated by `name@to` and sorted. `from` is the
+ *   version at the same key, else the base copy of the same name (a bump that moves it)
  */
 export function diffLockfiles(base, head) {
   const b = base.packages ?? {};
   const h = head.packages ?? {};
+  // Base copies by package name: a bump can also move a package (hoisted <-> nested), so
+  // what was installed before is looked up by name, not only at the same lockfile key.
+  const baseByName = new Map();
+  for (const [key, entry] of Object.entries(b)) {
+    if (!key || !entry.version) continue;
+    const name = packageName(key, entry);
+    const known = baseByName.get(name) ?? { versions: new Set(), prev: entry.version, script: false };
+    known.versions.add(entry.version);
+    if (key === `node_modules/${name}`) known.prev = entry.version; // the hoisted copy wins
+    known.script ||= Boolean(entry.hasInstallScript);
+    baseByName.set(name, known);
+  }
   const added = [];
   const newInstallScripts = [];
   const changed = new Map();
   const foreignSources = [];
   for (const [key, entry] of Object.entries(h)) {
     if (!key) continue; // root project entry
-    if (!(key in b)) added.push(key);
+    const name = packageName(key, entry);
+    const known = baseByName.get(name);
+    if (!known) added.push(key);
     // Per lockfile entry, not per name@version: a second copy of a version, or a resolved
     // URL swapped without a version change, must not hide behind a clean first copy.
     const resolvedChanged =
       !(key in b) || b[key]?.resolved !== entry.resolved || b[key]?.version !== entry.version;
     if (entry.version && resolvedChanged && !entry.inBundle && !entry.link && !entry.resolved?.startsWith(NPM_REGISTRY)) {
-      foreignSources.push(`${key.replace(/^.*node_modules\//, '')}@${entry.version} from ${entry.resolved ?? '(no resolved URL)'}`);
+      foreignSources.push(`${name}@${entry.version} from ${entry.resolved ?? '(no resolved URL)'}`);
     }
-    if (entry.hasInstallScript && !b[key]?.hasInstallScript) newInstallScripts.push(key);
-    if (entry.version && b[key]?.version !== entry.version) {
-      // An npm alias (`"string-width-cjs": "npm:string-width@4"`) is installed under the
-      // alias path but published under `entry.name`: registry and malware lookups need
-      // the real name.
-      const name = entry.name ?? key.slice(key.lastIndexOf('node_modules/') + 'node_modules/'.length);
+    if (entry.hasInstallScript && !known?.script && !newInstallScripts.includes(name)) newInstallScripts.push(name);
+    // Introduced = a version main did not have anywhere. A copy that only moved is not.
+    if (entry.version && !known?.versions.has(entry.version)) {
+      const atKey = b[key] && packageName(key, b[key]) === name ? b[key].version : null;
       // The same version can sit at several places (hoisted and nested). Merge them, keeping
       // a known previous version over "new here", so read order cannot drop it from review.
       const spec = `${name}@${entry.version}`;
       const seen = changed.get(spec);
       changed.set(spec, {
         name,
-        from: seen?.from ?? b[key]?.version ?? null,
+        from: seen?.from ?? atKey ?? known?.prev ?? null,
         to: entry.version,
         installScript: Boolean(seen?.installScript || entry.hasInstallScript),
       });
@@ -216,6 +229,15 @@ export function diffLockfiles(base, head) {
   }
   const sorted = [...changed.entries()].sort(([a], [z]) => a.localeCompare(z));
   return { added, newInstallScripts, changed: sorted.map(([, c]) => c), foreignSources };
+}
+
+/**
+ * Published name of a lockfile entry. An npm alias (`"string-width-cjs":
+ * "npm:string-width@4"`) is installed under the alias path but published under
+ * `entry.name`: registry and malware lookups need the real name.
+ */
+function packageName(key, entry) {
+  return entry.name ?? key.slice(key.lastIndexOf('node_modules/') + 'node_modules/'.length);
 }
 
 /**
@@ -298,7 +320,7 @@ export const TRUSTED_INSTALL_SCRIPTS = new Set(['better-sqlite3', 'esbuild', 'ms
  *   whose new version passed with an unchanged command and provenance
  */
 export function installScriptChanges(lock, registry = []) {
-  const gained = new Set(lock.newInstallScripts.map((key) => key.replace(/^.*node_modules\//, '')));
+  const gained = new Set(lock.newInstallScripts);
   const facts = new Map(registry.map((r) => [label(r), r]));
   const unchangedAndAttested = (c, r) => {
     if (!TRUSTED_INSTALL_SCRIPTS.has(c.name)) return false;
@@ -419,6 +441,12 @@ export function pendingChecks(checks) {
   return REQUIRED_CHECKS.filter((n) => byName.get(n)?.status !== 'completed');
 }
 
+/** Conclusions of a run that was stopped rather than failed (by hand, or superseded). */
+const INTERRUPTED = ['cancelled', 'stale'];
+
+/** Hours a cancelled check may wait for a re-run (by hand or a new push) before escalating. */
+const CANCELLED_WAIT_HOURS = 24;
+
 /**
  * Completed check runs that did not succeed.
  * @param {{name: string, status: string, conclusion: string|null}[]} checks - from latestCheckRuns
@@ -426,9 +454,10 @@ export function pendingChecks(checks) {
  */
 export function failedChecks(checks) {
   return checks.filter(
-    (c) => c.status === 'completed' && !['success', 'skipped', 'neutral'].includes(c.conclusion),
+    (c) => c.status === 'completed' && !['success', 'skipped', 'neutral', ...INTERRUPTED].includes(c.conclusion),
   );
 }
+
 
 /** Minutes after a push with no check run at all before we call CI missing, not slow. */
 const NO_CI_GRACE_MINUTES = 60;
@@ -436,6 +465,16 @@ const NO_CI_GRACE_MINUTES = 60;
 function checksRule(checks, headCommittedAt, now) {
   const failed = failedChecks(checks);
   if (failed.length) return unless('checks', failed.map((c) => c.name), 'failed', '');
+  const interrupted = checks.filter((c) => c.status === 'completed' && INTERRUPTED.includes(c.conclusion));
+  if (interrupted.length) {
+    const names = interrupted.map((c) => c.name).join(', ');
+    // Clocked from the cancellation (a day-old head can be cancelled now), else the commit.
+    const since = interrupted.map((c) => c.completedAt).filter(Boolean).sort().at(-1) ?? headCommittedAt;
+    const hours = since ? (now.getTime() - new Date(since).getTime()) / 3_600_000 : 0;
+    return hours > CANCELLED_WAIT_HOURS
+      ? result('checks', 'fail', `not re-run within ${CANCELLED_WAIT_HOURS} h of being cancelled: ${names} (re-run CI)`)
+      : result('checks', 'pending', `cancelled, waiting for a re-run: ${names}`);
+  }
   const pending = pendingChecks(checks);
   if (!pending.length) return result('checks', 'pass', 'all required checks green');
   if (!checks.length) {
@@ -710,13 +749,15 @@ export function decide({ rules, mode, waived = new Map(), slotFree }) {
 
 /**
  * Keep the latest run per check name (re-runs create new check runs on the same SHA).
- * @param {{id: number, name: string, status: string, conclusion: string|null}[]} runs
- * @returns {{name: string, status: string, conclusion: string|null}[]} one entry per name
+ * @param {{id: number, name: string, status: string, conclusion: string|null,
+ *   completed_at?: string|null}[]} runs
+ * @returns {{name: string, status: string, conclusion: string|null, completedAt: string|null}[]}
+ *   one entry per name
  */
 export function latestCheckRuns(runs) {
   const byName = new Map();
   for (const r of [...runs].sort((a, b) => a.id - b.id)) {
-    byName.set(r.name, { name: r.name, status: r.status, conclusion: r.conclusion });
+    byName.set(r.name, { name: r.name, status: r.status, conclusion: r.conclusion, completedAt: r.completed_at ?? null });
   }
   return [...byName.values()];
 }

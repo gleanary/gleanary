@@ -291,6 +291,19 @@ review, so it is not the preferred lever.
   lockfile" (rebase requested), an assessment is dated by when it was made (an older one
   cannot satisfy a newer `/deps recheck`), and a held evaluation no longer moves the commit
   that `/deps merge` checks against.
+- The lockfile diff looks a package's previous version up by name across main's lockfile,
+  not only at the same key: a bump that also moves a package (hoisted to nested or back)
+  used to look like a brand-new package, which skipped its code diff, the provenance-drop
+  check and the trusted install-script comparison. A copy that only moves, at a version
+  main already has, is not an introduced version at all.
+- The published-code review hides only what cannot carry a payload by itself (source maps,
+  type declarations, markdown, licences, images, fonts). Code in `test/`, `docs/` and
+  `examples/` folders is shown last, and binaries and archives, which are not diffed, are
+  listed so the review can flag them. A claimed `full` coverage is capped at `partial`
+  when any diff was truncated, failed or had unreviewable files.
+- A cancelled or stale required check waits for a re-run (up to 24 h after
+  the cancellation)
+  instead of failing the hard `checks` rule, which nobody can waive.
 - Waivers match a hash of each rule's full failure detail (`waiverKey`), stored with the rule
   before the record is trimmed for display: an earlier version compared details, and a
   record trimmed to fit a comment produced overrides that could never match, silently. The
