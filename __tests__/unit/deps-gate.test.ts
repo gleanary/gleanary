@@ -16,6 +16,7 @@ import {
   parseUpdatedDependencies,
   registryFact,
   updatesKey,
+  waiverKey,
 } from '../../.github/deps-agent/gate.mjs';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -86,6 +87,10 @@ const ESBUILD_BUMP = {
 
 const statusOf = (facts: Facts, id: string) =>
   evaluateRules(facts).find((r) => r.id === id)?.status;
+const keyOf = (facts: Facts, id: string) => {
+  const rule = evaluateRules(facts).find((r) => r.id === id);
+  return rule ? waiverKey(rule) : '';
+};
 const detailOf = (facts: Facts, id: string) =>
   evaluateRules(facts).find((r) => r.id === id)?.detail ?? '';
 /** A 0.x minor bump: fails `semver` (no compatibility promise below 1.0). */
@@ -113,7 +118,7 @@ const outcome = (
   const { override, ...rest } = opts;
   const rules = evaluateRules(facts);
   const everySoft = new Map(
-    rules.filter((r) => SOFT_RULES.includes(r.id)).map((r) => [r.id, r.detail]),
+    rules.filter((r) => SOFT_RULES.includes(r.id)).map((r) => [r.id, waiverKey(r)]),
   );
   return decide({
     rules,
@@ -272,6 +277,28 @@ describe('diffLockfiles: introduced versions', () => {
       '@scope/c@3.0.0',
       'b@2.1.0',
     ]);
+  });
+});
+
+describe('diffLockfiles: one version at several places', () => {
+  it('keeps the known previous version whatever the order the entries are read in', () => {
+    const base = { packages: { 'node_modules/x': { version: '1.0.0' } } };
+    for (const head of [
+      {
+        packages: {
+          'node_modules/x': { version: '1.0.1' },
+          'node_modules/y/node_modules/x': { version: '1.0.1' },
+        },
+      },
+      {
+        packages: {
+          'node_modules/y/node_modules/x': { version: '1.0.1' },
+          'node_modules/x': { version: '1.0.1' },
+        },
+      },
+    ]) {
+      expect(diffLockfiles(base, head).changed.find((c) => c.name === 'x')?.from).toBe('1.0.0');
+    }
   });
 });
 
@@ -590,7 +617,7 @@ describe('evaluateRules + decide', () => {
 
     it('waives only the soft rules the override names', () => {
       const facts = cleanFacts({ updates: [SDK_BUMP] });
-      const semver = detailOf(facts, 'semver');
+      const semver = keyOf(facts, 'semver');
       expect(outcome(facts, { waived: new Map([['semver', semver]]) })).toBe('merge');
       // After a rebase, a new transitive version drops provenance: not covered, escalate.
       const later = cleanFacts({
@@ -684,6 +711,39 @@ describe('evaluateRules + decide', () => {
     });
   });
 
+  describe('eighth review', () => {
+    it('fails hard when a bump introduces more versions than the agent can verify', () => {
+      const huge = cleanFacts({ registryOverflow: 301 });
+      expect(statusOf(huge, 'scale')).toBe('fail');
+      expect(outcome(huge, { override: true })).toBe('escalate');
+      expect(statusOf(cleanFacts(), 'scale')).toBe('pass');
+    });
+
+    it('keeps an overdue-cooldown waiver as the aging versions mature', () => {
+      const youngOf = (name: string) => ({
+        ...cleanFacts().registry[0]!,
+        name,
+        version: '1.0.1',
+        direct: false,
+        publishedAt: '2026-10-22T12:00:00Z',
+      });
+      const since = '2026-10-08T12:00:00Z'; // 15 days of waiting
+      const both = cleanFacts({
+        registry: [cleanFacts().registry[0]!, youngOf('a'), youngOf('b')],
+        cooldownWaitSince: since,
+      });
+      const waived = new Map([['cooldown', keyOf(both, 'cooldown')]]);
+      expect(outcome(both, { waived })).toBe('merge');
+      // `a` turned 7 days old: the PR only got safer, so the waiver still applies.
+      const matured = { ...youngOf('a'), publishedAt: '2026-10-01T00:00:00Z' };
+      const one = cleanFacts({
+        registry: [cleanFacts().registry[0]!, matured, youngOf('b')],
+        cooldownWaitSince: since,
+      });
+      expect(outcome(one, { waived })).toBe('merge');
+    });
+  });
+
   describe('overdue cooldown', () => {
     const young = () => ({
       ...cleanFacts().registry[0]!,
@@ -703,7 +763,7 @@ describe('evaluateRules + decide', () => {
       expect(outcome(overdue)).toBe('escalate');
       // A failure can be waived (a pending rule never could): /deps merge works.
       expect(
-        outcome(overdue, { waived: new Map([['cooldown', detailOf(overdue, 'cooldown')]]) }),
+        outcome(overdue, { waived: new Map([['cooldown', keyOf(overdue, 'cooldown')]]) }),
       ).toBe('merge');
     });
   });
@@ -713,7 +773,7 @@ describe('evaluateRules + decide', () => {
       // A security update: zod published a day ago fails cooldown; the owner waived that.
       const young = { ...cleanFacts().registry[0]!, publishedAt: '2026-10-22T12:00:00Z' };
       const before = cleanFacts({ registry: [young] });
-      const waived = new Map([['cooldown', detailOf(before, 'cooldown')]]);
+      const waived = new Map([['cooldown', keyOf(before, 'cooldown')]]);
       expect(outcome(before, { waived })).toBe('merge');
       // Next run: esbuild's packument times out. Nothing about esbuild was checked.
       const after = cleanFacts({
@@ -736,7 +796,7 @@ describe('evaluateRules + decide', () => {
           },
         });
       const first = escalating('Breaking change in parse()?');
-      const waived = new Map([['verdict', detailOf(first, 'verdict')]]);
+      const waived = new Map([['verdict', keyOf(first, 'verdict')]]);
       expect(outcome(first, { waived })).toBe('merge');
       expect(outcome(escalating('New network call in the postinstall?'), { waived })).toBe(
         'escalate',
@@ -758,23 +818,25 @@ describe('evaluateRules + decide', () => {
           },
         },
       });
-      expect(outcome(suspicious, { waived: new Map([[verdictFail.id, verdictFail.detail]]) })).toBe(
-        'escalate',
-      );
+      expect(
+        outcome(suspicious, { waived: new Map([[verdictFail.id, waiverKey(verdictFail)]]) }),
+      ).toBe('escalate');
     });
 
     it('treats a waived rule failing for a different reason as a new failure', () => {
       const facts = cleanFacts({ updates: [SDK_BUMP] });
-      const detail = detailOf(facts, 'semver');
+      const detail = keyOf(facts, 'semver');
       expect(outcome(facts, { waived: new Map([['semver', detail]]) })).toBe('merge');
       expect(outcome(facts, { waived: new Map([['semver', 'something else']]) })).toBe('escalate');
     });
 
     it('never waives a rule that is only pending (not assessed yet)', () => {
       const unassessed = cleanFacts({ assessment: null });
-      expect(outcome(unassessed, { waived: new Map([['verdict', 'not assessed yet']]) })).toBe(
-        'wait',
-      );
+      expect(
+        outcome(unassessed, {
+          waived: new Map([['verdict', waiverKey({ detail: 'not assessed yet' })]]),
+        }),
+      ).toBe('wait');
     });
   });
 
@@ -846,6 +908,13 @@ describe('classifyMain', () => {
     expect(classifyMain({ ...ci, updated_at: '2026-10-23T11:00:00Z' }, null, NOW).state).toBe(
       'broken',
     );
+  });
+});
+
+describe('classifyMain: no CI on main', () => {
+  it('treats a main commit with no CI run 30 minutes after the push as broken', () => {
+    expect(classifyMain(null, null, NOW, '2026-10-23T11:00:00Z').state).toBe('broken');
+    expect(classifyMain(null, null, NOW, '2026-10-23T11:50:00Z').state).toBe('pending');
   });
 });
 
@@ -927,6 +996,22 @@ describe('decision records', () => {
     pushHistory(r, { ...entry, at: 't2' });
     pushHistory(r, { ...entry, at: 't3', outcome: 'escalate' });
     expect(r.history).toHaveLength(2);
+  });
+
+  it('keeps the waiver key of every rule when trimming a record to fit', () => {
+    const huge = 'q'.repeat(30_000);
+    const rules = record.rules.map((r) => ({
+      ...r,
+      detail: huge,
+      waiverKey: waiverKey({ ...r, detail: huge }),
+    }));
+    const body = renderRecord(
+      { ...record, rules },
+      { mode: 'shadow', runUrl: 'https://example.test/run' },
+    );
+    const stored = (decodeRecord(body) as { rules: { waiverKey: string; detail: string }[] }).rules;
+    expect(stored[0]?.detail.length).toBeLessThan(huge.length); // trimmed for display
+    expect(stored[0]?.waiverKey).toBe(rules[0]?.waiverKey); // still matches the live rule
   });
 
   it('always renders a record that fits in a GitHub comment', () => {

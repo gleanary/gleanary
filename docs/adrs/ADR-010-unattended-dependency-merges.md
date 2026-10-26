@@ -275,6 +275,25 @@ review, so it is not the preferred lever.
   branch behind, conflict) are left out of that key: they flip on their own, and an early
   version re-pinged the owner about the same escalation each time main's CI ran or a sibling
   merged.
+- Waivers match a hash of each rule's full failure detail (`waiverKey`), stored with the rule
+  before the record is trimmed for display: an earlier version compared details, and a
+  record trimmed to fit a comment produced overrides that could never match, silently. The
+  overdue cooldown matches on "overdue" rather than on its version list: the override is
+  tied to one lockfile, so that list can only shrink as versions mature, and a PR getting
+  safer must not void the owner's decision.
+- A bump introducing more than 300 versions fails the hard `scale` rule: above that limit the
+  registry checks are skipped, and an earlier placeholder entry let provenance and publisher
+  pass on facts never collected.
+- A main commit with no CI run 30 minutes after the push counts as broken (merges freeze, the
+  owner is pinged) instead of pending forever. A failure while handling a broken main (e.g.
+  a rejected revert push) no longer stops the run: PRs are still evaluated and the dashboard
+  shows the error.
+- `plan` skips PRs whose AI assessment cannot change the outcome: held PRs, non-npm PRs, and
+  PRs whose last evaluation of the same commit failed a hard rule that no assessment or CI
+  result can change. Held PRs used to be re-assessed every run once their state changed,
+  taking the per-run assessment slots from other PRs.
+- The outage clock only resets after 24 hours without any outage, so a source that fails most
+  runs and answers once in a while still escalates after 48 hours.
 - Rules that only ever wait get a clock, so nothing waits silently forever: an unanswered
   `@dependabot rebase` pings after 24 hours, and an outage of any external source (npm
   registry, malware feed, npm audit) after 48 hours. A cooldown that has not settled after

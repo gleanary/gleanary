@@ -28,6 +28,7 @@ PR declares (direct) **and** the dependency versions that change with them (tran
 | -------------- | --------- | ------------------------------------------------------------------------------- |
 | author         | hard      | PR author is `dependabot[bot]`, and the head commit is authored by Dependabot and carries a valid signature (anyone with push access could otherwise add a commit) |
 | sources        | hard      | every introduced version resolves from `https://registry.npmjs.org/` (no git or tarball URLs; bundled entries excepted) |
+| scale          | hard      | the bump introduces at most 300 versions, the most the agent can check against the registry in one run. Above that, provenance, publisher and cooldown would pass on facts never collected |
 | ecosystem      | hard      | npm (GitHub Actions bumps edit workflows: always a human)                       |
 | injection      | hard      | the assessment found no text addressed to an AI in PR, changelog or code        |
 | files          | hard      | only `package.json` / `package-lock.json` changed                               |
@@ -46,11 +47,12 @@ PR declares (direct) **and** the dependency versions that change with them (tran
 | mergeable      | transient | no conflict (Dependabot rebases on its own)                                     |
 | fresh          | transient | main has not changed `package*.json` since the PR was built                     |
 | registry       | transient | the npm registry answered for every introduced version. During an outage (timeout, 5xx) the PR **waits**, and the registry-based rules (cooldown, provenance, publisher, install scripts) skip what they could not check. Transient, so no override can waive it |
-| mainHealthy    | transient | main's latest CI and Deploy succeeded                                           |
+| mainHealthy    | transient | main's latest CI and Deploy succeeded. A main commit with no CI run 30 min after the push (e.g. `[skip ci]`), or no Deploy 30 min after CI, counts as broken: merges freeze and the owner is pinged |
 
 A failing **hard** or **soft** rule escalates. A failing **transient** rule waits for the
 next run. The owner's `/deps merge` approves the exact state the owner last saw: it waives
-only the **soft** rules that were failing in that evaluation, each for the exact reason it
+only the **soft** rules that were failing in that evaluation (matched on a hash of the full
+failure detail, so trimming the record for display cannot break it), each for the exact reason it
 failed, for those package versions and that exact lockfile. A rule that was only pending
 (the review had not run yet) is never waived. A rebase that brings in different dependency
 versions, a soft rule that starts failing later, or a waived rule failing for a different

@@ -9,6 +9,7 @@ import {
   assessmentKey,
   lockFingerprint,
   verdictDetail,
+  waiverKey,
 } from '../../.github/deps-agent/gate.mjs';
 import { decodeRecord, renderOverride } from '../../.github/deps-agent/record.mjs';
 
@@ -41,6 +42,10 @@ interface FakeState {
   withMs: boolean;
   msPublishedAt: string;
   registryStatus: number;
+  branch: string;
+  gitPushFails: boolean;
+  extraFiles: string[];
+  deployConclusion: string;
   auditFails: boolean;
   recordSaveFails: boolean;
   npmCalls: number;
@@ -82,7 +87,7 @@ const fakePr = () => ({
   title: 'chore(deps): bump zod from 4.4.3 to 4.6.7',
   html_url: `https://github.com/${REPO}/pull/${PR}`,
   user: { login: 'dependabot[bot]' },
-  head: { sha: state.headSha, ref: 'dependabot/npm_and_yarn/zod-4.6.7' },
+  head: { sha: state.headSha, ref: state.branch },
   base: { sha: 'base1' },
   mergeable: state.mergeable,
   labels: state.labels.map((name) => ({ name })),
@@ -94,7 +99,11 @@ function get(path: string): unknown {
     [new RegExp(`^repos/${REPO}/pulls\\?state=open`), () => [fakePr()]],
     [
       /\/pulls\/\d+\/files/,
-      () => [{ filename: 'package.json' }, { filename: 'package-lock.json' }],
+      () => [
+        { filename: 'package.json' },
+        { filename: 'package-lock.json' },
+        ...state.extraFiles.map((filename) => ({ filename })),
+      ],
     ],
     [
       /\/git\/commits\/main1$/,
@@ -138,6 +147,25 @@ function get(path: string): unknown {
     [new RegExp(`issues/${PR}/comments`), () => state.comments],
     [/issues\?state=open&labels=deps:needs-human/, () => state.issues],
     [/^users\//, () => ({ id: 99 })],
+    // what a full `act` run reads besides the PR itself
+    [
+      /\/labels\?per_page/,
+      () => [{ name: 'deps:needs-human' }, { name: 'deps:hold' }, { name: 'deps:dashboard' }],
+    ],
+    [/\/git\/ref\/heads\/main$/, () => ({ object: { sha: 'main1' } })],
+    [
+      /workflows\/ci\.yml\/runs/,
+      () => ({
+        workflow_runs: [
+          { status: 'completed', conclusion: 'success', updated_at: '2026-10-23T11:00:00Z' },
+        ],
+      }),
+    ],
+    [
+      /workflows\/deploy\.yml\/runs/,
+      () => ({ workflow_runs: [{ status: 'completed', conclusion: state.deployConclusion }] }),
+    ],
+    [/issues\?state=open&labels=deps:dashboard/, () => []],
   ];
   const route = routes.find(([re]) => re.test(path));
   if (!route) throw new Error(`fake gh: no GET route for ${path}`);
@@ -182,6 +210,8 @@ function fakeExec(cmd: string, args: string[], opts?: { input?: string }): strin
   }
   if (cmd === 'git') {
     state.git.push(args);
+    if (state.gitPushFails && args[0] === 'push')
+      throw new Error('remote: Permission to push denied');
     return '';
   }
   if (args[0] === 'workflow') {
@@ -215,12 +245,15 @@ const record = () =>
     outcome?: string;
   } | null;
 /** The override `/deps merge` records after an escalation on the verdict. */
-const verdictOverride = () => ({
-  versions: 'zod@4.6.7',
-  lock: headFingerprint(),
-  waive: [{ id: 'verdict', detail: verdictDetail(assessed('escalate').assessment) }],
-  by: 'owner',
-});
+const verdictOverride = () => {
+  const detail = verdictDetail(assessed('escalate').assessment);
+  return {
+    versions: 'zod@4.6.7',
+    lock: headFingerprint(),
+    waive: [{ id: 'verdict', key: waiverKey({ detail }), detail }],
+    by: 'owner',
+  };
+};
 const assessed = (verdict: 'merge' | 'escalate') => ({
   key: assessmentKey({
     updates: [{ name: 'zod', version: '4.6.7' }],
@@ -237,6 +270,21 @@ const assessed = (verdict: 'merge' | 'escalate') => ({
       : {}),
   },
 });
+
+/** PR numbers `plan` would send to the assess matrix (read back from GITHUB_OUTPUT). */
+const planned = async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'deps-plan-'));
+  const file = join(dir, 'out');
+  writeFileSync(file, '');
+  vi.stubEnv('GITHUB_OUTPUT', file);
+  try {
+    await cli.commands.plan();
+    return JSON.parse(readFileSync(file, 'utf8').split('\n')[1] ?? '[]') as number[];
+  } finally {
+    vi.unstubAllEnvs();
+    rmSync(dir, { recursive: true, force: true });
+  }
+};
 
 beforeAll(async () => {
   Object.assign(process.env, {
@@ -275,6 +323,10 @@ beforeEach(() => {
     withMs: false,
     msPublishedAt: '2026-10-01T00:00:00Z',
     registryStatus: 200,
+    branch: 'dependabot/npm_and_yarn/zod-4.6.7',
+    gitPushFails: false,
+    extraFiles: [],
+    deployConclusion: 'success',
     auditFails: false,
     recordSaveFails: false,
     npmCalls: 0,
@@ -422,19 +474,6 @@ describe('handleMain', () => {
 
 describe('plan', () => {
   /** PR numbers `plan` would send to the assess matrix. */
-  const planned = async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'deps-plan-'));
-    const file = join(dir, 'out');
-    writeFileSync(file, '');
-    vi.stubEnv('GITHUB_OUTPUT', file);
-    try {
-      await cli.commands.plan();
-      return JSON.parse(readFileSync(file, 'utf8').split('\n')[1] ?? '[]') as number[];
-    } finally {
-      vi.unstubAllEnvs();
-      rmSync(dir, { recursive: true, force: true });
-    }
-  };
 
   it('agrees with act on the cache key: an assessed PR is not queued again', async () => {
     expect(await planned()).toEqual([PR]); // no record yet
@@ -530,6 +569,75 @@ describe('cooldown wait', () => {
   });
 });
 
+describe('eighth review', () => {
+  it('does not queue a held PR for assessment', async () => {
+    state.labels = ['deps:hold'];
+    expect(await planned()).toEqual([]);
+  });
+
+  it('does not queue PRs whose outcome is escalation regardless of the review', async () => {
+    state.branch = 'dependabot/github_actions/actions-abc'; // the github-actions group PR
+    expect(await planned()).toEqual([]);
+  });
+
+  it('does not re-assess a commit that already failed a hard rule no review can change', async () => {
+    state.extraFiles = ['src/proxy.ts']; // `files` (hard): the PR touches more than the lockfile
+    await cli.evaluatePr(PR, { main: healthy, now: NOW, slotFree: false });
+    expect(await planned()).toEqual([]);
+  });
+
+  it('keeps evaluating PRs when handling a broken main fails', async () => {
+    // main broken by a deps-agent merge, and the revert push is rejected
+    state.deployConclusion = 'failure';
+    state.mainMessage = 'chore(deps): bump zod (#7)\n\nMerged-by: deps-agent\n';
+    state.gitPushFails = true;
+    vi.stubEnv('MODE', 'merge');
+    try {
+      await cli.commands.act({ assessments: undefined });
+    } finally {
+      vi.unstubAllEnvs();
+    }
+    expect(state.comments.some((c) => c.body.includes('deps-agent:record'))).toBe(true); // PR evaluated
+    expect(
+      state.writes.some(
+        (w) =>
+          w.method === 'POST' &&
+          w.path.endsWith('/issues') &&
+          String(w.body.title).includes('Dependency dashboard'),
+      ),
+    ).toBe(true);
+  });
+
+  it('keeps the outage clock running through a single successful answer', async () => {
+    const at = (h: number) => new Date(NOW.getTime() + h * 3_600_000);
+    const run = async (h: number) => {
+      cli.clearRunCaches();
+      return cli.evaluatePr(PR, {
+        main: healthy,
+        now: at(h),
+        assessment: assessed('merge'),
+        slotFree: false,
+      });
+    };
+    state.registryStatus = 503;
+    await run(0);
+    state.registryStatus = 200; // answers once...
+    await run(20);
+    state.registryStatus = 503; // ...then fails again
+    const { outcome } = await run(49);
+    expect(outcome).toBe('escalate');
+    expect(pings()).toHaveLength(1);
+  });
+
+  it('escapes apostrophes in the schema passed on the command line', () => {
+    const arg = cli.schemaArg({ description: "the model's answer" });
+    expect(arg.startsWith("'") && arg.endsWith("'")).toBe(true);
+    const inner = arg.slice(1, -1);
+    expect(inner).not.toContain("'");
+    expect(JSON.parse(inner)).toEqual({ description: "the model's answer" });
+  });
+});
+
 describe('seventh review', () => {
   const evaluate = (over: Record<string, unknown> = {}) =>
     cli.evaluatePr(PR, {
@@ -617,19 +725,6 @@ describe('seventh review', () => {
   });
 
   it('keeps a /deps recheck request until a fresh assessment is stored', async () => {
-    const plannedNow = async () => {
-      const dir = mkdtempSync(join(tmpdir(), 'deps-plan-'));
-      const file = join(dir, 'out');
-      writeFileSync(file, '');
-      vi.stubEnv('GITHUB_OUTPUT', file);
-      try {
-        await cli.commands.plan();
-        return JSON.parse(readFileSync(file, 'utf8').split('\n')[1] ?? '[]') as number[];
-      } finally {
-        vi.unstubAllEnvs();
-        rmSync(dir, { recursive: true, force: true });
-      }
-    };
     const t0 = new Date(Date.now() - 60_000);
     await cli.evaluatePr(PR, {
       main: healthy,
@@ -637,7 +732,7 @@ describe('seventh review', () => {
       assessment: assessed('merge'),
       slotFree: false,
     });
-    expect(await plannedNow()).toEqual([]); // assessed, nothing to do
+    expect(await planned()).toEqual([]); // assessed, nothing to do
     Object.assign(process.env, {
       PR: String(PR),
       COMMENTER: 'owner',
@@ -645,14 +740,14 @@ describe('seventh review', () => {
     });
     await cli.commands.command();
     // The dispatched run's act was cancelled: the next scheduled plan still re-assesses.
-    expect(await plannedNow()).toEqual([PR]);
+    expect(await planned()).toEqual([PR]);
     await cli.evaluatePr(PR, {
       main: healthy,
       now: new Date(),
       assessment: assessed('merge'),
       slotFree: false,
     });
-    expect(await plannedNow()).toEqual([]);
+    expect(await planned()).toEqual([]);
   });
 
   it('marks an assessment as outdated once the PR state no longer matches it', async () => {

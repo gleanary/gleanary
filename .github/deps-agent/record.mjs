@@ -77,9 +77,10 @@ export function fromApp(c, bot) {
  * versions, the exact set of introduced lockfile versions, and the soft rules that were
  * failing when the owner looked. Anything that changes after that (a rebase that pulls new
  * transitive versions, a soft rule that starts failing) is not covered.
- * Each waived rule keeps the detail it failed with: the same rule failing for another
- * reason later (e.g. a re-assessment flagging different code) is not covered.
- * @typedef {{versions: string, lock: string, waive: {id: string, detail: string}[], by: string}} Override
+ * Each waived rule keeps its waiverKey (a hash of the full failure detail, gate.mjs), plus a
+ * clipped detail for display: the same rule failing for another reason later (e.g. a
+ * re-assessment flagging different code) is not covered.
+ * @typedef {{versions: string, lock: string, waive: {id: string, key: string, detail: string}[], by: string}} Override
  */
 
 /**
@@ -116,7 +117,7 @@ export function overridesFrom(comments, bot) {
     if (!m) continue;
     try {
       const o = JSON.parse(Buffer.from(m[1], 'base64').toString('utf8'));
-      const waiveOk = Array.isArray(o.waive) && o.waive.every((w) => typeof w?.id === 'string' && typeof w?.detail === 'string');
+      const waiveOk = Array.isArray(o.waive) && o.waive.every((w) => typeof w?.id === 'string' && typeof w?.key === 'string');
       if (typeof o.versions === 'string' && typeof o.lock === 'string' && waiveOk) overrides.push(o);
     } catch {
       // corrupt marker: ignore

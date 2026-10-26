@@ -33,6 +33,8 @@ import {
   diffLockfiles,
   diffTargets,
   lockFingerprint,
+  OUTCOME_FIXED_BY,
+  waiverKey,
   evaluateRules,
   latestCheckRuns,
   manifestChangeIsScoped,
@@ -85,7 +87,6 @@ const DIFF_MAX_TRANSITIVE = 10;
 const DIFF_MAX_BYTES_TRANSITIVE = 40_000;
 // Registry checks (cooldown, provenance) for every introduced version, direct or transitive.
 const REGISTRY_CONCURRENCY = 8;
-const REGISTRY_MAX_PACKAGES = 300;
 // Hours to wait for Dependabot to act on our `@dependabot rebase` before asking the owner.
 const REBASE_STUCK_HOURS = 24;
 // Hours a PR may wait on an npm registry that does not answer for one of its versions.
@@ -93,6 +94,8 @@ const OUTAGE_WAIT_ESCALATE_HOURS = 48;
 // Rules that go pending when an external source (npm registry, malware feed, npm audit)
 // does not answer. They only ever wait, so they share one clock that pings the owner.
 const OUTAGE_RULES = new Set(['registry', 'malware', 'audit']);
+// Hours without any outage before the outage clock resets (a flapping source keeps it).
+const OUTAGE_RESET_HOURS = 24;
 
 // ── GitHub / registry I/O ────────────────────────────────────────────────────
 
@@ -169,10 +172,6 @@ const packument = (name) => {
  * @returns {Promise<object[]>} one registry fact per change
  */
 async function registryFacts(changes, direct) {
-  if (changes.length > REGISTRY_MAX_PACKAGES) {
-    // Too many to verify: one unverifiable entry makes the cooldown rule escalate.
-    return [{ name: `${changes.length} packages`, version: '(too many to verify)', direct: true, publishedAt: null }];
-  }
   const facts = new Array(changes.length);
   let next = 0;
   const worker = async () => {
@@ -269,7 +268,9 @@ function mainState(now) {
   const latest = (wf, event) =>
     api(`repos/${REPO}/actions/workflows/${wf}/runs?head_sha=${sha}&event=${event}&per_page=1`)
       .workflow_runs[0] ?? null;
-  return { sha, ...classifyMain(latest('ci.yml', 'push'), latest('deploy.yml', 'workflow_run'), now) };
+  const ci = latest('ci.yml', 'push');
+  const pushedAt = ci ? null : (gitCommit(sha).committer?.date ?? null);
+  return { sha, ...classifyMain(ci, latest('deploy.yml', 'workflow_run'), now, pushedAt) };
 }
 
 const dependabotPrs = () =>
@@ -391,7 +392,13 @@ async function collectFacts(pr, main, now) {
   } catch {
     facts.malware = null; // feed unavailable: the gate waits rather than guessing
   }
-  facts.registry = await registryFacts(facts.lock.changed, new Set(declared.map((u) => u.name)));
+  if (facts.lock.changed.length > LIMITS.maxVerifiableVersions) {
+    // Too many to check: the gate's hard `scale` rule fails on this, rather than registry
+    // rules passing on facts that were never collected.
+    facts.registryOverflow = facts.lock.changed.length;
+  } else {
+    facts.registry = await registryFacts(facts.lock.changed, new Set(declared.map((u) => u.name)));
+  }
   try {
     if (before instanceof Error) throw before;
     facts.newAdvisories = auditAdvisories(headPkg, headLock).filter((k) => !before.has(k));
@@ -490,8 +497,15 @@ async function evaluatePr(number, { main, now, assessment, slotFree, by = 'agent
   const outage = rules.filter((r) => OUTAGE_RULES.has(r.id) && r.status === 'pending');
   if (coolingDown) record.cooldownWaitSince ??= now.toISOString();
   else if (!outage.length) delete record.cooldownWaitSince;
-  if (outage.length) record.outageWaitSince ??= now.toISOString();
-  else delete record.outageWaitSince;
+  // A flapping source (fails most runs, answers once in a while) must still escalate: the
+  // clock only resets after a full day without any outage on this PR.
+  if (outage.length) {
+    record.outageWaitSince ??= now.toISOString();
+    record.lastOutageAt = now.toISOString();
+  } else if (!record.lastOutageAt || waitedLonger(record.lastOutageAt, OUTAGE_RESET_HOURS * 3_600_000)) {
+    delete record.outageWaitSince;
+    delete record.lastOutageAt;
+  }
   // The gate turns a cooldown waiting longer than LIMITS.cooldownWaitDays into a failure.
   const coolingTooLong = coolingDown?.status === 'fail';
 
@@ -509,7 +523,7 @@ async function evaluatePr(number, { main, now, assessment, slotFree, by = 'agent
   let outcome = decide({
     rules,
     mode: mode(),
-    waived: new Map((override?.waive ?? []).map((w) => [w.id, w.detail])),
+    waived: new Map((override?.waive ?? []).map((w) => [w.id, w.key])),
     slotFree,
   });
 
@@ -553,7 +567,9 @@ async function evaluatePr(number, { main, now, assessment, slotFree, by = 'agent
     versions,
     lockFingerprint: fingerprint,
     outcome,
-    rules,
+    // Each rule keeps its waiverKey: /deps merge copies it, so a record trimmed for display
+    // (shorter details) still produces an override that matches the live rule.
+    rules: rules.map((r) => (r.kind === 'soft' && r.status === 'fail' ? { ...r, waiverKey: waiverKey(r) } : r)),
     updatedAt: now.toISOString(),
   });
   pushHistory(record, { at: now.toISOString(), sha: meta.headSha, outcome, by, ...(note ? { note } : {}) });
@@ -675,6 +691,14 @@ function updateDashboard(rows, main, now) {
 
 // ── Subcommands ──────────────────────────────────────────────────────────────
 
+/**
+ * The schema as one single-quoted CLI argument. A `'` inside would end the quoting and
+ * break every assess job; `\u0027` is the same character to a JSON parser.
+ * @param {object} schema - JSON schema
+ * @returns {string} quoted argument
+ */
+const schemaArg = (schema) => `'${JSON.stringify(schema).replace(/'/g, '\\u0027')}'`;
+
 /** GITHUB_OUTPUT writer with a random heredoc delimiter (values may be multi-line). */
 function output(name, value) {
   const file = process.env.GITHUB_OUTPUT;
@@ -700,6 +724,9 @@ const commands = {
         queue.push(pr.number); // an explicit request always re-assesses
         continue;
       }
+      // No AI assessment where it cannot change anything: held PRs are left alone, and
+      // non-npm PRs (the github-actions group) always need a human.
+      if (pr.labels.some((l) => l.name === LABEL.hold) || !pr.head.ref.startsWith(NPM_BRANCH_PREFIX)) continue;
       // Assess once CI has finished (the assessment reads the CI result), and only when no
       // assessment exists for these package versions, this policy and this CI outcome.
       const checks = checkRunsFor(pr.head.sha);
@@ -711,7 +738,12 @@ const commands = {
       // A /deps recheck newer than the last stored assessment is still owed, even if the run
       // it dispatched was cancelled while queued behind another one.
       const recheckOwed = latestRecheckAt(comments, BOT) > (record?.assessedAt ?? '');
-      if (record?.assessmentKey !== key || recheckOwed) queue.push(pr.number);
+      // The last evaluation of this very commit already failed a hard rule that does not
+      // depend on CI or the review: it escalates whatever the assessment says.
+      const hardFailed =
+        record?.headSha === pr.head.sha &&
+        (record.rules ?? []).some((r) => r.kind === 'hard' && r.status === 'fail' && OUTCOME_FIXED_BY.has(r.id));
+      if (!hardFailed && (record?.assessmentKey !== key || recheckOwed)) queue.push(pr.number);
     }
     output('prs', JSON.stringify(queue.slice(0, MAX_ASSESS_PER_RUN)));
   },
@@ -758,7 +790,6 @@ const commands = {
       .replaceAll('{{POLICY}}', readFileSync(join(HERE, 'policy.md'), 'utf8'))
       .replaceAll('{{FACTS}}', JSON.stringify({ title: meta.title, headSha: meta.headSha, ...f, now: undefined }, null, 2))
       .replaceAll('{{DIFFS}}', diffIndex);
-    const schema = JSON.stringify(JSON.parse(readFileSync(join(HERE, 'assessment.schema.json'), 'utf8')));
     output('prompt', prompt);
     output(
       'claude_args',
@@ -774,7 +805,7 @@ const commands = {
         // checkout (verified with `claude -p`; covered by deps-agent-cli.test.ts).
         '--allowedTools "Read(./**),Grep(./**),Glob(./**),WebFetch(domain:github.com),WebFetch(domain:raw.githubusercontent.com),WebFetch(domain:www.npmjs.com),Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr checks:*),Bash(gh run view:*),Bash(gh release view:*)"',
         '--disallowedTools "Read(//proc/**),Read(//etc/**),Bash(npm:*),Bash(curl:*),Bash(wget:*)"',
-        `--json-schema '${schema}'`,
+        `--json-schema ${schemaArg(ASSESSMENT_SCHEMA)}`,
       ].join('\n'),
     );
   },
@@ -793,8 +824,15 @@ const commands = {
     if (mode() === 'off') return;
     const now = new Date();
     ensureLabels();
-    const main = mainState(now);
-    handleMain(main);
+    let main = mainState(now);
+    try {
+      handleMain(main);
+    } catch (err) {
+      // e.g. the revert push is rejected. Merges stay frozen anyway (mainHealthy fails);
+      // keep evaluating PRs and show the failure on the dashboard.
+      console.error(`handling main failed: ${err.stack}`);
+      main = { ...main, detail: `${main.detail}; freeze handling failed: ${String(err.message).slice(0, 150)}` };
+    }
 
     const byPr = new Map();
     if (assessments && existsSync(assessments)) {
@@ -859,8 +897,10 @@ const commands = {
       // Only rules that FAIL now, each with the reason it fails: a pending rule (the review
       // has not run yet) is not something the owner has seen, so it is never waived.
       const waive = record.rules
-        .filter((r) => r.kind === 'soft' && r.status === 'fail')
-        .map((r) => ({ id: r.id, detail: r.detail }));
+        // Only the key stored at evaluation time: hashing a stored (possibly trimmed) detail
+        // would produce a key that never matches the live rule.
+        .filter((r) => r.kind === 'soft' && r.status === 'fail' && r.waiverKey)
+        .map((r) => ({ id: r.id, key: r.waiverKey, detail: String(r.detail).slice(0, 300) }));
       const hard = record.rules.filter((r) => r.kind === 'hard' && r.status === 'fail').map((r) => r.id);
       const pending = record.rules.filter((r) => r.status === 'pending').map((r) => r.id);
       if (!waive.length) {
@@ -896,7 +936,7 @@ function clearRunCaches() {
   lockCache.clear();
 }
 
-export { POLICY_HASH, clearRunCaches, commands, evaluatePr, handleMain };
+export { POLICY_HASH, clearRunCaches, commands, evaluatePr, handleMain, schemaArg };
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const { positionals, values } = parseArgs({

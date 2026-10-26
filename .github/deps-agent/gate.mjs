@@ -28,6 +28,8 @@ export const LIMITS = {
   cooldownDays: 7,
   /** Days a PR may wait on young transitive versions before the cooldown fails (escalates). */
   cooldownWaitDays: 14,
+  /** Introduced versions the agent can check against the registry in one evaluation. */
+  maxVerifiableVersions: 300,
   /** New transitive packages one bump may add before a human looks. */
   maxNewPackages: 15,
 };
@@ -40,6 +42,7 @@ export const LIMITS = {
 export const RULE_KIND = {
   author: 'hard',
   sources: 'hard',
+  scale: 'hard',
   ecosystem: 'hard',
   injection: 'hard',
   files: 'hard',
@@ -60,6 +63,17 @@ export const RULE_KIND = {
   mainHealthy: 'transient',
   registry: 'transient',
 };
+
+/**
+ * Hard rules whose failure no AI assessment or CI result can change (all of them except the
+ * two that read the review or CI). `plan` skips assessing a commit that already fails one.
+ */
+export const OUTCOME_FIXED_BY = new Set(
+  Object.keys(RULE_KIND).filter((id) => RULE_KIND[id] === 'hard' && !['injection', 'checks'].includes(id)),
+);
+
+/** How long main may go without a CI run (after a push) or a Deploy run (after CI). */
+const MAIN_STALE_MS = 30 * 60_000;
 
 export const DEPENDABOT_LOGIN = 'dependabot[bot]';
 export const NPM_BRANCH_PREFIX = 'dependabot/npm_and_yarn/';
@@ -178,14 +192,19 @@ export function diffLockfiles(base, head) {
       // alias path but published under `entry.name`: registry and malware lookups need
       // the real name.
       const name = entry.name ?? key.slice(key.lastIndexOf('node_modules/') + 'node_modules/'.length);
-      changed.set(`${name}@${entry.version}`, {
+      // The same version can sit at several places (hoisted and nested). Merge them, keeping
+      // a known previous version over "new here", so read order cannot drop it from review.
+      const spec = `${name}@${entry.version}`;
+      const seen = changed.get(spec);
+      // Bundled (inBundle) and linked entries are never fetched on their own.
+      const bundledHere = Boolean(entry.inBundle || entry.link);
+      changed.set(spec, {
         name,
-        from: b[key]?.version ?? null,
+        from: seen?.from ?? b[key]?.version ?? null,
         to: entry.version,
-        installScript: Boolean(entry.hasInstallScript),
-        resolved: entry.resolved ?? null,
-        // Bundled (inBundle) and linked entries are never fetched on their own.
-        bundled: Boolean(entry.inBundle || entry.link),
+        installScript: Boolean(seen?.installScript || entry.hasInstallScript),
+        resolved: seen?.resolved ?? entry.resolved ?? null,
+        bundled: seen ? seen.bundled && bundledHere : bundledHere,
       });
     }
   }
@@ -318,6 +337,15 @@ const result = (id, status, detail) => ({ id, kind: RULE_KIND[id], status, detai
 const unless = (id, offenders, failMsg, passMsg) =>
   offenders.length ? result(id, 'fail', `${failMsg}: ${offenders.join(', ')}`) : result(id, 'pass', passMsg);
 const TRI = { true: 'pass', false: 'fail' };
+/**
+ * What an owner override matches a failing soft rule on: a hash of its full detail, computed
+ * before the record is ever trimmed for display. A rule may give a `matchKey` instead when its
+ * detail legitimately shrinks without the problem changing (see the overdue cooldown).
+ * @param {{detail: string, matchKey?: string}} rule - a rule result
+ * @returns {string} the key an override stores and compares
+ */
+export const waiverKey = (rule) => shortHash(rule.matchKey ?? rule.detail, 16);
+
 /** `name@version` of a registry fact. */
 const label = (r) => `${r.name}@${r.version}`;
 
@@ -425,6 +453,9 @@ function cooldownRule(registry, now, waitingSince) {
           `still not ${LIMITS.cooldownDays} days old after ${LIMITS.cooldownWaitDays} days of waiting: ${aging.map(label).join(', ')}`,
         ),
         waiting: true,
+        // An override is tied to one lockfile, so the aging list can only shrink: a version
+        // that matures is the same problem getting better, and must not void the waiver.
+        matchKey: 'cooldown:overdue',
       }
     : { ...result('cooldown', 'pending', `waiting for dependency versions to age: ${aging.map(label).join(', ')}`), waiting: true };
 }
@@ -496,6 +527,7 @@ function codeReviewRule(assessment, diffsExpected) {
  *   codeReview?: {coverage: string, suspicious: {file: string, finding: string}[]}}|null} f.assessment
  *   LLM assessment for this head
  * @param {string|null} [f.cooldownWaitSince] - when the PR started waiting on young versions
+ * @param {number} [f.registryOverflow] - introduced versions, when over maxVerifiableVersions
  * @param {Date} f.now - evaluation time
  * @returns {{id: string, kind: string, status: 'pass'|'fail'|'pending', detail: string}[]}
  */
@@ -515,6 +547,13 @@ export function evaluateRules(f) {
 
   return [
     authorRule(f),
+    f.registryOverflow
+      ? result(
+          'scale',
+          'fail',
+          `${f.registryOverflow} introduced versions, more than the ${LIMITS.maxVerifiableVersions} the agent can verify (provenance, publisher, cooldown)`,
+        )
+      : result('scale', 'pass', 'every introduced version was checked against the registry'),
     unless(
       'sources',
       f.lock.changed.filter((c) => !c.bundled && !c.resolved?.startsWith(NPM_REGISTRY)).map((c) => `${c.name}@${c.to} from ${c.resolved ?? '?'}`),
@@ -620,7 +659,7 @@ export function evaluateRules(f) {
  * @param {{kind: string, status: string}[]} p.rules - from evaluateRules
  * @param {'off'|'shadow'|'merge'} p.mode - DEPS_AGENT_MODE
  * @param {Map<string, string>} [p.waived] - soft rules the owner's `/deps merge` waived for
- *   this exact lockfile, each with the detail it failed with at the time. A rule is skipped
+ *   this exact lockfile, each with the waiverKey() it failed with at the time. A rule is skipped
  *   only while it still fails with that same detail: a rule that starts failing later, or
  *   fails for a different reason (e.g. a re-assessment that finds suspicious code), or is
  *   merely pending (not assessed yet), is not covered
@@ -628,7 +667,7 @@ export function evaluateRules(f) {
  * @returns {'escalate'|'wait'|'would-merge'|'queued'|'merge'} the outcome (held PRs never reach it)
  */
 export function decide({ rules, mode, waived = new Map(), slotFree }) {
-  const isWaived = (r) => r.kind === 'soft' && r.status === 'fail' && waived.get(r.id) === r.detail;
+  const isWaived = (r) => r.kind === 'soft' && r.status === 'fail' && waived.get(r.id) === waiverKey(r);
   if (rules.some((r) => r.kind === 'hard' && r.status === 'fail')) return 'escalate';
   if (rules.some((r) => r.kind === 'soft' && r.status === 'fail' && !isWaived(r))) return 'escalate';
   const blocking = rules.filter((r) => r.status !== 'pass' && !isWaived(r));
@@ -657,13 +696,21 @@ export function latestCheckRuns(runs) {
  * @param {{status: string, conclusion: string|null, updated_at: string}|null} ci
  * @param {{status: string, conclusion: string|null}|null} deploy
  * @param {Date} now - evaluation time
+ * @param {string|null} [pushedAt] - when main's head commit was created
  * @returns {{state: 'healthy'|'pending'|'broken', detail: string}} main's state
  */
-export function classifyMain(ci, deploy, now) {
-  if (!ci || ci.status !== 'completed') return { state: 'pending', detail: 'CI on main is running' };
+export function classifyMain(ci, deploy, now, pushedAt = null) {
+  // A push with no CI run at all (e.g. [skip ci]) would otherwise freeze merges silently.
+  if (!ci) {
+    const stale = pushedAt && now.getTime() - new Date(pushedAt).getTime() > MAIN_STALE_MS;
+    return stale
+      ? { state: 'broken', detail: 'no CI run on main 30 min after the push' }
+      : { state: 'pending', detail: 'waiting for CI on main to start' };
+  }
+  if (ci.status !== 'completed') return { state: 'pending', detail: 'CI on main is running' };
   if (ci.conclusion !== 'success') return { state: 'broken', detail: `CI on main: ${ci.conclusion}` };
   if (!deploy) {
-    const stale = now.getTime() - new Date(ci.updated_at).getTime() > 30 * 60_000;
+    const stale = now.getTime() - new Date(ci.updated_at).getTime() > MAIN_STALE_MS;
     return stale
       ? { state: 'broken', detail: 'no Deploy run 30 min after CI succeeded' }
       : { state: 'pending', detail: 'waiting for Deploy to start' };
