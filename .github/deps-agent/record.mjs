@@ -7,6 +7,9 @@
 
 export const MARKER = '<!-- deps-agent:record -->';
 const DATA = /<!-- deps-agent:data ([A-Za-z0-9+/=]+) -->/;
+// Owner overrides are separate, append-only App comments, never fields of the sticky
+// record: `/deps merge` and the scheduled run can then never overwrite each other.
+const OVERRIDE = /<!-- deps-agent:override ([A-Za-z0-9+/=]+) -->/;
 const HISTORY_LIMIT = 20;
 
 const ICON = { pass: '✅', fail: '❌', pending: '⏳' };
@@ -51,6 +54,55 @@ export function decodeRecord(body) {
   } catch {
     return null;
   }
+}
+
+/**
+ * The one trust rule for agent state on a public repo: only comments written by our App
+ * count (anyone can paste a record or override marker into their own comment).
+ * @param {{user: {login: string, type: string}}} c - an issue comment
+ * @param {string} bot - the App's bot login
+ * @returns {boolean} whether the App wrote it
+ */
+export function fromApp(c, bot) {
+  return c.user.login === bot && c.user.type === 'Bot';
+}
+
+/**
+ * Render the comment that records an owner's `/deps merge` override.
+ * @param {string} versions - updatesKey of the approved package versions
+ * @param {string} by - owner login
+ * @param {string} reason - optional text after the command
+ * @returns {string} comment body
+ */
+export function renderOverride(versions, by, reason) {
+  const encoded = Buffer.from(JSON.stringify({ versions, by })).toString('base64');
+  return [
+    `Override recorded by ${neutralize(by, 60)} for \`${neutralize(versions, 300)}\`: the soft gates are waived for these exact versions (rebases keep it; a newer version needs a new decision). Hard gates still apply. A run has been started to act on it.`,
+    reason.trim() ? `\n> ${neutralize(reason, 300)}` : '',
+    `<!-- deps-agent:override ${encoded} -->`,
+  ].join('\n');
+}
+
+/**
+ * Package versions the owner approved, from override comments written by our App only
+ * (an override marker pasted by anyone else is ignored).
+ * @param {{body: string, user: {login: string, type: string}}[]} comments - PR comments
+ * @param {string} bot - the App's bot login
+ * @returns {Set<string>} approved updatesKey values
+ */
+export function approvedVersions(comments, bot) {
+  const approved = new Set();
+  for (const c of comments) {
+    if (!fromApp(c, bot)) continue;
+    const m = c.body.match(OVERRIDE);
+    if (!m) continue;
+    try {
+      approved.add(JSON.parse(Buffer.from(m[1], 'base64').toString('utf8')).versions);
+    } catch {
+      // corrupt marker: ignore
+    }
+  }
+  return approved;
 }
 
 /**
@@ -117,14 +169,16 @@ export function renderRecord(record, ctx) {
  * notifies @-mentions on creation, not on edits of the sticky record).
  * @param {object} record - the record being escalated
  * @param {string} owner - login to mention
+ * @param {string} [note] - extra reason shown first (e.g. a rebase that never happened)
  * @returns {string} comment body
  */
-export function renderEscalation(record, owner) {
+export function renderEscalation(record, owner, note = '') {
   const failing = record.rules.filter((r) => r.status === 'fail');
   const hard = failing.filter((r) => r.kind === 'hard');
   const a = record.assessment;
   const lines = [
     `@${owner} deps-agent needs a decision on \`${record.headSha.slice(0, 7)}\`.`,
+    ...(note ? ['', `**Why now:** ${neutralize(note, 500)}`] : []),
     '',
     '**Blocking gates:**',
     ...failing.map((r) => `- ${r.id} (${r.kind}): ${neutralize(r.detail, 300)}`),

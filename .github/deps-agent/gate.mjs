@@ -127,25 +127,51 @@ export function classifyBump(from, to) {
  * Compare two lockfiles (v3 `packages` map).
  * @param {{packages?: Record<string, {version?: string, hasInstallScript?: boolean}>}} base
  * @param {{packages?: Record<string, {version?: string, hasInstallScript?: boolean}>}} head
- * @returns {{added: string[], newInstallScripts: string[], changed: string[]}} lock keys
- *   added; keys that gained an install script (new package, or existing one that did not
- *   have one); and every introduced `name@version` (added or version changed, sorted)
+ * @returns {{added: string[], newInstallScripts: string[],
+ *   changed: {name: string, from: string|null, to: string, installScript: boolean}[]}}
+ *   lock keys added; keys that gained an install script (new package, or existing one that
+ *   did not have one); and every introduced version, direct or transitive (added, or version
+ *   changed), deduplicated by `name@to` and sorted
  */
 export function diffLockfiles(base, head) {
   const b = base.packages ?? {};
   const h = head.packages ?? {};
   const added = [];
   const newInstallScripts = [];
-  const changed = new Set();
+  const changed = new Map();
   for (const [key, entry] of Object.entries(h)) {
     if (!key) continue; // root project entry
     if (!(key in b)) added.push(key);
     if (entry.hasInstallScript && !b[key]?.hasInstallScript) newInstallScripts.push(key);
     if (entry.version && b[key]?.version !== entry.version) {
-      changed.add(`${key.slice(key.lastIndexOf('node_modules/') + 'node_modules/'.length)}@${entry.version}`);
+      const name = key.slice(key.lastIndexOf('node_modules/') + 'node_modules/'.length);
+      changed.set(`${name}@${entry.version}`, {
+        name,
+        from: b[key]?.version ?? null,
+        to: entry.version,
+        installScript: Boolean(entry.hasInstallScript),
+      });
     }
   }
-  return { added, newInstallScripts, changed: [...changed].sort() };
+  const sorted = [...changed.entries()].sort(([a], [z]) => a.localeCompare(z));
+  return { added, newInstallScripts, changed: sorted.map(([, c]) => c) };
+}
+
+/**
+ * Install-time code the bump introduces: packages that gain an install script, and new
+ * versions of packages that already run one (a hijacked better-sqlite3 or esbuild release
+ * would run its script during `npm ci` in the Docker build).
+ * @param {{newInstallScripts: string[],
+ *   changed: {name: string, from: string|null, to: string, installScript: boolean}[]}} lock
+ * @returns {string[]} human-readable offenders
+ */
+export function installScriptChanges(lock) {
+  const gained = new Set(lock.newInstallScripts.map((key) => key.replace(/^.*node_modules\//, '')));
+  // A package that gains a script while changing version is reported once, as "new script".
+  const updated = lock.changed
+    .filter((c) => c.installScript && c.from && !gained.has(c.name))
+    .map((c) => `${c.name} ${c.from}→${c.to} (runs an install script)`);
+  return [...[...gained].map((name) => `${name} (new script)`), ...updated];
 }
 
 /**
@@ -172,6 +198,8 @@ const result = (id, status, detail) => ({ id, kind: RULE_KIND[id], status, detai
 const unless = (id, offenders, failMsg, passMsg) =>
   offenders.length ? result(id, 'fail', `${failMsg}: ${offenders.join(', ')}`) : result(id, 'pass', passMsg);
 const TRI = { true: 'pass', false: 'fail' };
+/** `name@version` of a registry fact. */
+const label = (r) => `${r.name}@${r.version}`;
 
 /**
  * Required checks that have not completed on the head SHA.
@@ -194,17 +222,47 @@ export function failedChecks(checks) {
   );
 }
 
-function checksRule(checks) {
+/** Minutes after a push with no check run at all before we call CI missing, not slow. */
+const NO_CI_GRACE_MINUTES = 60;
+
+function checksRule(checks, headCommittedAt, now) {
   const failed = failedChecks(checks);
   if (failed.length) return unless('checks', failed.map((c) => c.name), 'failed', '');
   const pending = pendingChecks(checks);
   if (!pending.length) return result('checks', 'pass', 'all required checks green');
+  if (!checks.length) {
+    const age = headCommittedAt ? (now.getTime() - new Date(headCommittedAt).getTime()) / 60_000 : 0;
+    return age > NO_CI_GRACE_MINUTES
+      ? result('checks', 'fail', `no CI ran on this commit within ${NO_CI_GRACE_MINUTES} min`)
+      : result('checks', 'pending', 'waiting for CI to start');
+  }
   // Everything that ran has finished, yet a required name never appeared: a CI job was
   // renamed or removed. Escalate instead of waiting forever.
   const idle = checks.length > 0 && checks.every((c) => c.status === 'completed');
   return idle
     ? unless('checks', pending, 'required check never ran (renamed in ci.yml?)', '')
     : result('checks', 'pending', `waiting on: ${pending.join(', ')}`);
+}
+
+/**
+ * Release age for every introduced version, direct or transitive. Dependabot's cooldown
+ * only delays the package it bumps; the lockfile can still pull a transitive version
+ * published minutes earlier (how the 2025 chalk/debug hijack reached most projects).
+ * A young transitive version waits until it ages; a young direct version (in practice a
+ * security update, which skips Dependabot's cooldown) escalates so the owner can
+ * fast-track it; an unknown publish time escalates.
+ */
+function cooldownRule(registry, now) {
+  const cutoff = now.getTime() - LIMITS.cooldownDays * 86_400_000;
+  const young = (r) => r.publishedAt && new Date(r.publishedAt).getTime() > cutoff;
+  const blocking = registry.filter((r) => !r.publishedAt || (r.direct && young(r)));
+  if (blocking.length) {
+    return unless('cooldown', blocking.map(label), `published < ${LIMITS.cooldownDays}d ago (or unknown)`, '');
+  }
+  const aging = registry.filter(young);
+  return aging.length
+    ? result('cooldown', 'pending', `waiting for dependency versions to age: ${aging.map(label).join(', ')}`)
+    : result('cooldown', 'pass', `all ${registry.length} introduced versions older than ${LIMITS.cooldownDays}d`);
 }
 
 /** Suspicious findings from Claude's review of the published code diff. */
@@ -229,9 +287,13 @@ function codeReviewRule(assessment) {
  * @param {{name: string, type: string, from: string|null, to: string|null}[]} f.updates
  * @param {boolean} f.manifestScoped - result of manifestChangeIsScoped
  * @param {{name: string, status: string, conclusion: string|null}[]} f.checks - head SHA check runs
- * @param {{added: string[], newInstallScripts: string[], changed?: string[]}} f.lock - result of diffLockfiles
- * @param {{name: string, publishedAt: string|null, prevAttested: boolean, attested: boolean,
- *   prevPublisher: string|null, publisher: string|null}[]} f.registry - one per direct update
+ * @param {string|null} [f.headCommittedAt] - when the head commit was created (no-CI timeout)
+ * @param {{added: string[], newInstallScripts: string[],
+ *   changed: {name: string, from: string|null, to: string, installScript: boolean}[]}} f.lock
+ *   result of diffLockfiles
+ * @param {{name: string, version: string, direct: boolean, publishedAt: string|null,
+ *   prevAttested: boolean, attested: boolean, prevPublisher: string|null,
+ *   publisher: string|null}[]} f.registry - one per introduced version (direct and transitive)
  * @param {string[]} f.newAdvisories - advisory ids present on head but not on main
  * @param {string[]|null} f.malware - GitHub malware advisories for introduced versions
  *   (null = feed unavailable)
@@ -249,8 +311,6 @@ export function evaluateRules(f) {
     ...u,
     kind: u.from && u.to ? classifyBump(u.from, u.to) : 'major',
   }));
-  const cutoff = f.now.getTime() - LIMITS.cooldownDays * 86_400_000;
-  const names = (list) => list.map((r) => r.name);
   const injected = Boolean(f.assessment?.injectionSuspected);
 
   return [
@@ -276,7 +336,7 @@ export function evaluateRules(f) {
             : 'package.json changed beyond the declared updates',
         )
       : result('manifest', 'fail', 'no updated-dependencies metadata in the commit'),
-    checksRule(f.checks),
+    checksRule(f.checks, f.headCommittedAt, f.now),
     f.malware
       ? unless('malware', f.malware, 'malware advisory', 'no malware advisory for any introduced version')
       : result('malware', 'pending', 'malware feed unavailable, retrying next run'),
@@ -285,28 +345,26 @@ export function evaluateRules(f) {
       TRI[!bumps.some((u) => u.kind === 'major')],
       bumps.map((u) => `${u.name} ${u.from ?? '?'}→${u.to ?? '?'} (${u.kind})`).join('; '),
     ),
-    unless('installScripts', f.lock.newInstallScripts, 'new install scripts', 'no new install scripts'),
+    unless('installScripts', installScriptChanges(f.lock), 'install-time code', 'no install script added or updated'),
     result(
       'newPackages',
       TRI[f.lock.added.length <= LIMITS.maxNewPackages],
       `${f.lock.added.length} new package(s) in lockfile`,
     ),
-    unless(
-      'cooldown',
-      names(f.registry.filter((r) => !r.publishedAt || new Date(r.publishedAt).getTime() > cutoff)),
-      `published < ${LIMITS.cooldownDays}d ago (or unknown)`,
-      `all releases older than ${LIMITS.cooldownDays}d`,
-    ),
+    cooldownRule(f.registry, f.now),
     unless(
       'provenance',
-      names(f.registry.filter((r) => r.prevAttested && !r.attested)),
+      f.registry.filter((r) => r.prevAttested && !r.attested).map(label),
       'provenance dropped',
-      'no provenance regression',
+      'no provenance regression in any introduced version',
     ),
+    // Direct packages only: maintainer rotation in transitive packages is common enough
+    // that it would escalate most bumps; transitive versions get cooldown, provenance,
+    // malware and (within budget) the code review instead.
     unless(
       'publisher',
       f.registry
-        .filter((r) => !r.publisher || (r.prevPublisher && r.publisher !== r.prevPublisher))
+        .filter((r) => r.direct && (!r.publisher || (r.prevPublisher && r.publisher !== r.prevPublisher)))
         .map((r) => `${r.name} (${r.prevPublisher ?? '?'} → ${r.publisher ?? '?'})`),
       'publisher changed',
       'same npm publisher as the previous version',

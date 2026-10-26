@@ -73,7 +73,8 @@ jobs:
             docker compose up -d --remove-orphans
             # Fail the run if the new container never turns healthy: deps-agent reads a
             # failed Deploy as "main is broken" and freezes merges. Old images are only
-            # pruned once healthy, so a manual rollback stays a local `docker tag` away.
+            # pruned once healthy, so after a failed deploy the previous image is still on
+            # the server for a manual rollback (a successful deploy prunes it).
             # The check runs inside the container: the server's compose file does not
             # publish port 3000 on the host (Caddy reaches the app over the Docker network).
             for i in $(seq 1 30); do

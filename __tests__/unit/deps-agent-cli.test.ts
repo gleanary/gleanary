@@ -1,0 +1,343 @@
+import { describe, it, expect, vi, beforeAll, beforeEach, afterAll } from 'vitest';
+import { execFileSync } from 'node:child_process';
+import { REQUIRED_CHECKS, assessmentKey } from '../../.github/deps-agent/gate.mjs';
+import { decodeRecord, renderOverride } from '../../.github/deps-agent/record.mjs';
+
+// The CLI shells out to `gh`, `git` and `npm`; every call goes through this fake GitHub,
+// which keeps comments and issues in memory and records writes, git and dispatch calls.
+vi.mock('node:child_process', () => ({ execFileSync: vi.fn() }));
+
+const REPO = 'o/r';
+const BOT = 'deps-agent[bot]';
+const NOW = new Date('2026-10-23T12:00:00Z');
+const PR = 7;
+const MESSAGE = [
+  'chore(deps): bump zod from 4.4.3 to 4.6.7',
+  '',
+  '---',
+  'updated-dependencies:',
+  '- dependency-name: zod',
+  '  dependency-version: 4.6.7',
+  '  dependency-type: direct:production',
+  '...',
+].join('\n');
+
+interface Comment {
+  id: number;
+  body: string;
+  user: { login: string; type: string };
+}
+interface FakeState {
+  headSha: string;
+  mergeable: boolean;
+  fresh: boolean;
+  labels: string[];
+  comments: Comment[];
+  issues: { number: number; title: string; pull_request?: unknown }[];
+  writes: { method: string; path: string; body: Record<string, unknown> }[];
+  git: string[][];
+  dispatches: string[][];
+  mainMessage: string;
+}
+
+let state: FakeState;
+let nextId = 1000;
+
+const lock = (zod: string) => ({
+  packages: { '': { version: '0.1.0' }, 'node_modules/zod': { version: zod } },
+});
+const pkg = (zod: string) => ({ name: 'gleanary', dependencies: { zod: `^${zod}` } });
+
+function get(path: string): unknown {
+  const routes: [RegExp, () => unknown][] = [
+    [
+      new RegExp(`^repos/${REPO}/pulls/${PR}$`),
+      () => ({
+        number: PR,
+        title: 'chore(deps): bump zod from 4.4.3 to 4.6.7',
+        html_url: `https://github.com/${REPO}/pull/${PR}`,
+        user: { login: 'dependabot[bot]' },
+        head: { sha: state.headSha, ref: 'dependabot/npm_and_yarn/zod-4.6.7' },
+        base: { sha: 'base1' },
+        mergeable: state.mergeable,
+        labels: state.labels.map((name) => ({ name })),
+      }),
+    ],
+    [
+      /\/pulls\/\d+\/files/,
+      () => [{ filename: 'package.json' }, { filename: 'package-lock.json' }],
+    ],
+    [
+      /\/git\/commits\/main1$/,
+      () => ({ message: state.mainMessage, committer: { date: '2026-10-23T11:00:00Z' } }),
+    ],
+    [/\/git\/commits\//, () => ({ message: MESSAGE, committer: { date: '2026-10-23T11:00:00Z' } })],
+    [
+      /\/check-runs/,
+      () => ({
+        check_runs: REQUIRED_CHECKS.map((name, i) => ({
+          id: i + 1,
+          name,
+          status: 'completed',
+          conclusion: 'success',
+        })),
+      }),
+    ],
+    [
+      /\/compare\//,
+      () =>
+        state.fresh
+          ? { ahead_by: 0, files: [] }
+          : { ahead_by: 1, files: [{ filename: 'package-lock.json' }] },
+    ],
+    [/contents\/package\.json\?ref=base1/, () => pkg('4.4.3')],
+    [/contents\/package-lock\.json\?ref=base1/, () => lock('4.4.3')],
+    [/contents\/package\.json\?ref=/, () => pkg('4.6.7')],
+    [/contents\/package-lock\.json\?ref=/, () => lock('4.6.7')],
+    [/^advisories\?/, () => []],
+    [new RegExp(`issues/${PR}/comments`), () => state.comments],
+    [/issues\?state=open&labels=deps:needs-human/, () => state.issues],
+    [/^users\//, () => ({ id: 99 })],
+  ];
+  const route = routes.find(([re]) => re.test(path));
+  if (!route) throw new Error(`fake gh: no GET route for ${path}`);
+  return route[1]();
+}
+
+function write(method: string, path: string, body: Record<string, unknown>): unknown {
+  state.writes.push({ method, path, body });
+  if (method === 'POST' && path.endsWith(`issues/${PR}/comments`)) {
+    const c = { id: nextId++, body: String(body.body), user: { login: BOT, type: 'Bot' } };
+    state.comments.push(c);
+    return c;
+  }
+  if (method === 'PATCH' && path.includes('issues/comments/')) {
+    const c = state.comments.find((x) => path.endsWith(`/${x.id}`));
+    if (c) c.body = String(body.body);
+    return c ?? {};
+  }
+  if (method === 'POST' && path.endsWith('/pulls'))
+    return { html_url: `https://github.com/${REPO}/pull/99` };
+  if (method === 'POST' && path.endsWith('/issues')) return { number: 50 };
+  return {};
+}
+
+function fakeExec(cmd: string, args: string[], opts?: { input?: string }): string {
+  const arg = (i: number) => args[i] ?? '';
+  if (cmd === 'npm') return JSON.stringify({ vulnerabilities: {} }); // npm audit
+  if (cmd === 'git') {
+    state.git.push(args);
+    return '';
+  }
+  if (args[0] === 'workflow') {
+    state.dispatches.push(args);
+    return '';
+  }
+  if (args.includes('--paginate')) return JSON.stringify([get(arg(args.length - 1))]);
+  if (args[1] === '-H') return JSON.stringify(get(arg(3)));
+  if (args[1] === '-X')
+    return JSON.stringify(write(arg(2), arg(3), JSON.parse(opts?.input || '{}')));
+  return JSON.stringify(get(arg(1)));
+}
+
+const packument = {
+  time: { '4.4.3': '2026-09-01T00:00:00Z', '4.6.7': '2026-10-01T00:00:00Z' },
+  versions: {
+    '4.4.3': { _npmUser: { name: 'colinhacks' }, dist: { attestations: {} } },
+    '4.6.7': { _npmUser: { name: 'colinhacks' }, dist: { attestations: {} } },
+  },
+  repository: { url: 'git+https://github.com/colinhacks/zod.git' },
+};
+
+type Cli = typeof import('../../.github/deps-agent/cli.mjs');
+let cli: Cli;
+const healthy = { sha: 'main1', state: 'healthy', detail: 'ok' };
+
+const pings = () => state.comments.filter((c) => c.body.startsWith('@owner'));
+const merges = () => state.writes.filter((w) => w.method === 'PUT' && w.path.endsWith('/merge'));
+const record = () =>
+  decodeRecord(state.comments.find((c) => c.body.includes('deps-agent:record'))?.body ?? '') as {
+    outcome?: string;
+  } | null;
+const assessed = (verdict: 'merge' | 'escalate') => ({
+  key: assessmentKey({
+    updates: [{ name: 'zod', version: '4.6.7' }],
+    checks: REQUIRED_CHECKS.map((name) => ({ name, status: 'completed', conclusion: 'success' })),
+    policyHash: cli.POLICY_HASH,
+  }),
+  assessment: {
+    verdict,
+    summary: 'test',
+    codeReview: { coverage: 'full', suspicious: [] },
+    ...(verdict === 'escalate'
+      ? { escalation: { question: 'Take it?', recommendation: 'Hold', options: ['merge', 'hold'] } }
+      : {}),
+  },
+});
+
+beforeAll(async () => {
+  Object.assign(process.env, {
+    GITHUB_REPOSITORY: REPO,
+    MODE: 'merge',
+    OWNER_LOGIN: 'owner',
+    APP_SLUG: 'deps-agent',
+    RUN_URL: 'https://example.test/run',
+  });
+  vi.mocked(execFileSync).mockImplementation(fakeExec as unknown as typeof execFileSync);
+  // Stub after the global MSW setup patches fetch; the registry is the only fetch target.
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async () => new Response(JSON.stringify(packument), { status: 200 })),
+  );
+  cli = await import('../../.github/deps-agent/cli.mjs');
+});
+
+afterAll(() => {
+  vi.unstubAllGlobals();
+});
+
+beforeEach(() => {
+  state = {
+    headSha: 'head1',
+    mergeable: true,
+    fresh: true,
+    labels: [],
+    comments: [],
+    issues: [],
+    writes: [],
+    git: [],
+    dispatches: [],
+    mainMessage: 'feat: something\n',
+  };
+});
+
+describe('evaluatePr', () => {
+  it('merges a clean PR, pinned to the evaluated commit, and records it', async () => {
+    const { outcome } = await cli.evaluatePr(PR, {
+      main: healthy,
+      now: NOW,
+      assessment: assessed('merge'),
+      slotFree: true,
+    });
+    expect(outcome).toBe('merge');
+    expect(merges()).toHaveLength(1);
+    expect(merges()[0]?.body.sha).toBe('head1');
+    expect(record()?.outcome).toBe('merge');
+  });
+
+  it('pings the owner once per reason: a rebase with the same versions stays quiet', async () => {
+    await cli.evaluatePr(PR, {
+      main: healthy,
+      now: NOW,
+      assessment: assessed('escalate'),
+      slotFree: true,
+    });
+    expect(pings()).toHaveLength(1);
+    state.headSha = 'head2'; // Dependabot rebased: new commit, same versions
+    const { outcome } = await cli.evaluatePr(PR, { main: healthy, now: NOW, slotFree: true });
+    expect(outcome).toBe('escalate'); // the cached assessment still applies after the rebase
+    expect(pings()).toHaveLength(1);
+  });
+
+  it('applies an override written by the App, and survives a rebase', async () => {
+    state.comments.push({
+      id: 1,
+      body: renderOverride('zod@4.6.7', 'owner', ''),
+      user: { login: BOT, type: 'Bot' },
+    });
+    await cli.evaluatePr(PR, {
+      main: healthy,
+      now: NOW,
+      assessment: assessed('escalate'),
+      slotFree: true,
+    });
+    expect(merges()).toHaveLength(1);
+  });
+
+  it('ignores an override marker pasted by anyone else', async () => {
+    state.comments.push({
+      id: 1,
+      body: renderOverride('zod@4.6.7', 'owner', ''),
+      user: { login: 'mallory', type: 'User' },
+    });
+    const { outcome } = await cli.evaluatePr(PR, {
+      main: healthy,
+      now: NOW,
+      assessment: assessed('escalate'),
+      slotFree: true,
+    });
+    expect(outcome).toBe('escalate');
+    expect(merges()).toHaveLength(0);
+  });
+
+  it('asks Dependabot to rebase once, then escalates if nothing happened after 24 h', async () => {
+    state.fresh = false;
+    await cli.evaluatePr(PR, {
+      main: healthy,
+      now: NOW,
+      assessment: assessed('merge'),
+      slotFree: true,
+    });
+    const rebaseRequests = () => state.comments.filter((c) => c.body === '@dependabot rebase');
+    expect(rebaseRequests()).toHaveLength(1);
+    expect(pings()).toHaveLength(0);
+
+    const later = new Date(NOW.getTime() + 25 * 3_600_000);
+    const { outcome } = await cli.evaluatePr(PR, { main: healthy, now: later, slotFree: true });
+    expect(outcome).toBe('escalate');
+    expect(rebaseRequests()).toHaveLength(1);
+    expect(pings()[0]?.body).toContain('has not rebased');
+  });
+});
+
+describe('handleMain', () => {
+  it('opens a revert PR and an issue when its own merge broke main', () => {
+    state.mainMessage = 'chore(deps): bump zod (#7)\n\nMerged-by: deps-agent\n';
+    cli.handleMain({ sha: 'main1', state: 'broken', detail: 'Deploy: failure' });
+    expect(state.git.map((a) => a[0])).toEqual(['fetch', 'checkout', 'revert', 'push']);
+    expect(state.git[2]).toEqual(['revert', '--no-edit', 'main1']);
+    const issue = state.writes.find((w) => w.method === 'POST' && w.path.endsWith('/issues'));
+    expect(issue?.body.title).toBe('deps-agent: main main1 is broken');
+    expect(String(issue?.body.body)).toContain('Revert PR ready: https://github.com/o/r/pull/99');
+  });
+
+  it('freezes without reverting when a human commit broke main', () => {
+    cli.handleMain({ sha: 'main1', state: 'broken', detail: 'CI on main: failure' });
+    expect(state.git).toEqual([]);
+    const issue = state.writes.find((w) => w.method === 'POST' && w.path.endsWith('/issues'));
+    expect(String(issue?.body.body)).not.toContain('Revert');
+  });
+
+  it('files the issue once per broken commit', () => {
+    state.issues = [{ number: 50, title: 'deps-agent: main main1 is broken' }];
+    cli.handleMain({ sha: 'main1', state: 'broken', detail: 'Deploy: failure' });
+    expect(state.writes).toEqual([]);
+  });
+
+  it('closes the freeze issue once main is healthy again', () => {
+    state.issues = [{ number: 50, title: 'deps-agent: main old1234 is broken' }];
+    cli.handleMain(healthy);
+    expect(state.writes.some((w) => w.method === 'PATCH' && w.body.state === 'closed')).toBe(true);
+  });
+});
+
+describe('command', () => {
+  const run = (body: string, commenter = 'owner') => {
+    Object.assign(process.env, { PR: String(PR), COMMENTER: commenter, COMMENT_BODY: body });
+    return cli.commands.command();
+  };
+
+  it('records /deps merge as an App override comment and starts a run, never merging itself', async () => {
+    await run('/deps merge looks fine');
+    expect(state.comments.some((c) => c.body.includes('deps-agent:override'))).toBe(true);
+    expect(state.dispatches).toHaveLength(1);
+    expect(merges()).toHaveLength(0);
+    expect(state.comments.some((c) => c.body.includes('deps-agent:record'))).toBe(false);
+  });
+
+  it('ignores commands from anyone but the owner', async () => {
+    await run('/deps merge', 'mallory');
+    expect(state.writes).toEqual([]);
+    expect(state.dispatches).toEqual([]);
+  });
+});

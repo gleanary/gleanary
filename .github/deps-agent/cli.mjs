@@ -7,18 +7,19 @@
 //   prompt --pr N --facts F --diffs DIR    prompt + claude_args step outputs
 //   save-assessment --pr N --facts F --out F   validate $ASSESSMENT into a file
 //   act --assessments DIR                  evaluate, record, escalate, merge at most one PR
-//   command                                handle an owner's `/deps ...` PR comment
+//   command                                record an owner's `/deps ...` PR comment (never merges)
 //
 // Env: GITHUB_REPOSITORY, GH_TOKEN, MODE (off|shadow|merge), OWNER_LOGIN, APP_SLUG,
 // RUN_URL. Only `act` and `command` run with a write token (the GitHub App's), and
-// neither runs an LLM: the assessment arrives as a validated artifact.
+// neither runs an LLM: the assessment arrives as a validated artifact. Importing this
+// module runs nothing (tests import it); only direct execution runs a subcommand.
 
 import { execFileSync } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
 import {
   DEPENDABOT_LOGIN,
@@ -38,11 +39,14 @@ import {
 } from './gate.mjs';
 import {
   MARKER,
+  approvedVersions,
   decodeRecord,
+  fromApp,
   neutralize,
   pushHistory,
   renderDashboard,
   renderEscalation,
+  renderOverride,
   renderRecord,
 } from './record.mjs';
 
@@ -59,9 +63,22 @@ const BUFFER = 512 * 1024 * 1024;
 // Published-code review: a full `npm diff` of a large package (e.g. next) exhausts the heap,
 // so Claude gets package.json, install/bin scripts and top-level files first, then the rest
 // up to these caps, and is told what it did not see.
-const DIFF_NOISE = /(\.map|\.d\.[cm]?ts|\.md|(^|\/)LICENSE[^/]*)$|(^|\/)(__tests__|tests?|docs?|examples?)\//i;
+// Binaries are excluded too: a text review can't read them, and `npm diff` on a large native
+// binary (e.g. @next/swc-*'s .node file) runs for many minutes at hundreds of MB.
+const DIFF_NOISE =
+  /(\.map|\.d\.[cm]?ts|\.md|(^|\/)LICENSE[^/]*|\.(node|wasm|so|dylib|dll|exe|bin|png|jpe?g|gif|webp|ico|woff2?|ttf|otf|eot|gz|tgz|zip))$|(^|\/)(__tests__|tests?|docs?|examples?)\//i;
+// Hard wall-clock limit per `npm diff` call: a slow package costs coverage, never the job.
+const DIFF_TIMEOUT_MS = 120_000;
 const DIFF_MAX_FILES = 80;
 const DIFF_MAX_BYTES = 200_000;
+// Transitive versions get a smaller review budget: the riskiest first (install scripts).
+const DIFF_MAX_TRANSITIVE = 10;
+const DIFF_MAX_BYTES_TRANSITIVE = 40_000;
+// Registry checks (cooldown, provenance) for every introduced version, direct or transitive.
+const REGISTRY_CONCURRENCY = 8;
+const REGISTRY_MAX_PACKAGES = 300;
+// Hours to wait for Dependabot to act on our `@dependabot rebase` before asking the owner.
+const REBASE_STUCK_HOURS = 24;
 
 // ── GitHub / registry I/O ────────────────────────────────────────────────────
 
@@ -81,21 +98,64 @@ async function getJson(url) {
   return res.json();
 }
 
-/** Publish time, provenance and publisher of `from` and `to` for one direct dependency. */
-async function registryFacts(name, from, to) {
-  // The full packument is the only registry source of per-version publish time, and it
-  // already carries both version manifests. Any failure leaves nulls, which escalate.
-  const doc = await getJson(`https://registry.npmjs.org/${name.replace('/', '%2f')}`).catch(() => null);
-  const prev = doc?.versions?.[from];
-  const next = doc?.versions?.[to];
-  return {
-    name,
-    publishedAt: doc?.time?.[to] ?? null,
-    prevAttested: Boolean(prev?.dist?.attestations),
-    attested: Boolean(next?.dist?.attestations),
-    prevPublisher: prev?._npmUser?.name ?? null,
-    publisher: next?._npmUser?.name ?? null,
+// The full packument is the only registry source of per-version publish time, and it
+// already carries every version manifest. Fetched once per package per run, but only the
+// fields the gate reads are kept: full packuments (e.g. next) run to tens of MB each.
+const packuments = new Map();
+const slimPackument = (doc) => ({
+  time: doc.time ?? {},
+  repoUrl: typeof doc.repository === 'string' ? doc.repository : (doc.repository?.url ?? null),
+  versions: Object.fromEntries(
+    Object.entries(doc.versions ?? {}).map(([v, m]) => [
+      v,
+      { attested: Boolean(m.dist?.attestations), publisher: m._npmUser?.name ?? null },
+    ]),
+  ),
+});
+const packument = (name) => {
+  if (!packuments.has(name)) {
+    const url = `https://registry.npmjs.org/${name.replace('/', '%2f')}`;
+    packuments.set(name, getJson(url).then(slimPackument, () => null));
+  }
+  return packuments.get(name);
+};
+
+/**
+ * Publish time, provenance and publisher for every introduced version, direct or
+ * transitive. A failed lookup leaves nulls, which the gate escalates.
+ * @param {{name: string, from: string|null, to: string}[]} changes - lock.changed
+ * @param {Set<string>} direct - names of the packages the PR declares
+ * @returns {Promise<object[]>} one registry fact per change
+ */
+async function registryFacts(changes, direct) {
+  if (changes.length > REGISTRY_MAX_PACKAGES) {
+    // Too many to verify: one unverifiable entry makes the cooldown rule escalate.
+    return [{ name: `${changes.length} packages`, version: '(too many to verify)', direct: true, publishedAt: null }];
+  }
+  const facts = new Array(changes.length);
+  let next = 0;
+  const worker = async () => {
+    while (next < changes.length) {
+      const i = next++;
+      const { name, from, to } = changes[i];
+      const doc = await packument(name);
+      const prev = from ? doc?.versions?.[from] : null;
+      const cur = doc?.versions?.[to];
+      facts[i] = {
+        name,
+        version: to,
+        direct: direct.has(name),
+        publishedAt: doc?.time[to] ?? null,
+        prevAttested: Boolean(prev?.attested),
+        attested: Boolean(cur?.attested),
+        prevPublisher: prev?.publisher ?? null,
+        publisher: cur?.publisher ?? null,
+        repoUrl: doc?.repoUrl ?? null,
+      };
+    }
   };
+  await Promise.all(Array.from({ length: REGISTRY_CONCURRENCY }, worker));
+  return facts;
 }
 
 /** Advisory keys for a package.json + lockfile pair. Reads the lockfile only; runs no package code. */
@@ -118,7 +178,8 @@ function auditAdvisories(pkg, lock) {
   return advisoryKeys(report);
 }
 
-const commitMessage = (sha) => api(`repos/${REPO}/git/commits/${sha}`).message;
+const gitCommit = (sha) => api(`repos/${REPO}/git/commits/${sha}`);
+const commitMessage = (sha) => gitCommit(sha).message;
 const checkRunsFor = (sha) =>
   latestCheckRuns(apiPaged(`repos/${REPO}/commits/${sha}/check-runs?per_page=100`, 'check_runs'));
 
@@ -143,12 +204,13 @@ function diffPriority(file) {
 }
 
 /** Capped diff of the published tarballs. Downloads only; runs no package code. */
-function packageDiff(name, from, to) {
+function packageDiff(name, from, to, maxBytes = DIFF_MAX_BYTES) {
   const npmDiff = (maxBuffer, ...args) =>
     execFileSync('npm', ['diff', `--diff=${name}@${from}`, `--diff=${name}@${to}`, ...args], {
       cwd: tmpdir(),
       encoding: 'utf8',
       maxBuffer,
+      timeout: DIFF_TIMEOUT_MS,
     });
   const files = npmDiff(BUFFER, '--diff-name-only').split('\n').filter(Boolean);
   const relevant = files.filter((f) => !DIFF_NOISE.test(f)).sort((a, b) => diffPriority(a) - diffPriority(b));
@@ -157,10 +219,11 @@ function packageDiff(name, from, to) {
   let overflow = false;
   if (picked.length) {
     try {
-      text = npmDiff(DIFF_MAX_BYTES, '--', ...picked);
+      text = npmDiff(maxBytes, '--', ...picked);
     } catch (err) {
-      if (err.code !== 'ENOBUFS') throw err;
-      text = String(err.stdout ?? '').slice(0, DIFF_MAX_BYTES); // hit the cap: keep what fits
+      // Hit the byte cap or the time limit: keep what was produced, report it truncated.
+      if (err.code !== 'ENOBUFS' && err.signal !== 'SIGTERM') throw err;
+      text = String(err.stdout ?? '').slice(0, maxBytes);
       overflow = true;
     }
   }
@@ -186,11 +249,11 @@ const dependabotPrs = () =>
     .filter((p) => p.user.login === DEPENDABOT_LOGIN)
     .sort((a, b) => a.number - b.number);
 
+const prComments = (number) => apiPaged(`repos/${REPO}/issues/${number}/comments?per_page=100`);
+
 /** The agent's sticky record comment: only comments by our App are trusted. */
-function findRecord(number) {
-  const comment = apiPaged(`repos/${REPO}/issues/${number}/comments?per_page=100`).find(
-    (c) => c.user.login === BOT && c.user.type === 'Bot' && c.body.includes(MARKER),
-  );
+function findRecord(number, comments = prComments(number)) {
+  const comment = comments.find((c) => fromApp(c, BOT) && c.body.includes(MARKER));
   return { comment, record: comment ? decodeRecord(comment.body) : null };
 }
 
@@ -228,7 +291,8 @@ async function collectFacts(number, main, now) {
     pr = api(`repos/${REPO}/pulls/${number}`);
   }
   const files = apiPaged(`repos/${REPO}/pulls/${number}/files?per_page=100`).map((f) => f.filename);
-  const declared = parseUpdatedDependencies(commitMessage(pr.head.sha));
+  const commit = gitCommit(pr.head.sha);
+  const declared = parseUpdatedDependencies(commit.message);
   const checks = checkRunsFor(pr.head.sha);
   const compare = api(`repos/${REPO}/compare/${pr.head.sha}...${main.sha}`);
   const fresh =
@@ -241,7 +305,8 @@ async function collectFacts(number, main, now) {
     updates: declared.map((u) => ({ ...u, from: null, to: null })),
     manifestScoped: false,
     checks,
-    lock: { added: [], newInstallScripts: [] },
+    headCommittedAt: commit.committer?.date ?? null,
+    lock: { added: [], newInstallScripts: [], changed: [] },
     registry: [],
     newAdvisories: [],
     malware: [],
@@ -269,15 +334,11 @@ async function collectFacts(number, main, now) {
   facts.manifestScoped = manifestChangeIsScoped(basePkg, headPkg, declared.map((u) => u.name));
   facts.lock = diffLockfiles(baseLock, headLock);
   try {
-    facts.malware = malwareAdvisories(facts.lock.changed);
+    facts.malware = malwareAdvisories(facts.lock.changed.map((c) => `${c.name}@${c.to}`));
   } catch {
     facts.malware = null; // feed unavailable: the gate waits rather than guessing
   }
-  facts.registry = await Promise.all(
-    facts.updates
-      .filter((u) => u.type.startsWith('direct') && u.from && u.to)
-      .map((u) => registryFacts(u.name, u.from, u.to)),
-  );
+  facts.registry = await registryFacts(facts.lock.changed, new Set(declared.map((u) => u.name)));
   try {
     if (before instanceof Error) throw before;
     facts.newAdvisories = auditAdvisories(headPkg, headLock).filter((k) => !before.has(k));
@@ -326,11 +387,16 @@ function merge(meta) {
 
 /**
  * Evaluate one PR end to end and persist the result.
- * @returns {Promise<{outcome: string, record: object, meta: object}>}
+ * @param {number} number - PR number
+ * @param {{main: {sha: string, state: string, detail?: string}, now: Date,
+ *   assessment?: {key: string, assessment: object}, slotFree: boolean, by?: string,
+ *   note?: string}} opts - run context; `assessment` is this run's fresh assessment, if any
+ * @returns {Promise<{outcome: string, record: {outcome?: string, rules: object[]}, meta: object}>}
  */
 async function evaluatePr(number, { main, now, assessment, slotFree, by = 'agent', note }) {
   const { meta, facts } = await collectFacts(number, main, now);
-  const { comment: existing, record: prior } = findRecord(number);
+  const comments = prComments(number);
+  const { comment: existing, record: prior } = findRecord(number, comments);
   const record = prior ?? { pr: number };
   // Assessments and owner overrides belong to the package versions, not the commit, so a
   // Dependabot rebase keeps them; every gate is still re-evaluated on the new commit.
@@ -342,8 +408,26 @@ async function evaluatePr(number, { main, now, assessment, slotFree, by = 'agent
   const current = record.assessmentKey === key ? record.assessment : null;
   const rules = evaluateRules({ ...facts, assessment: current });
   const versions = updatesKey(facts.updates);
-  const override = record.override === versions;
+  const override = approvedVersions(comments, BOT).has(versions);
+  if (override && record.overrideSeen !== versions) {
+    record.overrideSeen = versions;
+    pushHistory(record, { at: now.toISOString(), sha: meta.headSha, outcome: 'override', by: OWNER || 'owner' });
+  }
   let outcome = decide({ rules, mode: MODE, override, held: meta.labels.includes(LABEL.hold), slotFree });
+
+  // Our `@dependabot rebase` may be ignored (Dependabot might not take commands from an
+  // App): after REBASE_STUCK_HOURS on the same commit, hand it to the owner.
+  const needsRebase = !facts.fresh || facts.mergeable === false;
+  const stuck =
+    outcome === 'wait' &&
+    needsRebase &&
+    record.rebaseSha === meta.headSha &&
+    now.getTime() - new Date(record.rebaseAt ?? now).getTime() > REBASE_STUCK_HOURS * 3_600_000;
+  let why = '';
+  if (stuck) {
+    outcome = 'escalate';
+    why = `Dependabot has not rebased this PR ${REBASE_STUCK_HOURS} h after deps-agent asked. Comment \`@dependabot rebase\` yourself.`;
+  }
 
   if (outcome === 'merge') {
     try {
@@ -362,15 +446,15 @@ async function evaluatePr(number, { main, now, assessment, slotFree, by = 'agent
     .filter((r) => r.status === 'fail')
     .map((r) => r.id)
     .join(',');
-  const escalation = `${versions}|${failing}`;
+  const escalation = `${versions}|${failing}${stuck ? '|rebase-stuck' : ''}`;
   if (outcome === 'escalate' && record.escalatedKey !== escalation && OWNER) {
-    comment(number, renderEscalation(record, OWNER));
+    comment(number, renderEscalation(record, OWNER, why));
     record.escalatedKey = escalation;
   }
-  const needsRebase = !facts.fresh || facts.mergeable === false;
   if (needsRebase && record.rebaseSha !== meta.headSha) {
     comment(number, '@dependabot rebase');
     record.rebaseSha = meta.headSha;
+    record.rebaseAt = now.toISOString();
   }
   setLabel(number, LABEL.escalated, outcome === 'escalate', meta.labels);
   saveRecord(number, existing, record);
@@ -504,12 +588,23 @@ const commands = {
   async 'package-diffs'({ facts, out }) {
     const { facts: f } = JSON.parse(readFileSync(facts, 'utf8'));
     mkdirSync(out, { recursive: true });
+    const direct = new Set(f.updates.map((u) => u.name));
+    // Version changes outside the declared packages, riskiest (install scripts) first.
+    const transitive = f.lock.changed
+      .filter((c) => c.from && !direct.has(c.name))
+      .sort((a, b) => Number(b.installScript) - Number(a.installScript));
+    const targets = [
+      ...f.updates.filter((u) => u.from && u.to).map((u) => ({ ...u, direct: true, max: DIFF_MAX_BYTES })),
+      ...transitive
+        .slice(0, DIFF_MAX_TRANSITIVE)
+        .map((c) => ({ ...c, direct: false, max: DIFF_MAX_BYTES_TRANSITIVE })),
+    ];
     const index = [];
-    for (const u of f.updates.filter((x) => x.from && x.to)) {
-      const entry = { name: u.name, from: u.from, to: u.to };
+    for (const u of targets) {
+      const entry = { name: u.name, from: u.from, to: u.to, direct: u.direct };
       try {
-        const { text, ...stats } = packageDiff(u.name, u.from, u.to);
-        entry.diffFile = join(out, `${u.name.replace(/[@/]/g, '_')}.diff`);
+        const { text, ...stats } = packageDiff(u.name, u.from, u.to, u.max);
+        entry.diffFile = join(out, `${u.name.replace(/[@/]/g, '_')}@${u.to}.diff`);
         writeFileSync(entry.diffFile, text);
         Object.assign(entry, stats);
       } catch (err) {
@@ -517,7 +612,8 @@ const commands = {
       }
       index.push(entry);
     }
-    writeFileSync(join(out, 'index.json'), JSON.stringify(index, null, 2));
+    const transitiveNotReviewed = Math.max(0, transitive.length - DIFF_MAX_TRANSITIVE);
+    writeFileSync(join(out, 'index.json'), JSON.stringify({ diffs: index, transitiveNotReviewed }, null, 2));
   },
 
   async prompt({ pr, facts, diffs }) {
@@ -536,7 +632,11 @@ const commands = {
       [
         `--model ${process.env.MODEL || 'claude-opus-5-5'}`,
         '--max-turns 40',
-        '--allowedTools "Read,Grep,Glob,WebFetch,Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr checks:*),Bash(gh run view:*),Bash(gh release view:*),Bash(npm view:*)"',
+        // The job reads attacker-controlled text: file reads stay in the workspace (no
+        // /proc/self/environ), web fetches stay on GitHub and npm, and no tool can reach
+        // an arbitrary host (npm view --registry could).
+        '--allowedTools "Read(./**),Grep(./**),Glob(./**),WebFetch(domain:github.com),WebFetch(domain:raw.githubusercontent.com),WebFetch(domain:www.npmjs.com),Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr checks:*),Bash(gh run view:*),Bash(gh release view:*)"',
+        '--disallowedTools "Read(//proc/**),Read(//etc/**),Read(//home/**),Read(~/**),Bash(npm:*),Bash(curl:*),Bash(wget:*)"',
         `--json-schema '${schema}'`,
       ].join('\n'),
     );
@@ -602,48 +702,43 @@ const commands = {
     const pr = api(`repos/${REPO}/pulls/${number}`);
     if (pr.user.login !== DEPENDABOT_LOGIN) return;
     const labels = pr.labels.map((l) => l.name);
-    const now = new Date();
-    const { comment: existing, record: prior } = findRecord(number);
-    const record = prior ?? { pr: number, rules: [], headSha: pr.head.sha, outcome: 'wait' };
-    const recordEvent = (outcome) =>
-      saveRecord(number, existing, pushHistory(record, { at: now.toISOString(), sha: pr.head.sha, outcome, by, note: reason }));
-
+    // Commands only leave durable, append-only traces (an App comment, a label) and start
+    // a run; the scheduled `act` job alone writes the record and merges. A command can
+    // then never race `act`, and needs no shared concurrency group that could drop it.
+    const dispatch = (...inputs) => gh(['workflow', 'run', 'deps-agent.yml', '--repo', REPO, ...inputs]);
     if (verb === 'merge') {
-      record.override = updatesKey(parseUpdatedDependencies(commitMessage(pr.head.sha)));
-      recordEvent('override');
-      const { outcome, record: after } = await evaluatePr(number, { main: mainState(now), now, slotFree: true, by });
-      comment(
-        number,
-        outcome === 'merge'
-          ? 'Merged on your override. Production deploy follows CI on main.'
-          : `Override recorded for \`${record.override}\` (it survives rebases), outcome \`${outcome}\` (blocking: ${blockingSummary(after.rules) || 'none'}). It will merge on a later run once the remaining gates pass.`,
-      );
-      return;
-    }
-    if (verb === 'hold' || verb === 'unhold') {
+      comment(number, renderOverride(updatesKey(parseUpdatedDependencies(commitMessage(pr.head.sha))), by, reason));
+      dispatch();
+    } else if (verb === 'recheck') {
+      comment(number, `Re-assessment requested by ${by}; a run has been started.`);
+      dispatch('-f', `pr=${number}`); // pr=N bypasses the assessment cache in \`plan\`
+    } else {
       setLabel(number, LABEL.hold, verb === 'hold', labels);
       setLabel(number, LABEL.escalated, false, labels);
-      record.outcome = verb === 'hold' ? 'held' : 'wait';
+      const note = reason.trim() ? `: ${neutralize(reason, 300)}` : '';
+      comment(number, verb === 'hold' ? `On hold by ${by}${note}. deps-agent will leave this PR alone.` : `Hold lifted by ${by}.`);
+      dispatch();
     }
-    // A dispatched run with pr=N bypasses the assessment cache in `plan`.
-    if (verb === 'recheck') gh(['workflow', 'run', 'deps-agent.yml', '--repo', REPO, '-f', `pr=${number}`]);
-    recordEvent(verb);
   },
 };
 
-const { positionals, values } = parseArgs({
-  allowPositionals: true,
-  options: {
-    pr: { type: 'string' },
-    facts: { type: 'string' },
-    out: { type: 'string' },
-    diffs: { type: 'string' },
-    assessments: { type: 'string' },
-  },
-});
-const run = commands[positionals[0]];
-if (!run) {
-  console.error(`usage: cli.mjs <${Object.keys(commands).join('|')}>`);
-  process.exit(2);
+export { POLICY_HASH, commands, evaluatePr, handleMain };
+
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  const { positionals, values } = parseArgs({
+    allowPositionals: true,
+    options: {
+      pr: { type: 'string' },
+      facts: { type: 'string' },
+      out: { type: 'string' },
+      diffs: { type: 'string' },
+      assessments: { type: 'string' },
+    },
+  });
+  const run = commands[positionals[0]];
+  if (!run) {
+    console.error(`usage: cli.mjs <${Object.keys(commands).join('|')}>`);
+    process.exit(2);
+  }
+  await run(values);
 }
-await run(values);

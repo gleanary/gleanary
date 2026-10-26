@@ -164,9 +164,9 @@ jobs:
       github.event.comment.user.login == vars.DEPS_AGENT_OWNER
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    concurrency:
-      group: deps-agent-act
-      cancel-in-progress: false
+    # No concurrency group on purpose: commands never merge and only write append-only
+    # traces, so they need no lock, and a group shared with `act` keeps only one pending
+    # run, which would silently drop commands.
     permissions:
       contents: read
     steps:

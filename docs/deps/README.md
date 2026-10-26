@@ -98,8 +98,10 @@ sequenceDiagram
     alt only soft gates fail and you accept the risk
         O->>PR: /deps merge
         PR->>K: comment event, accepted only from your login
-        K->>K: re-run the gate, soft gates overridden for these package versions
-        K->>PR: merge if hard gates pass and main is healthy, otherwise reply with what still blocks
+        K->>PR: App comment recording the override for these package versions
+        K->>G: start a run
+        G->>G: re-run the gate, soft gates waived for those versions
+        G->>PR: merge if hard gates pass and main is healthy, otherwise keep waiting
     else park it
         O->>PR: /deps hold reason
         K->>PR: label deps:hold, the agent ignores the PR until /deps unhold
@@ -107,7 +109,7 @@ sequenceDiagram
         O->>O: add an ignore entry with its reason to dependabot.yml
         Note over O,PR: Dependabot closes the PR and stops proposing that version
     end
-    K->>PR: append your decision to the decision history
+    G->>PR: the next run appends your decision to the decision history
 ```
 
 Hard gates (wrong author, files outside the lockfile, red CI, suspected prompt
@@ -172,17 +174,18 @@ The escalation comment lists the failing gates, then Claude's question, recommen
 and options. The decision record above it has the full gate table and history. Typical
 cases:
 
-| Failing gate               | Usually means                                            | Typical answer                                       |
-| -------------------------- | -------------------------------------------------------- | ---------------------------------------------------- |
-| `semver`                   | Major, or 0.x minor (no compatibility promise below 1.0) | Read the breaking changes Claude found, then decide  |
-| `verdict`                  | Claude found a breaking change touching our code         | Fix it in a follow-up PR, or hold                    |
-| `checks`                   | CI failed on the PR                                      | Read Claude's `ciRead`, fix or close                 |
-| `cooldown`                 | Release younger than 7 days (often a security fix)       | `/deps merge` if the fix matters, otherwise wait     |
-| `malware`                  | GitHub lists the new version as malware                  | Close the PR; check nothing installed it elsewhere   |
-| `codeReview`               | Claude found suspicious code in the published diff       | Read the finding and the diff before anything else   |
-| `publisher` / `provenance` | The package was published differently than last time     | Check the package's repo and npm page before merging |
-| `installScripts`           | A dependency now runs code at install time               | Check what it runs; native modules are usually fine  |
-| `injection`                | Changelog or PR text tried to instruct the agent         | Treat the release as suspicious; close or wait       |
+| Failing gate               | Usually means                                                                                                                                                                      | Typical answer                                                                                               |
+| -------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| `semver`                   | Major, or 0.x minor (no compatibility promise below 1.0)                                                                                                                           | Read the breaking changes Claude found, then decide                                                          |
+| `verdict`                  | Claude found a breaking change touching our code                                                                                                                                   | Fix it in a follow-up PR, or hold                                                                            |
+| `checks`                   | CI failed on the PR, or no CI ran 60 min after the commit                                                                                                                          | Read Claude's `ciRead`, fix or close; if CI never ran, check the Actions tab                                 |
+| `cooldown`                 | A direct release younger than 7 days (often a security fix), or a publish time the registry didn't return. Young _transitive_ versions don't escalate: the PR waits until they age | `/deps merge` if the fix matters, otherwise wait                                                             |
+| `malware`                  | GitHub lists the new version as malware                                                                                                                                            | Close the PR; check nothing installed it elsewhere                                                           |
+| `codeReview`               | Claude found suspicious code in the published diff                                                                                                                                 | Read the finding and the diff before anything else                                                           |
+| `publisher` / `provenance` | The package was published differently than last time                                                                                                                               | Check the package's repo and npm page before merging                                                         |
+| `installScripts`           | A package gained an install script, or a package that runs one (`better-sqlite3`, `esbuild`, …) changed version. The script runs in the Docker build                               | Check the code review covered it (install-script packages are diffed first); native modules are usually fine |
+| "Why now: has not rebased" | Dependabot ignored deps-agent's rebase request for 24 h                                                                                                                            | Comment `@dependabot rebase` yourself                                                                        |
+| `injection`                | Changelog or PR text tried to instruct the agent                                                                                                                                   | Treat the release as suspicious; close or wait                                                               |
 
 ### Commands
 
@@ -194,6 +197,10 @@ Comment on the Dependabot PR. Only the login in `DEPS_AGENT_OWNER` is obeyed.
 | `/deps hold <reason>` | Label `deps:hold`; the agent leaves the PR alone                                                             |
 | `/deps unhold`        | Remove the hold                                                                                              |
 | `/deps recheck`       | Run a fresh assessment of this PR now                                                                        |
+
+Commands never merge on their own. Each one leaves a durable trace (an App comment
+naming the approved versions, or the `deps:hold` label) and starts a run; that run's gate
+does the merging. Two quick commands in a row are both kept.
 
 Dependabot's own commands still work: `@dependabot rebase`, `@dependabot close`,
 `@dependabot ignore this major version`.

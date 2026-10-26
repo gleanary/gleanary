@@ -35,10 +35,12 @@ function cleanFacts(overrides: Record<string, unknown> = {}): Facts {
     updates: [{ name: 'zod', type: 'direct:production', from: '4.4.3', to: '4.6.7' }],
     manifestScoped: true,
     checks: REQUIRED_CHECKS.map((name) => ({ name, status: 'completed', conclusion: 'success' })),
-    lock: { added: [], newInstallScripts: [] },
+    lock: { added: [], newInstallScripts: [], changed: [] },
     registry: [
       {
         name: 'zod',
+        version: '4.6.7',
+        direct: true,
         publishedAt: '2026-10-01T00:00:00Z',
         prevAttested: true,
         attested: true,
@@ -137,7 +139,10 @@ describe('diffLockfiles', () => {
     expect(diffLockfiles(base, head)).toEqual({
       added: ['node_modules/b'],
       newInstallScripts: ['node_modules/a'],
-      changed: ['a@1.0.1', 'b@2.0.0'],
+      changed: [
+        { name: 'a', from: '1.0.0', to: '1.0.1', installScript: true },
+        { name: 'b', from: null, to: '2.0.0', installScript: false },
+      ],
     });
   });
 
@@ -191,7 +196,10 @@ describe('diffLockfiles: introduced versions', () => {
         'node_modules/b/node_modules/@scope/c': { version: '3.0.0' },
       },
     };
-    expect(diffLockfiles(base, head).changed).toEqual(['@scope/c@3.0.0', 'b@2.1.0']);
+    expect(diffLockfiles(base, head).changed.map((c) => `${c.name}@${c.to}`)).toEqual([
+      '@scope/c@3.0.0',
+      'b@2.1.0',
+    ]);
   });
 });
 
@@ -287,12 +295,16 @@ describe('evaluateRules + decide', () => {
   it('escalates supply-chain signals: install scripts, provenance, publisher, advisories', () => {
     const reg = cleanFacts().registry[0];
     const cases = [
-      cleanFacts({ lock: { added: [], newInstallScripts: ['node_modules/x'] } }),
+      cleanFacts({ lock: { added: [], newInstallScripts: ['node_modules/x'], changed: [] } }),
       cleanFacts({ registry: [{ ...reg, attested: false }] }),
       cleanFacts({ registry: [{ ...reg, publisher: 'someone-else' }] }),
       cleanFacts({ newAdvisories: ['GHSA-xxxx'] }),
       cleanFacts({
-        lock: { added: Array.from({ length: 16 }, (_, i) => `p${i}`), newInstallScripts: [] },
+        lock: {
+          added: Array.from({ length: 16 }, (_, i) => `p${i}`),
+          newInstallScripts: [],
+          changed: [],
+        },
       }),
     ];
     for (const facts of cases) expect(outcome(facts)).toBe('escalate');
@@ -356,6 +368,63 @@ describe('evaluateRules + decide', () => {
     const reg = cleanFacts().registry[0];
     const facts = cleanFacts({ registry: [{ ...reg, publishedAt: '2026-10-17T12:00:00Z' }] });
     expect(statusOf(facts, 'cooldown')).toBe('fail');
+  });
+
+  it('waits for a young transitive version to age instead of escalating', () => {
+    const reg = cleanFacts().registry[0];
+    const transitive = {
+      ...reg,
+      name: 'debug',
+      version: '4.4.2',
+      direct: false,
+      publishedAt: '2026-10-23T10:00:00Z', // two hours before NOW
+    };
+    const facts = cleanFacts({ registry: [reg, transitive] });
+    expect(statusOf(facts, 'cooldown')).toBe('pending');
+    expect(outcome(facts)).toBe('wait');
+  });
+
+  it('escalates a transitive version whose publish time is unknown', () => {
+    const reg = cleanFacts().registry[0];
+    const facts = cleanFacts({
+      registry: [
+        reg,
+        { ...reg, name: 'debug', version: '4.4.2', direct: false, publishedAt: null },
+      ],
+    });
+    expect(statusOf(facts, 'cooldown')).toBe('fail');
+  });
+
+  it('checks provenance on transitive versions but publisher on direct ones only', () => {
+    const reg = cleanFacts().registry[0];
+    const dep = { ...reg, name: 'ms', version: '2.1.4', direct: false };
+    expect(
+      statusOf(cleanFacts({ registry: [reg, { ...dep, attested: false }] }), 'provenance'),
+    ).toBe('fail');
+    expect(
+      statusOf(cleanFacts({ registry: [reg, { ...dep, publisher: 'someone' }] }), 'publisher'),
+    ).toBe('pass');
+  });
+
+  it('escalates a new version of a package that already runs an install script', () => {
+    const lock = {
+      added: [],
+      newInstallScripts: [],
+      changed: [{ name: 'better-sqlite3', from: '12.11.1', to: '12.12.0', installScript: true }],
+    };
+    const facts = cleanFacts({ lock });
+    expect(statusOf(facts, 'installScripts')).toBe('fail');
+    expect(evaluateRules(facts).find((r) => r.id === 'installScripts')?.detail).toContain(
+      'better-sqlite3 12.11.1→12.12.0',
+    );
+  });
+
+  it('escalates when no CI ran 60 minutes after the commit, and waits before that', () => {
+    const late = cleanFacts({ checks: [], headCommittedAt: '2026-10-23T10:00:00Z' });
+    const early = cleanFacts({ checks: [], headCommittedAt: '2026-10-23T11:30:00Z' });
+    expect(statusOf(late, 'checks')).toBe('fail');
+    expect(outcome(late)).toBe('escalate');
+    expect(statusOf(early, 'checks')).toBe('pending');
   });
 
   it('escalates when the assessment says escalate, and waits when it is missing', () => {

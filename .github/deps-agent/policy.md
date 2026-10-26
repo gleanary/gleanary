@@ -21,22 +21,26 @@ only when every gate below passes.
 
 ## Gate rules
 
+"Introduced versions" means every version the lockfile adds or changes: the packages the
+PR declares (direct) **and** the dependency versions that change with them (transitive).
+
 | Rule           | Kind      | Passes when                                                                     |
 | -------------- | --------- | ------------------------------------------------------------------------------- |
 | author         | hard      | PR author is `dependabot[bot]`                                                  |
 | ecosystem      | hard      | npm (GitHub Actions bumps edit workflows: always a human)                       |
+| injection      | hard      | the assessment found no text addressed to an AI in PR, changelog or code        |
 | files          | hard      | only `package.json` / `package-lock.json` changed                               |
 | manifest       | hard      | `package.json` changed only in the declared dependencies' ranges                |
-| checks         | hard      | all required CI checks green on the head SHA                                    |
-| malware        | hard      | no GitHub malware advisory for any version the bump introduces (incl. transitive) |
+| checks         | hard      | all required CI checks green on the head SHA; no CI at all 60 min after the commit escalates |
+| malware        | hard      | no GitHub malware advisory for any introduced version                           |
 | semver         | soft      | patch or minor; 0.x minors, 0.0.x and prereleases count as major                |
-| installScripts | soft      | no package gains an install script                                              |
+| installScripts | soft      | no package gains an install script, and no package that runs one changes version |
 | newPackages    | soft      | ≤ 15 new packages in the lockfile                                               |
-| cooldown       | soft      | every direct release is ≥ 7 days old                                            |
-| provenance     | soft      | no package that had npm provenance lost it                                      |
-| publisher      | soft      | same npm publisher as the previous version                                      |
+| cooldown       | soft      | every introduced version is ≥ 7 days old. A young transitive version **waits** until it ages; a young direct version (a security update) or an unknown publish time escalates |
+| provenance     | soft      | no introduced version lost the npm provenance its previous version had         |
+| publisher      | soft      | each direct package has the same npm publisher as its previous version (direct only: transitive maintainer changes are too common) |
 | audit          | soft      | `npm audit` finds no advisory that main does not already have                   |
-| codeReview     | soft      | Claude's review of the published code diff found nothing suspicious             |
+| codeReview     | soft      | Claude's review of the published code diff found nothing suspicious. Covers the direct packages and up to 10 transitive versions (install-script packages first); coverage is reported |
 | verdict        | soft      | the assessment says `merge`                                                     |
 | mergeable      | transient | no conflict (Dependabot rebases on its own)                                     |
 | fresh          | transient | main has not changed `package*.json` since the PR was built                     |
@@ -62,6 +66,10 @@ re-checked on every commit.
   blocking gates, a question, a recommendation and options.
 - Owner replies on the PR: `/deps merge`, `/deps hold <reason>`, `/deps unhold`,
   `/deps recheck`, or Dependabot's own `@dependabot ignore this major version` / `close`.
+  A command never merges by itself: it leaves an append-only trace (an App override
+  comment, or a label) and starts a run, and that run's gate decides.
+- If a PR waits on a rebase that Dependabot has not done 24 h after deps-agent asked, the
+  owner is pinged to comment `@dependabot rebase` themselves.
 - Every PR carries one sticky **decision record** comment (gates, assessment, history of who
   decided what). The **Dependency dashboard** issue lists every open PR's state.
 - Versions we deliberately skip are `ignore` entries in `.github/dependabot.yml`, each

@@ -61,15 +61,23 @@ and runtime code injected into the library itself (the September 2025 `chalk`/`d
 hijack, pulled within hours). Most are caught within days. Some are not (`event-stream`,
 2018, about two months).
 
-| Layer                                                                      | Catches                                                                                           | Misses                                                                                              |
-| -------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
-| 7-day cooldown (Dependabot, rechecked by the gate)                         | Releases caught and pulled within a week                                                          | Attacks nobody notices for a week                                                                   |
-| GitHub malware feed (hard gate, every introduced version incl. transitive) | Anything listed as malware during the cooldown                                                    | Unlisted releases                                                                                   |
-| Claude's review of the published code diff (`npm diff`, size-capped)       | New network calls, `eval`/`child_process`, credential reads, obfuscated code, unannounced changes | Payloads hidden in large compiled bundles beyond the review cap (coverage is reported as `partial`) |
-| Provenance rule                                                            | A stolen npm token used outside the maintainer's CI                                               | A compromised CI pipeline (valid provenance); packages that never had provenance                    |
-| Publisher rule                                                             | A different npm account                                                                           | The maintainer's own hijacked account                                                               |
-| Install-script rule                                                        | Install-time payloads                                                                             | Runtime payloads                                                                                    |
-| CI, E2E, health check                                                      | Payloads that break behavior                                                                      | Quiet payloads                                                                                      |
+The hijacked version usually does not arrive as the package Dependabot bumps. It arrives as
+a **transitive** dependency: Dependabot's cooldown only delays the package it bumps, and
+when it rebuilds the lockfile, that package's dependencies can resolve to versions
+published minutes earlier. That is how the `chalk`/`debug` versions reached most projects.
+So every layer below states which versions it covers. "Introduced versions" means every
+version the lockfile adds or changes, direct or transitive.
+
+| Layer                                                                                            | Scope                                                                                                        | Catches                                                                                                                                               | Misses                                                                                                                                                               |
+| ------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Dependabot cooldown (7 days)                                                                     | Direct only                                                                                                  | Direct releases pulled within a week                                                                                                                  | Everything transitive                                                                                                                                                |
+| Gate cooldown (7 days, publish time from the registry)                                           | All introduced versions. A young transitive version **waits** until it ages, so routine bumps don't escalate | Releases caught and pulled within a week, including transitive ones                                                                                   | Attacks nobody notices for a week                                                                                                                                    |
+| GitHub malware feed (hard gate)                                                                  | All introduced versions                                                                                      | Anything listed as malware during the cooldown                                                                                                        | Unlisted releases                                                                                                                                                    |
+| Claude's review of the published code diff (`npm diff`, size- and time-capped, binaries skipped) | Direct packages, plus up to 10 transitive versions (install-script packages first)                           | New network calls, `eval`/`child_process`, credential reads, obfuscated code, unannounced changes                                                     | Payloads in large compiled bundles or binaries beyond the cap, and transitive versions past the first 10 (coverage is reported, `partial` when anything was skipped) |
+| Provenance rule                                                                                  | All introduced versions                                                                                      | A stolen npm token used outside the maintainer's CI                                                                                                   | A compromised CI pipeline (valid provenance); packages that never had provenance                                                                                     |
+| Publisher rule                                                                                   | Direct only (transitive maintainer changes are too common to escalate on)                                    | A different npm account                                                                                                                               | The maintainer's own hijacked account; anything transitive                                                                                                           |
+| Install-script rule                                                                              | All introduced versions: a package that gains a script, or a new version of one that already runs a script   | Install-time payloads, including in packages like `better-sqlite3` or `esbuild` that legitimately run scripts (they escalate on every version change) | Runtime payloads                                                                                                                                                     |
+| CI, E2E, health check                                                                            | Whole tree                                                                                                   | Payloads that break behavior                                                                                                                          | Quiet payloads                                                                                                                                                       |
 
 Where the code runs before the gate: PR CI executes it, but Dependabot-triggered runs have a
 read-only token and no secrets. The owner's laptop was the larger exposure: `/babysit-deps`
@@ -77,8 +85,15 @@ used to check out PRs and run `npm ci` and the tests. It now does so only when t
 passes the same cooldown, malware and install-script checks, and always installs with
 `--ignore-scripts`.
 
+The assessment itself reads attacker-controlled text (changelogs, package code), so its tools
+are fenced: file reads stay inside the repository (no `/proc/self/environ`, where the API key
+lives), web fetches are limited to github.com, raw.githubusercontent.com and www.npmjs.com,
+and no tool can reach an arbitrary host (`npm view --registry=<url>` was removed for that
+reason; package repository URLs come from the registry facts instead).
+
 **Residual risk.** A careful attacker who stays unlisted for a week and hides the payload in
-code the review cannot see in full still gets through. A human approving a green PR would
+code the review cannot see in full (a large bundle, a binary, or a transitive version past
+the first ten) still gets through. A human approving a green PR would
 let the same release through, so the agent raises the bar rather than lowering it. The
 remaining defense is limiting what a payload can do once deployed (next section).
 
@@ -192,7 +207,20 @@ review, so it is not the preferred lever.
 ## Consequences
 
 - Up to 8 merges a day (cron every 3 h), each one attributable to a single production bump.
-  Routine fixes arrive about a week after release; security updates skip the cooldown.
+  Routine fixes arrive about a week after release; security updates skip the cooldown. A
+  bump whose transitive versions are younger than 7 days waits until they age.
+- Every version change of a package that runs an install script (`better-sqlite3`,
+  `esbuild`, …) escalates. That is deliberate: those scripts run in the Docker build.
+- `/deps` commands never merge and never write the decision record. `/deps merge` posts an
+  append-only App comment naming the approved versions, and the scheduled `act` job (the
+  only writer of records and the only merger) reads it. A command can therefore neither
+  race `act` nor be dropped by a shared concurrency group: GitHub keeps only one pending
+  run per group, so the command job has no concurrency group at all.
+- If Dependabot ignores the App's `@dependabot rebase` (unverified whether it accepts
+  commands from an App), the PR escalates after 24 h, so the owner can rebase by hand.
+- Every comment on any issue or PR starts a Deps agent run in which every job is skipped
+  unless it is an owner `/deps` command. That is noise in the Actions tab, but harmless:
+  `issue_comment` cannot be filtered by body at the trigger level.
 - Owner involvement drops to escalations (majors, breaking changes touching our code,
   supply-chain signals, suspicious code, red CI, broken main), answered with `/deps …` PR
   comments.
