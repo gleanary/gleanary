@@ -68,6 +68,16 @@ function cleanFacts(overrides: Record<string, unknown> = {}): Facts {
 const outageFact = (name: string, version: string, direct: boolean) =>
   registryFact({ name, from: null, to: version, direct, doc: null });
 
+/** A version bump of a trusted install-script package, resolved from the registry. */
+const ESBUILD_BUMP = {
+  name: 'esbuild',
+  from: '0.28.1',
+  to: '0.28.2',
+  installScript: true,
+  resolved: 'https://registry.npmjs.org/esbuild/-/esbuild-0.28.2.tgz',
+  bundled: false,
+};
+
 const statusOf = (facts: Facts, id: string) =>
   evaluateRules(facts).find((r) => r.id === id)?.status;
 const detailOf = (facts: Facts, id: string) =>
@@ -635,7 +645,7 @@ describe('evaluateRules + decide', () => {
 
     it('waits, rather than escalating, when the npm registry is unreachable', () => {
       const down = cleanFacts({ registry: [outageFact('zod', '4.6.7', true)] });
-      expect(statusOf(down, 'cooldown')).toBe('pending');
+      expect(statusOf(down, 'registry')).toBe('pending');
       expect(statusOf(down, 'publisher')).toBe('pass');
       expect(statusOf(down, 'provenance')).toBe('pass');
       expect(outcome(down)).toBe('wait');
@@ -646,16 +656,7 @@ describe('evaluateRules + decide', () => {
         lock: {
           added: [],
           newInstallScripts: [],
-          changed: [
-            {
-              name: 'esbuild',
-              from: '0.28.1',
-              to: '0.28.2',
-              installScript: true,
-              resolved: 'https://registry.npmjs.org/esbuild/-/esbuild-0.28.2.tgz',
-              bundled: false,
-            },
-          ],
+          changed: [ESBUILD_BUMP],
         },
         registry: [reg(), outageFact('esbuild', '0.28.2', false)],
       });
@@ -680,6 +681,42 @@ describe('evaluateRules + decide', () => {
         ],
       });
       expect(statusOf(moved, 'provenance')).toBe('pass');
+    });
+  });
+
+  describe('fifth review: no waiver can hide an unchecked version or a new reason', () => {
+    it('waits on a registry outage even when a waived cooldown failure hides it', () => {
+      // A security update: zod published a day ago fails cooldown; the owner waived that.
+      const young = { ...cleanFacts().registry[0]!, publishedAt: '2026-10-22T12:00:00Z' };
+      const before = cleanFacts({ registry: [young] });
+      const waived = new Map([['cooldown', detailOf(before, 'cooldown')]]);
+      expect(outcome(before, { waived })).toBe('merge');
+      // Next run: esbuild's packument times out. Nothing about esbuild was checked.
+      const after = cleanFacts({
+        lock: { added: [], newInstallScripts: [], changed: [ESBUILD_BUMP] },
+        registry: [young, outageFact('esbuild', '0.28.2', false)],
+      });
+      expect(detailOf(after, 'cooldown')).toBe(detailOf(before, 'cooldown')); // the waiver still matches
+      expect(statusOf(after, 'registry')).toBe('pending');
+      expect(outcome(after, { waived })).toBe('wait');
+    });
+
+    it('does not let a verdict waiver cover a later escalation for a different reason', () => {
+      const escalating = (question: string) =>
+        cleanFacts({
+          assessment: {
+            verdict: 'escalate',
+            summary: 's',
+            escalation: { question, recommendation: 'r', options: [] },
+            codeReview: { coverage: 'full', suspicious: [] },
+          },
+        });
+      const first = escalating('Breaking change in parse()?');
+      const waived = new Map([['verdict', detailOf(first, 'verdict')]]);
+      expect(outcome(first, { waived })).toBe('merge');
+      expect(outcome(escalating('New network call in the postinstall?'), { waived })).toBe(
+        'escalate',
+      );
     });
   });
 

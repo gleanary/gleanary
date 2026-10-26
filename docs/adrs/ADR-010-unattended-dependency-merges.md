@@ -261,8 +261,16 @@ review, so it is not the preferred lever.
   Dependabot commit, and every introduced version must resolve from registry.npmjs.org.
 - An npm registry outage (timeout, 5xx) makes PRs wait, like a malware-feed outage, instead
   of escalating every open PR: the registry-based rules skip the versions they could not
-  check, and the cooldown rule waits. A 404 is an answer (the version is not on npm) and
-  escalates. A first attempt only made the cooldown wait, and the publisher rule still
-  escalated on the empty facts; the tests now build outage facts exactly as the CLI does.
+  check, and a separate `registry` rule of kind transient waits. A 404 is an answer (the
+  version is not on npm) and escalates. Two attempts failed first: making only the cooldown
+  wait left the publisher rule escalating on the empty facts, and carrying the outage inside
+  the cooldown rule let a waived cooldown failure on one package mask an unchecked package
+  (rule ordering decided the outcome). A transient rule can never be waived, so the outage
+  guarantee no longer depends on ordering. The tests build outage facts with the CLI's own
+  builder (`registryFact`).
+- Pings are deduplicated on each failing rule's id and reason, and an "escalate" verdict
+  carries a fingerprint of the model's reasons: a waived rule that fails again for a new
+  reason, including a re-assessment that escalates for something else, pings the owner
+  again instead of sitting silently under the old override.
 - Requires a GitHub App, an Anthropic API key (with its own spend limit), and repository
   variables; see `docs/deps/README.md`.

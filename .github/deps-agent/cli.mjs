@@ -15,7 +15,7 @@
 // module runs nothing (tests import it); only direct execution runs a subcommand.
 
 import { execFileSync } from 'node:child_process';
-import { createHash, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -38,6 +38,7 @@ import {
   parseUpdatedDependencies,
   pendingChecks,
   registryFact,
+  shortHash,
   updatesKey,
 } from './gate.mjs';
 import {
@@ -277,11 +278,9 @@ function findRecord(number, comments = prComments(number)) {
 }
 
 /** Fingerprint of everything that shapes an assessment; editing any of it re-assesses. */
-const POLICY_HASH = (() => {
-  const h = createHash('sha256');
-  for (const f of ['policy.md', 'prompt.md', 'assessment.schema.json']) h.update(readFileSync(join(HERE, f)));
-  return h.digest('hex').slice(0, 12);
-})();
+const POLICY_HASH = shortHash(
+  ['policy.md', 'prompt.md', 'assessment.schema.json'].map((f) => readFileSync(join(HERE, f), 'utf8')).join('\0'),
+);
 
 // ── Facts ────────────────────────────────────────────────────────────────────
 
@@ -521,10 +520,14 @@ async function evaluatePr(number, { main, now, assessment, slotFree, by = 'agent
   pushHistory(record, { at: now.toISOString(), sha: meta.headSha, outcome, by, ...(note ? { note } : {}) });
 
   // Ping once per reason: a rebase with the same versions and the same failing gates stays quiet.
-  const failing = rules
-    .filter((r) => r.status === 'fail')
-    .map((r) => r.id)
-    .join(',');
+  // Each failing rule with its reason (hashed to keep the key short): a waived rule that
+  // fails again for a new reason is a new escalation and pings, not a repeat of the old one.
+  const failing = shortHash(
+    rules
+      .filter((r) => r.status === 'fail')
+      .map((r) => `${r.id}:${r.detail}`)
+      .join('\n'),
+  );
   const escalation = [
     approved,
     failing,

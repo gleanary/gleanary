@@ -37,7 +37,7 @@ PR declares (direct) **and** the dependency versions that change with them (tran
 | semver         | soft      | patch or minor; 0.x minors, 0.0.x and prereleases count as major                |
 | installScripts | soft      | no package gains an install script, and no package that runs one changes version. Exception (option B): a new version of `better-sqlite3`, `esbuild`, `msw` or `unrs-resolver` passes when its install command is identical to the previous version's and both versions have npm provenance (cooldown and the code review still apply) |
 | newPackages    | soft      | ≤ 15 new packages in the lockfile                                               |
-| cooldown       | soft      | every introduced version is ≥ 7 days old. A young transitive version **waits** until it ages; a young direct version (a security update) or a version npm does not know (404, no publish time) escalates. When the registry does not answer (timeout, 5xx), the PR **waits**, and the registry-based rules (provenance, publisher, install scripts) skip the versions they could not check |
+| cooldown       | soft      | every introduced version the registry answered for is ≥ 7 days old. A young transitive version **waits** until it ages; a young direct version (a security update) or a version npm does not know (404, no publish time) escalates |
 | provenance     | soft      | no introduced version lost the npm provenance its previous version had, and no attested version changed source repository (`repository.url`). npm ties provenance to that field, so a stolen token publishing "with provenance" from another repo has to change it. Unattested versions are not compared: their `repository` is free text |
 | publisher      | soft      | each direct package has the same npm publisher as its previous version (direct only: transitive maintainer changes are too common) |
 | audit          | soft      | `npm audit` finds no advisory that main does not already have                   |
@@ -45,6 +45,7 @@ PR declares (direct) **and** the dependency versions that change with them (tran
 | verdict        | soft      | the assessment says `merge`                                                     |
 | mergeable      | transient | no conflict (Dependabot rebases on its own)                                     |
 | fresh          | transient | main has not changed `package*.json` since the PR was built                     |
+| registry       | transient | the npm registry answered for every introduced version. During an outage (timeout, 5xx) the PR **waits**, and the registry-based rules (cooldown, provenance, publisher, install scripts) skip what they could not check. Transient, so no override can waive it |
 | mainHealthy    | transient | main's latest CI and Deploy succeeded                                           |
 
 A failing **hard** or **soft** rule escalates. A failing **transient** rule waits for the
@@ -53,7 +54,7 @@ only the **soft** rules that were failing in that evaluation, each for the exact
 failed, for those package versions and that exact lockfile. A rule that was only pending
 (the review had not run yet) is never waived. A rebase that brings in different dependency
 versions, a soft rule that starts failing later, or a waived rule failing for a different
-reason (e.g. a re-assessment that flags suspicious code) escalates again. If the PR changed since the last
+reason (e.g. a re-assessment that flags suspicious code, or escalates for different reasons) escalates again, and pings the owner again. If the PR changed since the last
 evaluation, `/deps merge` refuses and asks the owner to look again. Hard rules are
 re-checked on every commit and can never be waived.
 

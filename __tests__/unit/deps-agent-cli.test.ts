@@ -8,6 +8,7 @@ import {
   REQUIRED_CHECKS,
   assessmentKey,
   lockFingerprint,
+  verdictDetail,
 } from '../../.github/deps-agent/gate.mjs';
 import { decodeRecord, renderOverride } from '../../.github/deps-agent/record.mjs';
 
@@ -197,7 +198,7 @@ const record = () =>
 const verdictOverride = () => ({
   versions: 'zod@4.6.7',
   lock: headFingerprint(),
-  waive: [{ id: 'verdict', detail: 'assessment: escalate' }],
+  waive: [{ id: 'verdict', detail: verdictDetail(assessed('escalate').assessment) }],
   by: 'owner',
 });
 const assessed = (verdict: 'merge' | 'escalate') => ({
@@ -547,6 +548,32 @@ describe('command', () => {
     expect(merges()).toHaveLength(0);
     // The command only appended the override comment: the record is left to `act`.
     expect(state.writes.slice(writesBefore).every((w) => w.method === 'POST')).toBe(true);
+  });
+
+  it('pings again when a waived rule fails for a new reason', async () => {
+    const withFinding = (finding: string) => {
+      const a = assessed('escalate');
+      a.assessment.codeReview = { coverage: 'full', suspicious: [{ file: 'index.js', finding }] };
+      return a;
+    };
+    await cli.evaluatePr(PR, {
+      main: healthy,
+      now: NOW,
+      assessment: withFinding('finding A'),
+      slotFree: true,
+    });
+    expect(pings()).toHaveLength(1);
+    await run('/deps merge'); // waives codeReview (finding A) and verdict
+    expect(overrideComments()).toHaveLength(1);
+    // /deps recheck: same lockfile, the review now reports finding B.
+    const { outcome } = await cli.evaluatePr(PR, {
+      main: healthy,
+      now: NOW,
+      assessment: withFinding('finding B'),
+      slotFree: true,
+    });
+    expect(outcome).toBe('escalate');
+    expect(pings()).toHaveLength(2);
   });
 
   it('does not waive what was still pending: a later suspicious review escalates', async () => {

@@ -7,6 +7,14 @@
 
 import { createHash } from 'node:crypto';
 
+/**
+ * Short hex sha256 digest, for fingerprints and dedupe keys.
+ * @param {string|Buffer} data - what to fingerprint
+ * @param {number} [len] - hex characters to keep
+ * @returns {string} digest prefix
+ */
+export const shortHash = (data, len = 12) => createHash('sha256').update(data).digest('hex').slice(0, len);
+
 /** Check runs that must be green on the PR head SHA (names from ci.yml). */
 export const REQUIRED_CHECKS = [
   'Lint',
@@ -48,6 +56,7 @@ export const RULE_KIND = {
   mergeable: 'transient',
   fresh: 'transient',
   mainHealthy: 'transient',
+  registry: 'transient',
 };
 
 export const DEPENDABOT_LOGIN = 'dependabot[bot]';
@@ -118,7 +127,7 @@ export function assessmentKey({ updates, checks, policyHash, lockFingerprint }) 
  */
 export function lockFingerprint(changed) {
   const specs = changed.map((c) => `${c.name}@${c.to}`).sort();
-  return createHash('sha256').update(specs.join('\n')).digest('hex').slice(0, 16);
+  return shortHash(specs.join('\n'), 16);
 }
 
 /**
@@ -393,19 +402,33 @@ function cooldownRule(registry, now) {
   const cutoff = now.getTime() - LIMITS.cooldownDays * 86_400_000;
   const young = (r) => r.publishedAt && new Date(r.publishedAt).getTime() > cutoff;
   // The registry answered but has no publish time for this version: suspicious, escalate.
-  const blocking = registry.filter((r) => !r.registryError && (!r.publishedAt || (r.direct && young(r))));
+  const blocking = registry.filter((r) => !r.publishedAt || (r.direct && young(r)));
   if (blocking.length) {
     return unless('cooldown', blocking.map(label), `published < ${LIMITS.cooldownDays}d ago (or unknown)`, '');
-  }
-  // The registry did not answer: an outage, not a finding. Wait, as for the malware feed.
-  const unreachable = registry.filter((r) => r.registryError);
-  if (unreachable.length) {
-    return result('cooldown', 'pending', `npm registry unavailable for: ${unreachable.map(label).join(', ')}`);
   }
   const aging = registry.filter(young);
   return aging.length
     ? result('cooldown', 'pending', `waiting for dependency versions to age: ${aging.map(label).join(', ')}`)
     : result('cooldown', 'pass', `all ${registry.length} introduced versions older than ${LIMITS.cooldownDays}d`);
+}
+
+/**
+ * The verdict's detail. An "escalate" carries a short fingerprint of the model's reasons
+ * (summary, question, breaking changes): an override waives the verdict only for the
+ * reasons the owner read, and a re-assessment that escalates for something else is a new
+ * failure, not the same one.
+ * @param {{verdict: string, summary?: string, escalation?: {question?: string},
+ *   breakingChangesAffectingUs?: unknown[]}} assessment - an assessment
+ * @returns {string} the verdict rule's detail
+ */
+export function verdictDetail(assessment) {
+  if (assessment.verdict === 'merge') return 'assessment: merge';
+  const reasons = JSON.stringify([
+    assessment.summary ?? '',
+    assessment.escalation?.question ?? '',
+    assessment.breakingChangesAffectingUs ?? [],
+  ]);
+  return `assessment: escalate [${shortHash(reasons, 8)}]`;
 }
 
 /**
@@ -467,7 +490,9 @@ export function evaluateRules(f) {
   const scripts = installScriptChanges(f.lock, f.registry);
   // An npm registry outage leaves facts empty, not suspicious: rules that read them skip
   // those entries, and the cooldown rule keeps the PR waiting until the registry answers.
-  const reachable = f.registry.filter((r) => !r.registryError);
+  const reachable = [];
+  const unreachable = [];
+  for (const r of f.registry) (r.registryError ? unreachable : reachable).push(r);
 
   return [
     authorRule(f),
@@ -520,7 +545,13 @@ export function evaluateRules(f) {
       TRI[f.lock.added.length <= LIMITS.maxNewPackages],
       `${f.lock.added.length} new package(s) in lockfile`,
     ),
-    cooldownRule(f.registry, f.now),
+    // An npm registry outage is its own transient rule, not a cooldown state: transient
+    // rules can never be waived, so a waived cooldown failure on one package cannot hide
+    // the fact that another package's install script and provenance were never checked.
+    unreachable.length
+      ? result('registry', 'pending', `npm registry unavailable for: ${unreachable.map(label).join(', ')}`)
+      : result('registry', 'pass', 'npm registry answered for every introduced version'),
+    cooldownRule(reachable, f.now),
     unless(
       'provenance',
       reachable.flatMap((r) => {
@@ -544,7 +575,7 @@ export function evaluateRules(f) {
     unless('audit', f.newAdvisories, 'new advisories', 'no new advisories'),
     codeReviewRule(f.assessment, targets.direct.length + targets.transitive.length > 0),
     f.assessment
-      ? result('verdict', TRI[f.assessment.verdict === 'merge'], `assessment: ${f.assessment.verdict}`)
+      ? result('verdict', TRI[f.assessment.verdict === 'merge'], verdictDetail(f.assessment))
       : result('verdict', 'pending', 'not assessed yet'),
     result(
       'mergeable',
