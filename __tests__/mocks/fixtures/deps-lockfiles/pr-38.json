@@ -1,0 +1,147 @@
+{
+  "pr": 38,
+  "title": "chore(deps): bump imapflow from 1.6.1 to 2.5.2",
+  "declared": [
+    {
+      "name": "imapflow",
+      "type": "direct:production",
+      "version": "2.5.2"
+    }
+  ],
+  "base": {
+    "packages": {
+      "node_modules/@zone-eu/mailsplit": {
+        "version": "5.4.14",
+        "resolved": "https://registry.npmjs.org/@zone-eu/mailsplit/-/mailsplit-5.4.14.tgz",
+        "integrity": "sha512-rz0FQOhN3Vq1XrSeSSa9+dPcaFbBxmQPjiZm6zS9oxdVHV7rOWIAYX3yP2YAUf0qBncY8CI+NogzPCmMVrMXcw=="
+      },
+      "node_modules/encoding-japanese": {
+        "version": "2.2.0",
+        "resolved": "https://registry.npmjs.org/encoding-japanese/-/encoding-japanese-2.2.0.tgz",
+        "integrity": "sha512-EuJWwlHPZ1LbADuKTClvHtwbaFn4rOD+dRAbWysqEOXRc2Uui0hJInNJrsdH0c+OhJA4nrCBdSkW4DD5YxAo6A=="
+      },
+      "node_modules/imapflow": {
+        "version": "1.6.1",
+        "resolved": "https://registry.npmjs.org/imapflow/-/imapflow-1.6.1.tgz",
+        "integrity": "sha512-lBkh0ZcKeYHDS3sWfxEcD7j24frrrn4wtbe0UUtLqdLwMSvm9Mygx8j7ZtzWgnvqI7V1DkNfcsidJ/qasb7FBA=="
+      },
+      "node_modules/libbase64": {
+        "version": "1.3.0",
+        "resolved": "https://registry.npmjs.org/libbase64/-/libbase64-1.3.0.tgz",
+        "integrity": "sha512-GgOXd0Eo6phYgh0DJtjQ2tO8dc0IVINtZJeARPeiIJqge+HdsWSuaDTe8ztQ7j/cONByDZ3zeB325AHiv5O0dg=="
+      },
+      "node_modules/libmime": {
+        "version": "5.4.1",
+        "resolved": "https://registry.npmjs.org/libmime/-/libmime-5.4.1.tgz",
+        "integrity": "sha512-0wHGhsofo9IdQPenr3BBHXuxcwMq4atFUTsZ9Ogc1OvI5h4rUdDIrBQEN9JHjCXfDMrE59LUMJWsTD82wTYk8A=="
+      },
+      "node_modules/libqp": {
+        "version": "2.1.1",
+        "resolved": "https://registry.npmjs.org/libqp/-/libqp-2.1.1.tgz",
+        "integrity": "sha512-0Wd+GPz1O134cP62YU2GTOPNA7Qgl09XwCqM5zpBv87ERCXdfDtyKXvV7c9U22yWJh44QZqBocFnXN11K96qow=="
+      },
+      "node_modules/mailparser/node_modules/@zone-eu/mailsplit": {
+        "version": "5.4.27",
+        "resolved": "https://registry.npmjs.org/@zone-eu/mailsplit/-/mailsplit-5.4.27.tgz",
+        "integrity": "sha512-9008ddFqqKk7lMF2S1sLU7ExfJZP9zPw5tkZy24EVt45Ryme2x85f/5vJZZqQ+vCJkKcCY78dJ5yuEVG3ZrVZA=="
+      },
+      "node_modules/mailparser/node_modules/encoding-japanese": {
+        "version": "2.4.0",
+        "resolved": "https://registry.npmjs.org/encoding-japanese/-/encoding-japanese-2.4.0.tgz",
+        "integrity": "sha512-PE0KjlsDy9JSsoU4C2Q8NXb1kC4c+bZRac9ZvHXUE4q1Ht63gScKMdEy9jst9+Fi3M4eDkqzkEhBZvix4blP2A=="
+      },
+      "node_modules/mailparser/node_modules/libbase64": {
+        "version": "1.4.1",
+        "resolved": "https://registry.npmjs.org/libbase64/-/libbase64-1.4.1.tgz",
+        "integrity": "sha512-Nyh3H90B3gRtrcxIe56Ayy7635J0jmh6AbxbQgQae8wrSPQMH5wFqJChiMTB13yKG512L3YspbA5DzumhFTITA=="
+      },
+      "node_modules/mailparser/node_modules/libmime": {
+        "version": "5.5.2",
+        "resolved": "https://registry.npmjs.org/libmime/-/libmime-5.5.2.tgz",
+        "integrity": "sha512-Byw3CchK4eSqbgzpttsUoC4hx2VPP+hnveAuYAYZNipEc+0WlDFjVb1ISNscjq/idvyDP/Xjg8mnBcdgbsgvzg=="
+      },
+      "node_modules/mailparser/node_modules/libqp": {
+        "version": "3.0.1",
+        "resolved": "https://registry.npmjs.org/libqp/-/libqp-3.0.1.tgz",
+        "integrity": "sha512-7QZxpPX25pga1WiMueduWxmrHMVBFrZPH6ZUaozGYa/H98JH6NVBSET3qVw+4NxzoraIW7rJ81YxSU9IalvCpg=="
+      },
+      "node_modules/socks": {
+        "version": "2.8.9",
+        "resolved": "https://registry.npmjs.org/socks/-/socks-2.8.9.tgz",
+        "integrity": "sha512-LJhUYUvItdQ0LkJTmPeaEObWXAqFyfmP85x0tch/ez9cahmhlBBLbIqDFnvBnUJGagb0JbIQrkBs1wJ+yRYpEw=="
+      }
+    }
+  },
+  "head": {
+    "packages": {
+      "node_modules/@zone-eu/mailsplit": {
+        "version": "5.4.23",
+        "resolved": "https://registry.npmjs.org/@zone-eu/mailsplit/-/mailsplit-5.4.23.tgz",
+        "integrity": "sha512-2skZfQY5iOAIFwVO4jZzqtMPJyxFpCKemQGVT7O8QxUjHAK+W7LQY/UbK9BWrxeS0wZ64rKZaATY+T9BsF4JSw=="
+      },
+      "node_modules/encoding-japanese": {
+        "version": "2.4.0",
+        "resolved": "https://registry.npmjs.org/encoding-japanese/-/encoding-japanese-2.4.0.tgz",
+        "integrity": "sha512-PE0KjlsDy9JSsoU4C2Q8NXb1kC4c+bZRac9ZvHXUE4q1Ht63gScKMdEy9jst9+Fi3M4eDkqzkEhBZvix4blP2A=="
+      },
+      "node_modules/imapflow": {
+        "version": "2.5.2",
+        "resolved": "https://registry.npmjs.org/imapflow/-/imapflow-2.5.2.tgz",
+        "integrity": "sha512-lo+Lww4XlD0FgSFuTwxPFaffCUui5RbUjQzWAx80H9HMVYLWLd5sPkwy48s5u+L32ch+anwPrr8avrztfkKBrw=="
+      },
+      "node_modules/libbase64": {
+        "version": "1.3.3",
+        "resolved": "https://registry.npmjs.org/libbase64/-/libbase64-1.3.3.tgz",
+        "integrity": "sha512-6n4p3TUeQPimN4ANBTYQ5P4IpFx8p6cdanknnOBfw05XGtaG/k1LAtTSu79w7S07D1esy4qUfM8G4qvQncDWcw=="
+      },
+      "node_modules/libmime": {
+        "version": "5.4.9",
+        "resolved": "https://registry.npmjs.org/libmime/-/libmime-5.4.9.tgz",
+        "integrity": "sha512-HKKUqLVU/ndBsAn9nBx6oykz5Tt7QzWkJG86cYvm3ekt5A/LuMR+5AjIr7fKnUg3Y2d8JQhMtQnBLYbh59/bEw=="
+      },
+      "node_modules/libqp": {
+        "version": "2.1.3",
+        "resolved": "https://registry.npmjs.org/libqp/-/libqp-2.1.3.tgz",
+        "integrity": "sha512-2tRtFndHYRyc6pAuExPbiZbzgwdWp8HIMTE1fLycMwv13YZlN5+DKvgR5WsP1W6vSpGXFuGvV49gteKetlMwLw=="
+      },
+      "node_modules/mailparser/node_modules/@zone-eu/mailsplit": {
+        "version": "5.4.27",
+        "resolved": "https://registry.npmjs.org/@zone-eu/mailsplit/-/mailsplit-5.4.27.tgz",
+        "integrity": "sha512-9008ddFqqKk7lMF2S1sLU7ExfJZP9zPw5tkZy24EVt45Ryme2x85f/5vJZZqQ+vCJkKcCY78dJ5yuEVG3ZrVZA=="
+      },
+      "node_modules/mailparser/node_modules/libbase64": {
+        "version": "1.4.1",
+        "resolved": "https://registry.npmjs.org/libbase64/-/libbase64-1.4.1.tgz",
+        "integrity": "sha512-Nyh3H90B3gRtrcxIe56Ayy7635J0jmh6AbxbQgQae8wrSPQMH5wFqJChiMTB13yKG512L3YspbA5DzumhFTITA=="
+      },
+      "node_modules/mailparser/node_modules/libmime": {
+        "version": "5.5.2",
+        "resolved": "https://registry.npmjs.org/libmime/-/libmime-5.5.2.tgz",
+        "integrity": "sha512-Byw3CchK4eSqbgzpttsUoC4hx2VPP+hnveAuYAYZNipEc+0WlDFjVb1ISNscjq/idvyDP/Xjg8mnBcdgbsgvzg=="
+      },
+      "node_modules/mailparser/node_modules/libqp": {
+        "version": "3.0.1",
+        "resolved": "https://registry.npmjs.org/libqp/-/libqp-3.0.1.tgz",
+        "integrity": "sha512-7QZxpPX25pga1WiMueduWxmrHMVBFrZPH6ZUaozGYa/H98JH6NVBSET3qVw+4NxzoraIW7rJ81YxSU9IalvCpg=="
+      },
+      "node_modules/socks": {
+        "version": "2.8.10",
+        "resolved": "https://registry.npmjs.org/socks/-/socks-2.8.10.tgz",
+        "integrity": "sha512-e0VyvkVTwVYViNovRkZ9aodhxVlyoMn7eJhVUPxZ+eK9P/7CBkxvvsBOHqFPEH416726W8tLXXXjKwqgTErrCQ=="
+      }
+    }
+  },
+  "expected": {
+    "introduced": [
+      "@zone-eu/mailsplit 5.4.14→5.4.23",
+      "imapflow 1.6.1→2.5.2",
+      "libbase64 1.3.0→1.3.3",
+      "libmime 5.4.1→5.4.9",
+      "libqp 2.1.1→2.1.3",
+      "socks 2.8.9→2.8.10"
+    ],
+    "added": [],
+    "newInstallScripts": [],
+    "foreignSources": []
+  }
+}

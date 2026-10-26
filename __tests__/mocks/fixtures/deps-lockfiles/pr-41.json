@@ -1,0 +1,40 @@
+{
+  "pr": 41,
+  "title": "chore(deps): bump @anthropic-ai/sdk from 0.115.0 to 0.135.0",
+  "declared": [
+    {
+      "name": "@anthropic-ai/sdk",
+      "type": "direct:production",
+      "version": "0.135.0"
+    }
+  ],
+  "base": {
+    "packages": {
+      "node_modules/@anthropic-ai/sdk": {
+        "version": "0.115.0",
+        "resolved": "https://registry.npmjs.org/@anthropic-ai/sdk/-/sdk-0.115.0.tgz",
+        "integrity": "sha512-BJrFIVyjNuU8lfDyIJTvlRYzgQg+zEl78BxE7fq8esULsGz9IRQvGtW5spq3tydmtjQb/GFdooKGdGsetpx+lQ=="
+      }
+    }
+  },
+  "head": {
+    "packages": {
+      "node_modules/@anthropic-ai/sdk": {
+        "version": "0.135.0",
+        "resolved": "https://registry.npmjs.org/@anthropic-ai/sdk/-/sdk-0.135.0.tgz",
+        "integrity": "sha512-WWrdL57JhU5KoynpTjt9GXK6k7ud9nPw2uw/Trn+oBXh6s0KpjhAccWZm2Qxw08ARYG1UDQj5iC+JO42j1rt/g=="
+      },
+      "node_modules/@opentelemetry/api": {
+        "version": "1.9.1",
+        "resolved": "https://registry.npmjs.org/@opentelemetry/api/-/api-1.9.1.tgz",
+        "integrity": "sha512-gLyJlPHPZYdAk1JENA9LeHejZe1Ti77/pTeFm/nMXmQH/HFZlcS/O2XJB+L8fkbrNSqhdtlvjBVjxwUYanNH5Q=="
+      }
+    }
+  },
+  "expected": {
+    "introduced": ["@anthropic-ai/sdk 0.115.0→0.135.0", "@opentelemetry/api new→1.9.1"],
+    "added": ["@opentelemetry/api"],
+    "newInstallScripts": [],
+    "foreignSources": []
+  }
+}

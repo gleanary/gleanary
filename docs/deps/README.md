@@ -295,6 +295,10 @@ never blocks the others.
   [`prompt.md`](../../.github/deps-agent/prompt.md) and
   [`assessment.schema.json`](../../.github/deps-agent/assessment.schema.json) (Claude's
   instructions and output format).
+- **Design invariants and tests:** [`invariants.md`](invariants.md) lists what the agent
+  must always guarantee and how the run-sequence simulator
+  (`__tests__/integration/deps-agent-sim.test.ts`) checks it; why, in
+  [ADR-011](../adrs/ADR-011-deps-agent-invariants.md).
 - **Dependabot settings:** [`.github/dependabot.yml`](../../.github/dependabot.yml): weekly,
   7-day cooldown (none for security updates), dev patch/minor bumps grouped.
 - **Hands-on triage:** the `/babysit-deps` Claude Code command uses the same policy.
