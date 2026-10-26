@@ -12,6 +12,8 @@ All notable changes to this project will be documented in this file.
 
 ### Changed
 
+- **No CI skip markers in commit messages** (CLAUDE.md): a quoted marker in one squashed commit skipped CI, and so Deploy, on `main` when PR #45 merged.
+
 - **test: global tripwire for retired Anthropic models**: `__tests__/mocks/anthropic-model-tripwire.ts` (installed by `msw-setup.ts`) inspects every `POST https://api.anthropic.com/v1/messages` in vitest and fails the sending test if its `model` is not in `ACTIVE_MODEL_IDS`, so a retired id can no longer pass the suite unnoticed; self-tests in `msw-tripwire.test.ts`. The stale `claude-sonnet-4-20250514` response fixtures now use `claude-sonnet-4-6`.
 - **Reading-position restore hardening** (#27): the 3 s restore window also ends on a scroll that moves the page away from the saved position (browser scroll anchoring and end-of-page clamping excepted) (scrollbar drag, hash navigation, TTS auto-scroll); the reading anchor is computed only when a save is sent (no layout reads in the scroll handler) at the furthest point reached; `PATCH /api/articles/[id]` now rejects `readingAnchorBlock`/`readingAnchorOffset` without `readingProgress` (422).
 - **`cn()` now comes from the `cn` package instead of `tailwind-merge`** (#15): `src/lib/utils.ts` re-exports `cn` (the shape `shadcn migrate cn` targets, clsx-style inputs plus its cached fast path), keeping us aligned with upstream shadcn; a pairwise comparison of the 1,171 class tokens used in `src/` (1.37M merges) showed identical output to `tailwind-merge` 3.7.
