@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeAll, beforeEach, afterAll } from 'vitest';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { REQUIRED_CHECKS, assessmentKey } from '../../.github/deps-agent/gate.mjs';
@@ -391,15 +391,17 @@ describe('assessment tool flags', () => {
       JSON.stringify({ meta: { title: 't', headSha: 'h' }, facts: { updates: [] } }),
     );
     writeFileSync(join(dir, 'index.json'), JSON.stringify({ diffs: [], transitiveNotReviewed: 0 }));
+    // Step outputs go to $GITHUB_OUTPUT, as in the real workflow. (Capturing stdout
+    // instead only worked locally: Actions sets GITHUB_OUTPUT for every job.)
+    const outputFile = join(dir, 'github-output');
+    writeFileSync(outputFile, '');
+    vi.stubEnv('GITHUB_OUTPUT', outputFile);
     let out = '';
-    const write = vi.spyOn(process.stdout, 'write').mockImplementation((chunk) => {
-      out += String(chunk);
-      return true;
-    });
     try {
       await cli.commands.prompt({ pr: '7', facts, diffs: dir });
+      out = readFileSync(outputFile, 'utf8');
     } finally {
-      write.mockRestore();
+      vi.unstubAllEnvs();
       rmSync(dir, { recursive: true, force: true });
     }
     const args = out.slice(out.indexOf('claude_args<<'));
