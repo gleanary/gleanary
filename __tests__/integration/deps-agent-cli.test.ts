@@ -255,7 +255,8 @@ const packument = {
 
 type Cli = typeof import('../../.github/deps-agent/cli.mjs');
 let cli: Cli;
-const healthy = { sha: 'main1', state: 'healthy', detail: 'ok' };
+type MainState = Parameters<Cli['handleMain']>[0];
+const healthy: MainState = { sha: 'main1', state: 'healthy', detail: 'ok' };
 
 const pings = () => state.comments.filter((c) => c.body.startsWith('@owner'));
 const merges = () => state.writes.filter((w) => w.method === 'PUT' && w.path.endsWith('/merge'));
@@ -1193,5 +1194,24 @@ describe('eleventh review: main', () => {
       { status: 'completed', conclusion: 'failure' },
     ];
     expect(cli.mainState(NOW).state).toBe('broken');
+  });
+});
+
+describe('twelfth review: rebase', () => {
+  it('does not ask Dependabot to rebase an escalated PR', async () => {
+    state.fresh = false;
+    vi.stubEnv('MODE', 'merge');
+    try {
+      const { outcome } = await cli.evaluatePr(PR, {
+        main: healthy,
+        now: NOW,
+        assessment: assessed('escalate'),
+        slot: { free: true },
+      });
+      expect(outcome).toBe('escalate');
+    } finally {
+      vi.unstubAllEnvs();
+    }
+    expect(state.comments.filter((c) => c.body === '@dependabot rebase')).toHaveLength(0);
   });
 });

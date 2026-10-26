@@ -1259,3 +1259,30 @@ describe('eleventh review: gate', () => {
     expect(diffLockfiles(base, head).added).toEqual(['x']);
   });
 });
+
+describe('twelfth review: gate', () => {
+  it('waits on a cancelled CI run on main, and calls main broken only after a day', () => {
+    const cancelled = {
+      status: 'completed',
+      conclusion: 'cancelled',
+      updated_at: '2026-10-23T11:00:00Z',
+    };
+    expect(classifyMain(cancelled, null, NOW).state).toBe('pending');
+    const old = { ...cancelled, updated_at: '2026-10-21T11:00:00Z' };
+    expect(classifyMain(old, null, NOW).state).toBe('broken');
+    expect(classifyMain({ ...cancelled, conclusion: 'failure' }, null, NOW).state).toBe('broken');
+  });
+
+  it('requires a required check to succeed, not be skipped', () => {
+    const checks = cleanFacts().checks.map((c, i) =>
+      i === 0 ? { ...c, conclusion: 'skipped' } : c,
+    );
+    expect(statusOf(cleanFacts({ checks }), 'checks')).toBe('fail');
+    // a skipped check outside the required set is fine
+    const extra = [
+      ...cleanFacts().checks,
+      { name: 'Optional', status: 'completed', conclusion: 'skipped' },
+    ];
+    expect(statusOf(cleanFacts({ checks: extra }), 'checks')).toBe('pass');
+  });
+});

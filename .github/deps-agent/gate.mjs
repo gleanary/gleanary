@@ -458,10 +458,19 @@ const CANCELLED_WAIT_HOURS = 24;
  * @returns {{name: string}[]} the failed runs
  */
 export function failedChecks(checks) {
-  return checks.filter(
-    (c) => c.status === 'completed' && !['success', 'skipped', 'neutral', ...INTERRUPTED].includes(c.conclusion),
-  );
+  return checks.filter((c) => c.status === 'completed' && !passes(c) && !INTERRUPTED.includes(c.conclusion));
 }
+
+/**
+ * A required check must succeed: skipped or neutral would let a future `if:` in ci.yml
+ * (e.g. "skip E2E for bots") merge bumps that never ran it. Other checks may skip.
+ */
+const passes = (c) =>
+  c.conclusion === 'success' || (!REQUIRED_CHECKS.includes(c.name) && ['skipped', 'neutral'].includes(c.conclusion));
+
+/** Whether a cancelled run (stamped `since`) has waited past CANCELLED_WAIT_HOURS for a re-run. */
+const cancelledWaitExpired = (since, now) =>
+  Boolean(since) && now.getTime() - new Date(since).getTime() > CANCELLED_WAIT_HOURS * 3_600_000;
 
 
 /** Minutes after a push with no check run at all before we call CI missing, not slow. */
@@ -469,14 +478,13 @@ const NO_CI_GRACE_MINUTES = 60;
 
 function checksRule(checks, headCommittedAt, now) {
   const failed = failedChecks(checks);
-  if (failed.length) return unless('checks', failed.map((c) => c.name), 'failed', '');
+  if (failed.length) return unless('checks', failed.map((c) => `${c.name} (${c.conclusion})`), 'failed', '');
   const interrupted = checks.filter((c) => c.status === 'completed' && INTERRUPTED.includes(c.conclusion));
   if (interrupted.length) {
     const names = interrupted.map((c) => c.name).join(', ');
     // Clocked from the cancellation (a day-old head can be cancelled now), else the commit.
     const since = interrupted.map((c) => c.completedAt).filter(Boolean).sort().at(-1) ?? headCommittedAt;
-    const hours = since ? (now.getTime() - new Date(since).getTime()) / 3_600_000 : 0;
-    return hours > CANCELLED_WAIT_HOURS
+    return cancelledWaitExpired(since, now)
       ? result('checks', 'fail', `not re-run within ${CANCELLED_WAIT_HOURS} h of being cancelled: ${names} (re-run CI)`)
       : result('checks', 'pending', `cancelled, waiting for a re-run: ${names}`);
   }
@@ -490,7 +498,7 @@ function checksRule(checks, headCommittedAt, now) {
   }
   // Everything that ran has finished, yet a required name never appeared: a CI job was
   // renamed or removed. Escalate instead of waiting forever.
-  const idle = checks.length > 0 && checks.every((c) => c.status === 'completed');
+  const idle = checks.every((c) => c.status === 'completed');
   return idle
     ? unless('checks', pending, 'required check never ran (renamed in ci.yml?)', '')
     : result('checks', 'pending', `waiting on: ${pending.join(', ')}`);
@@ -768,6 +776,16 @@ export function latestCheckRuns(runs) {
 }
 
 /**
+ * A cancelled run on main proves nothing either way: merges wait for a re-run, and main
+ * only counts as broken (issue, ping, revert of a deps-agent merge) a day later.
+ */
+function interruptedOnMain(what, run, now) {
+  return cancelledWaitExpired(run.updated_at, now)
+    ? { state: 'broken', detail: `${what} on main was cancelled and not re-run within ${CANCELLED_WAIT_HOURS} h` }
+    : { state: 'pending', detail: `${what} on main was cancelled, waiting for a re-run` };
+}
+
+/**
  * Classify main from its latest push CI run and the Deploy run that CI triggered.
  * A missing Deploy run 30 minutes after CI finished counts as broken, so a disabled or
  * stuck deploy pipeline escalates instead of freezing merges silently.
@@ -786,6 +804,7 @@ export function classifyMain(ci, deploy, now, pushedAt = null) {
       : { state: 'pending', detail: 'waiting for CI on main to start' };
   }
   if (ci.status !== 'completed') return { state: 'pending', detail: 'CI on main is running' };
+  if (INTERRUPTED.includes(ci.conclusion)) return interruptedOnMain('CI', ci, now);
   if (ci.conclusion !== 'success') return { state: 'broken', detail: `CI on main: ${ci.conclusion}` };
   if (!deploy) {
     const stale = now.getTime() - new Date(ci.updated_at).getTime() > MAIN_STALE_MS;
@@ -794,6 +813,7 @@ export function classifyMain(ci, deploy, now, pushedAt = null) {
       : { state: 'pending', detail: 'waiting for Deploy to start' };
   }
   if (deploy.status !== 'completed') return { state: 'pending', detail: 'Deploy is running' };
+  if (INTERRUPTED.includes(deploy.conclusion)) return interruptedOnMain('Deploy', deploy, now);
   return ['success', 'skipped'].includes(deploy.conclusion)
     ? { state: 'healthy', detail: `CI green, Deploy ${deploy.conclusion}` }
     : { state: 'broken', detail: `Deploy: ${deploy.conclusion}` };

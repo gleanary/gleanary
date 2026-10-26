@@ -312,6 +312,12 @@ review, so it is not the preferred lever.
   the recorded coverage is `none`, which fails the code review.
 - main's state picks the newest Deploy run that was not skipped (Deploy skips itself for
   CI on a fork PR, which a public repo can receive from a branch named `main`).
+- A cancelled CI or Deploy run on main waits for a re-run and only counts as broken a day
+  later: cancelling CI right after a deps-agent merge used to file a freeze issue and open
+  a revert PR. Required checks must succeed (a future `if:` that skips E2E for bots must
+  not let bumps through), and an escalated PR is never asked to rebase (each merge touches
+  the lockfile; a rebase can re-resolve it, costing an assessment and voiding a pending
+  `/deps merge`).
 - Waivers match a hash of each rule's full failure detail (`waiverKey`), stored with the rule
   before the record is trimmed for display: an earlier version compared details, and a
   record trimmed to fit a comment produced overrides that could never match, silently. The

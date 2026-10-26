@@ -299,7 +299,11 @@ function packageDiff(name, from, to, maxBytes = DIFF_MAX_BYTES) {
   };
 }
 
-
+/**
+ * main's head and its health, from the latest push CI run and the Deploy run it triggered.
+ * @param {Date} now - evaluation time
+ * @returns {{sha: string, state: 'healthy'|'pending'|'broken', detail: string}} see classifyMain
+ */
 function mainState(now) {
   const sha = api(`repos/${REPO}/git/ref/heads/main`).object.sha;
   // Newest run first. A skipped one (Deploy skips itself for a fork PR's CI) is only used
@@ -653,8 +657,10 @@ async function evaluatePr(number, { main, now, assessment, slot, by = 'agent', n
     .filter(Boolean)
     .join('|');
   const ping = outcome === 'escalate' && record.escalatedKey !== escalation && OWNER;
-  // Rebase requests change the PR, so only in merge mode (shadow only observes).
-  const rebase = needsRebase && mode() === 'merge' && record.rebaseSha !== meta.headSha;
+  // Rebase requests change the PR, so only in merge mode (shadow only observes). Never for
+  // an escalated PR: every merge touches the lockfile, and a rebase that re-resolves it costs
+  // a new assessment and voids the owner's pending `/deps merge`.
+  const rebase = needsRebase && outcome !== 'escalate' && mode() === 'merge' && record.rebaseSha !== meta.headSha;
   setLabel(number, LABEL.escalated, outcome === 'escalate', meta.labels);
 
   // Save the record BEFORE posting: if the save fails, nothing is posted, so nothing is
@@ -692,7 +698,11 @@ function openFeatureIssues(record, meta) {
   }
 }
 
-/** Freeze handling: one issue per broken main SHA, a revert PR when our merge caused it. */
+/**
+ * Freeze handling: one issue per broken main SHA, a revert PR when our merge caused it.
+ * @param {{sha: string, state: 'healthy'|'pending'|'broken', detail: string}} main - from mainState
+ * @returns {void}
+ */
 function handleMain(main) {
   const issues = apiPaged(`repos/${REPO}/issues?state=open&labels=${LABEL.escalated}&per_page=100`).filter(
     (i) => !i.pull_request && i.title.startsWith('deps-agent: main'),
@@ -1002,7 +1012,10 @@ const commands = {
   },
 };
 
-/** Test hook: each CI run is a fresh process, so the run caches only need clearing in tests. */
+/**
+ * Test hook: each CI run is a fresh process, so the run caches only need clearing in tests.
+ * @returns {void}
+ */
 function clearRunCaches() {
   packuments.clear();
   baseCache.clear();

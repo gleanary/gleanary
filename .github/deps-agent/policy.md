@@ -33,7 +33,7 @@ PR declares (direct) **and** the dependency versions that change with them (tran
 | injection      | hard      | the assessment found no text addressed to an AI in PR, changelog or code        |
 | files          | hard      | only `package.json` / `package-lock.json` changed                               |
 | manifest       | hard      | `package.json` changed only in the declared dependencies' ranges                |
-| checks         | hard      | all required CI checks green on the head SHA; no CI at all 60 min after the commit escalates. A cancelled (or stale) check **waits** for a re-run, and escalates if none comes within 24 h of the cancellation |
+| checks         | hard      | all required CI checks succeeded on the head SHA (a required check that was skipped or neutral does not count); no CI at all 60 min after the commit escalates. A cancelled (or stale) check **waits** for a re-run, and escalates if none comes within 24 h of the cancellation |
 | malware        | hard      | no GitHub malware advisory for any introduced version                           |
 | semver         | soft      | patch or minor; 0.x minors, 0.0.x and prereleases count as major                |
 | installScripts | soft      | no package gains an install script, and no package that runs one changes version. Exception (option B): a new version of `better-sqlite3`, `esbuild`, `msw` or `unrs-resolver` passes when its install command is identical to the previous version's and both versions have npm provenance (cooldown and the code review still apply) The lockfile's install-script flag is cross-checked against the registry: a version whose published metadata lists an install script the lockfile does not declare escalates |
@@ -47,7 +47,7 @@ PR declares (direct) **and** the dependency versions that change with them (tran
 | mergeable      | transient | no conflict (Dependabot rebases on its own)                                     |
 | fresh          | transient | main has not changed `package*.json` since the PR was built                     |
 | registry       | transient | the npm registry answered for every introduced version. During an outage (timeout, 5xx) the PR **waits**, and the registry-based rules (cooldown, provenance, publisher, install scripts) skip what they could not check. Transient, so no override can waive it |
-| mainHealthy    | transient | main's latest CI and Deploy succeeded. A main commit with no CI run 30 min after the push (e.g. `[skip ci]`), or no Deploy 30 min after CI, counts as broken: merges freeze and the owner is pinged |
+| mainHealthy    | transient | main's latest CI and Deploy succeeded. A main commit with no CI run 30 min after the push (e.g. `[skip ci]`), or no Deploy 30 min after CI, counts as broken: merges freeze and the owner is pinged. A cancelled CI or Deploy run **waits** for a re-run and counts as broken only 24 h later. A PR that is behind main is rebased only when it is not escalated (a rebase can re-resolve the lockfile, which voids a pending `/deps merge`) |
 
 A failing **hard** or **soft** rule escalates. A failing **transient** rule waits for the
 next run. The owner's `/deps merge` approves the exact state the owner last saw: it waives
