@@ -181,10 +181,11 @@ cases:
 | `checks`                   | CI failed on the PR, or no CI ran 60 min after the commit                                                                                                                          | Read Claude's `ciRead`, fix or close; if CI never ran, check the Actions tab                                 |
 | `cooldown`                 | A direct release younger than 7 days (often a security fix), or a publish time the registry didn't return. Young _transitive_ versions don't escalate: the PR waits until they age | `/deps merge` if the fix matters, otherwise wait                                                             |
 | `malware`                  | GitHub lists the new version as malware                                                                                                                                            | Close the PR; check nothing installed it elsewhere                                                           |
-| `codeReview`               | Claude found suspicious code in the published diff                                                                                                                                 | Read the finding and the diff before anything else                                                           |
+| `codeReview`               | Claude found suspicious code in the published diff, or its review saw no code although there were diffs                                                                            | Read the finding and the diff before anything else; for "saw no code", check the assess job log              |
 | `publisher` / `provenance` | The package was published differently than last time                                                                                                                               | Check the package's repo and npm page before merging                                                         |
 | `installScripts`           | A package gained an install script, or a package that runs one (`better-sqlite3`, `esbuild`, …) changed version. The script runs in the Docker build                               | Check the code review covered it (install-script packages are diffed first); native modules are usually fine |
 | "Why now: has not rebased" | Dependabot ignored deps-agent's rebase request for 24 h                                                                                                                            | Comment `@dependabot rebase` yourself                                                                        |
+| "Why now: waited 14 days"  | Young transitive versions kept the PR waiting for 14 days (a fast-moving dependency can reset the clock on every rebase)                                                           | `/deps merge` to take it as is, or `/deps hold`                                                              |
 | `injection`                | Changelog or PR text tried to instruct the agent                                                                                                                                   | Treat the release as suspicious; close or wait                                                               |
 
 ### Commands
@@ -200,7 +201,8 @@ Comment on the Dependabot PR. Only the login in `DEPS_AGENT_OWNER` is obeyed.
 
 Commands never merge on their own. Each one leaves a durable trace (an App comment
 naming the approved versions, or the `deps:hold` label) and starts a run; that run's gate
-does the merging. Two quick commands in a row are both kept.
+does the merging. Two quick commands in a row are both kept. An override cannot be withdrawn;
+`/deps hold` does that job (a held PR never merges, override or not).
 
 Dependabot's own commands still work: `@dependabot rebase`, `@dependabot close`,
 `@dependabot ignore this major version`.

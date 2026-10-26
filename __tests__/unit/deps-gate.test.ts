@@ -203,6 +203,18 @@ describe('diffLockfiles: introduced versions', () => {
   });
 });
 
+describe('diffLockfiles: npm aliases', () => {
+  it('looks an aliased package up under its published name', () => {
+    const base = {
+      packages: { 'node_modules/string-width-cjs': { version: '4.2.2', name: 'string-width' } },
+    };
+    const head = {
+      packages: { 'node_modules/string-width-cjs': { version: '4.2.3', name: 'string-width' } },
+    };
+    expect(diffLockfiles(base, head).changed[0]?.name).toBe('string-width');
+  });
+});
+
 describe('manifestChangeIsScoped', () => {
   const base = {
     scripts: { build: 'next build' },
@@ -417,6 +429,22 @@ describe('evaluateRules + decide', () => {
     expect(evaluateRules(facts).find((r) => r.id === 'installScripts')?.detail).toContain(
       'better-sqlite3 12.11.1→12.12.0',
     );
+  });
+
+  it('fails a code review that saw nothing when there were diffs to review', () => {
+    const blind = cleanFacts({
+      assessment: { verdict: 'merge', codeReview: { coverage: 'none', suspicious: [] } },
+    });
+    expect(statusOf(blind, 'codeReview')).toBe('fail');
+    expect(outcome(blind)).toBe('escalate');
+  });
+
+  it('accepts coverage none when no version change could be diffed (only new packages)', () => {
+    const facts = cleanFacts({
+      updates: [{ name: 'newpkg', type: 'direct:production', from: null, to: '1.0.0' }],
+      assessment: { verdict: 'merge', codeReview: { coverage: 'none', suspicious: [] } },
+    });
+    expect(statusOf(facts, 'codeReview')).toBe('pass');
   });
 
   it('escalates when no CI ran 60 minutes after the commit, and waits before that', () => {

@@ -40,7 +40,7 @@ PR declares (direct) **and** the dependency versions that change with them (tran
 | provenance     | soft      | no introduced version lost the npm provenance its previous version had         |
 | publisher      | soft      | each direct package has the same npm publisher as its previous version (direct only: transitive maintainer changes are too common) |
 | audit          | soft      | `npm audit` finds no advisory that main does not already have                   |
-| codeReview     | soft      | Claude's review of the published code diff found nothing suspicious. Covers the direct packages and up to 10 transitive versions (install-script packages first); coverage is reported |
+| codeReview     | soft      | Claude's review of the published code diff found nothing suspicious. Covers the direct packages and up to 10 transitive versions (install-script packages first); coverage is reported, and coverage "none" fails when there were version changes to review (a review that saw nothing is not a pass) |
 | verdict        | soft      | the assessment says `merge`                                                     |
 | mergeable      | transient | no conflict (Dependabot rebases on its own)                                     |
 | fresh          | transient | main has not changed `package*.json` since the PR was built                     |
@@ -68,8 +68,13 @@ re-checked on every commit.
   `/deps recheck`, or Dependabot's own `@dependabot ignore this major version` / `close`.
   A command never merges by itself: it leaves an append-only trace (an App override
   comment, or a label) and starts a run, and that run's gate decides.
+- An override cannot be deleted (override comments are append-only, so there is no
+  `/deps unmerge`). To withdraw one, use `/deps hold`: a held PR is never merged, override
+  or not. `/deps unhold` restores the override.
 - If a PR waits on a rebase that Dependabot has not done 24 h after deps-agent asked, the
   owner is pinged to comment `@dependabot rebase` themselves.
+- If a PR has waited 14 days on young transitive versions (a fast-moving dependency can
+  keep resetting the clock with each rebase), the owner is pinged to decide.
 - Every PR carries one sticky **decision record** comment (gates, assessment, history of who
   decided what). The **Dependency dashboard** issue lists every open PR's state.
 - Versions we deliberately skip are `ignore` entries in `.github/dependabot.yml`, each

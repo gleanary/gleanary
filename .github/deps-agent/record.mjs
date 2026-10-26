@@ -179,9 +179,10 @@ export function renderEscalation(record, owner, note = '') {
   const lines = [
     `@${owner} deps-agent needs a decision on \`${record.headSha.slice(0, 7)}\`.`,
     ...(note ? ['', `**Why now:** ${neutralize(note, 500)}`] : []),
-    '',
-    '**Blocking gates:**',
-    ...failing.map((r) => `- ${r.id} (${r.kind}): ${neutralize(r.detail, 300)}`),
+    // A time-based escalation (stuck rebase, long cooldown wait) can come with no failing gate.
+    ...(failing.length
+      ? ['', '**Blocking gates:**', ...failing.map((r) => `- ${r.id} (${r.kind}): ${neutralize(r.detail, 300)}`)]
+      : []),
   ];
   if (a?.escalation) {
     lines.push(

@@ -1,5 +1,8 @@
 import { describe, it, expect, vi, beforeAll, beforeEach, afterAll } from 'vitest';
 import { execFileSync } from 'node:child_process';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { REQUIRED_CHECKS, assessmentKey } from '../../.github/deps-agent/gate.mjs';
 import { decodeRecord, renderOverride } from '../../.github/deps-agent/record.mjs';
 
@@ -28,6 +31,8 @@ interface Comment {
   user: { login: string; type: string };
 }
 interface FakeState {
+  withMs: boolean;
+  msPublishedAt: string;
   headSha: string;
   mergeable: boolean;
   fresh: boolean;
@@ -43,8 +48,12 @@ interface FakeState {
 let state: FakeState;
 let nextId = 1000;
 
-const lock = (zod: string) => ({
-  packages: { '': { version: '0.1.0' }, 'node_modules/zod': { version: zod } },
+const lock = (zod: string, ms?: string) => ({
+  packages: {
+    '': { version: '0.1.0' },
+    'node_modules/zod': { version: zod },
+    ...(ms ? { 'node_modules/ms': { version: ms } } : {}),
+  },
 });
 const pkg = (zod: string) => ({ name: 'gleanary', dependencies: { zod: `^${zod}` } });
 
@@ -91,9 +100,12 @@ function get(path: string): unknown {
           : { ahead_by: 1, files: [{ filename: 'package-lock.json' }] },
     ],
     [/contents\/package\.json\?ref=base1/, () => pkg('4.4.3')],
-    [/contents\/package-lock\.json\?ref=base1/, () => lock('4.4.3')],
+    [
+      /contents\/package-lock\.json\?ref=base1/,
+      () => lock('4.4.3', state.withMs ? '2.1.3' : undefined),
+    ],
     [/contents\/package\.json\?ref=/, () => pkg('4.6.7')],
-    [/contents\/package-lock\.json\?ref=/, () => lock('4.6.7')],
+    [/contents\/package-lock\.json\?ref=/, () => lock('4.6.7', state.withMs ? '2.1.4' : undefined)],
     [/^advisories\?/, () => []],
     [new RegExp(`issues/${PR}/comments`), () => state.comments],
     [/issues\?state=open&labels=deps:needs-human/, () => state.issues],
@@ -187,7 +199,15 @@ beforeAll(async () => {
   // Stub after the global MSW setup patches fetch; the registry is the only fetch target.
   vi.stubGlobal(
     'fetch',
-    vi.fn(async () => new Response(JSON.stringify(packument), { status: 200 })),
+    vi.fn(async (url: string) => {
+      const doc = String(url).endsWith('/ms')
+        ? {
+            time: { '2.1.3': '2026-01-01T00:00:00Z', '2.1.4': state.msPublishedAt },
+            versions: { '2.1.3': { dist: {} }, '2.1.4': { dist: {} } },
+          }
+        : packument;
+      return new Response(JSON.stringify(doc), { status: 200 });
+    }),
   );
   cli = await import('../../.github/deps-agent/cli.mjs');
 });
@@ -197,7 +217,10 @@ afterAll(() => {
 });
 
 beforeEach(() => {
+  cli?.clearRunCaches();
   state = {
+    withMs: false,
+    msPublishedAt: '2026-10-01T00:00:00Z',
     headSha: 'head1',
     mergeable: true,
     fresh: true,
@@ -318,6 +341,79 @@ describe('handleMain', () => {
     state.issues = [{ number: 50, title: 'deps-agent: main old1234 is broken' }];
     cli.handleMain(healthy);
     expect(state.writes.some((w) => w.method === 'PATCH' && w.body.state === 'closed')).toBe(true);
+  });
+});
+
+describe('cooldown wait', () => {
+  it('escalates once a PR has waited 14 days on young transitive versions', async () => {
+    state.withMs = true;
+    state.msPublishedAt = '2026-10-22T12:00:00Z'; // a day before NOW: still cooling down
+    const first = await cli.evaluatePr(PR, {
+      main: healthy,
+      now: NOW,
+      assessment: assessed('merge'),
+      slotFree: true,
+    });
+    expect(first.outcome).toBe('wait');
+    expect(pings()).toHaveLength(0);
+
+    // 15 days later, a rebase has pulled in an even newer ms: the PR is still cooling down.
+    const later = new Date(NOW.getTime() + 15 * 86_400_000);
+    state.msPublishedAt = new Date(later.getTime() - 86_400_000).toISOString();
+    cli.clearRunCaches(); // a later run is a fresh process
+    const { outcome } = await cli.evaluatePr(PR, { main: healthy, now: later, slotFree: true });
+    expect(outcome).toBe('escalate');
+    expect(pings()[0]?.body).toContain('waited 14 days');
+    expect(pings()[0]?.body).not.toContain('Blocking gates');
+  });
+});
+
+describe('assessment tool flags', () => {
+  // GitHub-hosted runners check out under /home/runner/work and set HOME=/home/runner.
+  // A deny rule beats every allow rule, so no deny may match the checkout.
+  const WORKSPACE_FILE = '/home/runner/work/gleanary/gleanary/src/lib/sanitize.ts';
+  const denies = (rules: string[], path: string) =>
+    rules.some((rule) => {
+      const m = rule.match(/^Read\((.+)\)$/);
+      if (!m?.[1]) return false;
+      const pattern = m[1]
+        .replace(/^~\//, '//home/runner/')
+        .replace(/^\/\//, '/')
+        .replace(/\*\*$/, '');
+      return path.startsWith(pattern);
+    });
+
+  it('never denies reads inside the runner checkout, and still denies /proc and /etc', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'deps-flags-'));
+    const facts = join(dir, 'facts.json');
+    writeFileSync(
+      facts,
+      JSON.stringify({ meta: { title: 't', headSha: 'h' }, facts: { updates: [] } }),
+    );
+    writeFileSync(join(dir, 'index.json'), JSON.stringify({ diffs: [], transitiveNotReviewed: 0 }));
+    let out = '';
+    const write = vi.spyOn(process.stdout, 'write').mockImplementation((chunk) => {
+      out += String(chunk);
+      return true;
+    });
+    try {
+      await cli.commands.prompt({ pr: '7', facts, diffs: dir });
+    } finally {
+      write.mockRestore();
+      rmSync(dir, { recursive: true, force: true });
+    }
+    const args = out.slice(out.indexOf('claude_args<<'));
+    const list = (flag: string) =>
+      (args.match(new RegExp(`--${flag} "([^"]*)"`))?.[1] ?? '').split(',').filter(Boolean);
+    const disallowed = list('disallowedTools');
+    expect(disallowed.length).toBeGreaterThan(0);
+    expect(denies(disallowed, WORKSPACE_FILE)).toBe(false);
+    expect(
+      denies(disallowed, '/home/runner/work/gleanary/gleanary/.deps-agent-diffs/zod@4.6.7.diff'),
+    ).toBe(false);
+    expect(denies(disallowed, '/proc/self/environ')).toBe(true);
+    expect(denies(disallowed, '/etc/passwd')).toBe(true);
+    expect(list('allowedTools')).toContain('Read(./**)');
   });
 });
 

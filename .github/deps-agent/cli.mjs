@@ -30,6 +30,7 @@ import {
   classifyMain,
   decide,
   diffLockfiles,
+  diffTargets,
   evaluateRules,
   latestCheckRuns,
   manifestChangeIsScoped,
@@ -79,6 +80,8 @@ const REGISTRY_CONCURRENCY = 8;
 const REGISTRY_MAX_PACKAGES = 300;
 // Hours to wait for Dependabot to act on our `@dependabot rebase` before asking the owner.
 const REBASE_STUCK_HOURS = 24;
+// Days a PR may wait on young transitive versions before the owner is asked.
+const COOLDOWN_WAIT_ESCALATE_DAYS = 14;
 
 // ── GitHub / registry I/O ────────────────────────────────────────────────────
 
@@ -423,10 +426,23 @@ async function evaluatePr(number, { main, now, assessment, slotFree, by = 'agent
     needsRebase &&
     record.rebaseSha === meta.headSha &&
     now.getTime() - new Date(record.rebaseAt ?? now).getTime() > REBASE_STUCK_HOURS * 3_600_000;
+  // A young transitive version only ever makes the PR wait. If every Dependabot rebase pulls
+  // in an even newer version of a fast-moving dependency, it would wait forever, visible
+  // only on the dashboard. The clock lives in the record, so it survives rebases.
+  const coolingDown = rules.find((r) => r.id === 'cooldown' && r.status === 'pending');
+  if (!coolingDown) delete record.cooldownWaitSince;
+  else record.cooldownWaitSince ??= now.toISOString();
+  const coolingTooLong =
+    outcome === 'wait' &&
+    coolingDown &&
+    now.getTime() - new Date(record.cooldownWaitSince).getTime() > COOLDOWN_WAIT_ESCALATE_DAYS * 86_400_000;
   let why = '';
   if (stuck) {
     outcome = 'escalate';
     why = `Dependabot has not rebased this PR ${REBASE_STUCK_HOURS} h after deps-agent asked. Comment \`@dependabot rebase\` yourself.`;
+  } else if (coolingTooLong) {
+    outcome = 'escalate';
+    why = `This PR has waited ${COOLDOWN_WAIT_ESCALATE_DAYS} days for dependency versions to age (${coolingDown.detail}); a fast-moving dependency may keep resetting the clock. \`/deps merge\` to take it as is, or \`/deps hold\`.`;
   }
 
   if (outcome === 'merge') {
@@ -446,7 +462,7 @@ async function evaluatePr(number, { main, now, assessment, slotFree, by = 'agent
     .filter((r) => r.status === 'fail')
     .map((r) => r.id)
     .join(',');
-  const escalation = `${versions}|${failing}${stuck ? '|rebase-stuck' : ''}`;
+  const escalation = `${versions}|${failing}${stuck ? '|rebase-stuck' : ''}${coolingTooLong ? '|cooldown-wait' : ''}`;
   if (outcome === 'escalate' && record.escalatedKey !== escalation && OWNER) {
     comment(number, renderEscalation(record, OWNER, why));
     record.escalatedKey = escalation;
@@ -588,13 +604,9 @@ const commands = {
   async 'package-diffs'({ facts, out }) {
     const { facts: f } = JSON.parse(readFileSync(facts, 'utf8'));
     mkdirSync(out, { recursive: true });
-    const direct = new Set(f.updates.map((u) => u.name));
-    // Version changes outside the declared packages, riskiest (install scripts) first.
-    const transitive = f.lock.changed
-      .filter((c) => c.from && !direct.has(c.name))
-      .sort((a, b) => Number(b.installScript) - Number(a.installScript));
+    const { direct, transitive } = diffTargets(f);
     const targets = [
-      ...f.updates.filter((u) => u.from && u.to).map((u) => ({ ...u, direct: true, max: DIFF_MAX_BYTES })),
+      ...direct.map((u) => ({ ...u, direct: true, max: DIFF_MAX_BYTES })),
       ...transitive
         .slice(0, DIFF_MAX_TRANSITIVE)
         .map((c) => ({ ...c, direct: false, max: DIFF_MAX_BYTES_TRANSITIVE })),
@@ -634,9 +646,13 @@ const commands = {
         '--max-turns 40',
         // The job reads attacker-controlled text: file reads stay in the workspace (no
         // /proc/self/environ), web fetches stay on GitHub and npm, and no tool can reach
-        // an arbitrary host (npm view --registry could).
+        // an arbitrary host (npm view --registry could). The path-scoped allow rules
+        // already deny reads outside the workspace; the explicit denies are a backstop.
+        // Never deny /home or ~: GitHub runners check out under /home/runner/work, and a
+        // deny rule beats every allow rule, so the model would be blind to its own
+        // checkout (verified with `claude -p`; covered by deps-agent-cli.test.ts).
         '--allowedTools "Read(./**),Grep(./**),Glob(./**),WebFetch(domain:github.com),WebFetch(domain:raw.githubusercontent.com),WebFetch(domain:www.npmjs.com),Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr checks:*),Bash(gh run view:*),Bash(gh release view:*)"',
-        '--disallowedTools "Read(//proc/**),Read(//etc/**),Read(//home/**),Read(~/**),Bash(npm:*),Bash(curl:*),Bash(wget:*)"',
+        '--disallowedTools "Read(//proc/**),Read(//etc/**),Bash(npm:*),Bash(curl:*),Bash(wget:*)"',
         `--json-schema '${schema}'`,
       ].join('\n'),
     );
@@ -722,7 +738,13 @@ const commands = {
   },
 };
 
-export { POLICY_HASH, commands, evaluatePr, handleMain };
+/** Test hook: each CI run is a fresh process, so the run caches only need clearing in tests. */
+function clearRunCaches() {
+  packuments.clear();
+  baseCache.clear();
+}
+
+export { POLICY_HASH, clearRunCaches, commands, evaluatePr, handleMain };
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const { positionals, values } = parseArgs({

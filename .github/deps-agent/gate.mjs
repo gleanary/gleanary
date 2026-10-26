@@ -126,7 +126,7 @@ export function classifyBump(from, to) {
 /**
  * Compare two lockfiles (v3 `packages` map).
  * @param {{packages?: Record<string, {version?: string, hasInstallScript?: boolean}>}} base
- * @param {{packages?: Record<string, {version?: string, hasInstallScript?: boolean}>}} head
+ * @param {{packages?: Record<string, {version?: string, name?: string, hasInstallScript?: boolean}>}} head
  * @returns {{added: string[], newInstallScripts: string[],
  *   changed: {name: string, from: string|null, to: string, installScript: boolean}[]}}
  *   lock keys added; keys that gained an install script (new package, or existing one that
@@ -144,7 +144,10 @@ export function diffLockfiles(base, head) {
     if (!(key in b)) added.push(key);
     if (entry.hasInstallScript && !b[key]?.hasInstallScript) newInstallScripts.push(key);
     if (entry.version && b[key]?.version !== entry.version) {
-      const name = key.slice(key.lastIndexOf('node_modules/') + 'node_modules/'.length);
+      // An npm alias (`"string-width-cjs": "npm:string-width@4"`) is installed under the
+      // alias path but published under `entry.name`: registry and malware lookups need
+      // the real name.
+      const name = entry.name ?? key.slice(key.lastIndexOf('node_modules/') + 'node_modules/'.length);
       changed.set(`${name}@${entry.version}`, {
         name,
         from: b[key]?.version ?? null,
@@ -155,6 +158,25 @@ export function diffLockfiles(base, head) {
   }
   const sorted = [...changed.entries()].sort(([a], [z]) => a.localeCompare(z));
   return { added, newInstallScripts, changed: sorted.map(([, c]) => c) };
+}
+
+/**
+ * What the published-code review diffs: declared updates with an old and a new version,
+ * and transitive version changes, riskiest (install scripts) first. Shared by the diff
+ * step (cli.mjs `package-diffs`) and the codeReview rule, so "what should have been
+ * reviewed" can never drift from "what was offered for review".
+ * @param {{updates: {name: string, from: string|null, to: string|null}[],
+ *   lock: {changed: {name: string, from: string|null, to: string, installScript: boolean}[]}}} f
+ * @returns {{direct: object[], transitive: object[]}} diff targets
+ */
+export function diffTargets(f) {
+  const declared = new Set(f.updates.map((u) => u.name));
+  return {
+    direct: f.updates.filter((u) => u.from && u.to),
+    transitive: f.lock.changed
+      .filter((c) => c.from && !declared.has(c.name))
+      .sort((a, b) => Number(b.installScript) - Number(a.installScript)),
+  };
 }
 
 /**
@@ -265,11 +287,19 @@ function cooldownRule(registry, now) {
     : result('cooldown', 'pass', `all ${registry.length} introduced versions older than ${LIMITS.cooldownDays}d`);
 }
 
-/** Suspicious findings from Claude's review of the published code diff. */
-function codeReviewRule(assessment) {
+/**
+ * Suspicious findings from Claude's review of the published code diff. An empty
+ * `suspicious` list only means something if the model actually saw code: coverage "none"
+ * while there were version changes to diff is a review that did not happen (e.g. the
+ * model could not read the diff files), so it fails instead of passing silently.
+ */
+function codeReviewRule(assessment, diffsExpected) {
   if (!assessment) return result('codeReview', 'pending', 'not assessed yet');
   const review = assessment.codeReview;
   if (!review) return result('codeReview', 'fail', 'assessment has no code review');
+  if (review.coverage === 'none' && diffsExpected) {
+    return result('codeReview', 'fail', 'the code review saw no code although version changes had diffs');
+  }
   return unless(
     'codeReview',
     review.suspicious.map((s) => `${s.file}: ${s.finding}`),
@@ -312,6 +342,7 @@ export function evaluateRules(f) {
     kind: u.from && u.to ? classifyBump(u.from, u.to) : 'major',
   }));
   const injected = Boolean(f.assessment?.injectionSuspected);
+  const targets = diffTargets(f);
 
   return [
     result('author', TRI[f.author === DEPENDABOT_LOGIN], `author ${f.author}`),
@@ -370,7 +401,7 @@ export function evaluateRules(f) {
       'same npm publisher as the previous version',
     ),
     unless('audit', f.newAdvisories, 'new advisories', 'no new advisories'),
-    codeReviewRule(f.assessment),
+    codeReviewRule(f.assessment, targets.direct.length + targets.transitive.length > 0),
     f.assessment
       ? result('verdict', TRI[f.assessment.verdict === 'merge'], `assessment: ${f.assessment.verdict}`)
       : result('verdict', 'pending', 'not assessed yet'),

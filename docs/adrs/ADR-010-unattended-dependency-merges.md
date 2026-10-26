@@ -89,7 +89,14 @@ The assessment itself reads attacker-controlled text (changelogs, package code),
 are fenced: file reads stay inside the repository (no `/proc/self/environ`, where the API key
 lives), web fetches are limited to github.com, raw.githubusercontent.com and www.npmjs.com,
 and no tool can reach an arbitrary host (`npm view --registry=<url>` was removed for that
-reason; package repository URLs come from the registry facts instead).
+reason; package repository URLs come from the registry facts instead). The fence is built
+from path-scoped allow rules (`Read(./**)`, `Grep(./**)`, `Glob(./**)`) plus a few explicit
+denies. It must never deny `/home` or `~`: GitHub runners check out under
+`/home/runner/work`, and a deny rule beats every allow rule, so the model would be blind to
+its own checkout. A first version did exactly that and was caught in review. A test now
+renders the real flags and checks them against a runner checkout path. Because a blind
+review reports `coverage: "none"` with no findings, the gate also fails `codeReview` on
+coverage "none" whenever there were version changes to review.
 
 **Residual risk.** A careful attacker who stays unlisted for a week and hides the payload in
 code the review cannot see in full (a large bundle, a binary, or a transitive version past
@@ -208,7 +215,10 @@ review, so it is not the preferred lever.
 
 - Up to 8 merges a day (cron every 3 h), each one attributable to a single production bump.
   Routine fixes arrive about a week after release; security updates skip the cooldown. A
-  bump whose transitive versions are younger than 7 days waits until they age.
+  bump whose transitive versions are younger than 7 days waits until they age, and pings
+  the owner after 14 days of waiting (a fast-moving dependency can keep resetting the clock).
+- Overrides are append-only and cannot be withdrawn; `/deps hold` is the revocation (a held
+  PR never merges).
 - Every version change of a package that runs an install script (`better-sqlite3`,
   `esbuild`, …) escalates. That is deliberate: those scripts run in the Docker build.
 - `/deps` commands never merge and never write the decision record. `/deps merge` posts an
