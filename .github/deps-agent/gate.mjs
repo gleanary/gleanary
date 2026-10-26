@@ -1,0 +1,835 @@
+// Deterministic merge gate for the Dependabot agent (.github/workflows/deps-agent.yml).
+//
+// Pure functions only: the CLI (cli.mjs) collects facts from GitHub and the npm
+// registry, this module decides. The LLM assessment is ONE input (the `verdict`
+// rule); it can only turn a permitted merge into an escalation, never the
+// reverse. Policy rationale lives in policy.md next to this file.
+
+import { createHash } from 'node:crypto';
+
+/**
+ * Short hex sha256 digest, for fingerprints and dedupe keys.
+ * @param {string|Buffer} data - what to fingerprint
+ * @param {number} [len] - hex characters to keep
+ * @returns {string} digest prefix
+ */
+export const shortHash = (data, len = 12) => createHash('sha256').update(data).digest('hex').slice(0, len);
+
+/** Check runs that must be green on the PR head SHA (names from ci.yml). */
+export const REQUIRED_CHECKS = [
+  'Lint',
+  'Type-check',
+  'Unit + Integration Tests',
+  'E2E Tests (critical paths)',
+];
+
+export const LIMITS = {
+  /** Days a release must have been public before we merge it (detection window). */
+  cooldownDays: 7,
+  /** Days a PR may wait on young transitive versions before the cooldown fails (escalates). */
+  cooldownWaitDays: 14,
+  /** Introduced versions the agent can check against the registry in one evaluation. */
+  maxVerifiableVersions: 300,
+  /** New transitive packages one bump may add before a human looks. */
+  maxNewPackages: 15,
+};
+
+/**
+ * hard     : never overridable; failure escalates.
+ * soft     : the owner can override with `/deps merge`.
+ * transient: failure means "wait for the next run", not escalate.
+ */
+export const RULE_KIND = {
+  author: 'hard',
+  sources: 'hard',
+  scale: 'hard',
+  ecosystem: 'hard',
+  injection: 'hard',
+  files: 'hard',
+  manifest: 'hard',
+  checks: 'hard',
+  malware: 'hard',
+  semver: 'soft',
+  installScripts: 'soft',
+  newPackages: 'soft',
+  cooldown: 'soft',
+  provenance: 'soft',
+  publisher: 'soft',
+  audit: 'soft',
+  codeReview: 'soft',
+  verdict: 'soft',
+  mergeable: 'transient',
+  fresh: 'transient',
+  mainHealthy: 'transient',
+  registry: 'transient',
+};
+
+/**
+ * Hard rules whose failure no AI assessment or CI result can change (all of them except the
+ * two that read the review or CI). `plan` skips assessing a commit that already fails one.
+ */
+export const OUTCOME_FIXED_BY = new Set(
+  Object.keys(RULE_KIND).filter((id) => RULE_KIND[id] === 'hard' && !['injection', 'checks'].includes(id)),
+);
+
+/** How long main may go without a CI run (after a push) or a Deploy run (after CI). */
+const MAIN_STALE_MS = 30 * 60_000;
+
+export const DEPENDABOT_LOGIN = 'dependabot[bot]';
+export const NPM_BRANCH_PREFIX = 'dependabot/npm_and_yarn/';
+export const LOCK_FILES = new Set(['package.json', 'package-lock.json']);
+const DEP_FIELDS = ['dependencies', 'devDependencies', 'optionalDependencies', 'peerDependencies'];
+
+/**
+ * Parse the `updated-dependencies` YAML block Dependabot puts in its commit message.
+ * @param {string} message - the PR's head commit message
+ * @returns {{name: string, type: string, version: string}[]} declared updates (empty if none found)
+ */
+export function parseUpdatedDependencies(message) {
+  const updates = [];
+  let current = null;
+  const unquote = (v) => v.replace(/^['"]|['"]$/g, '');
+  for (const line of message.split('\n')) {
+    const name = line.match(/^- dependency-name:\s*(\S+)/);
+    if (name) {
+      current = { name: unquote(name[1]), type: '', version: '' };
+      updates.push(current);
+      continue;
+    }
+    const field = line.match(/^\s+dependency-(type|version):\s*(\S+)/);
+    if (field && current) current[field[1]] = unquote(field[2]);
+  }
+  return updates;
+}
+
+/**
+ * The package versions a PR moves to. A rebase keeps it, so it identifies "this
+ * dependency change" independently of the commit.
+ * @param {{name: string, version?: string}[]} updates - declared updates
+ * @returns {string} sorted `name@version` list
+ */
+export function updatesKey(updates) {
+  return updates
+    .map((u) => `${u.name}@${u.version || '?'}`)
+    .sort()
+    .join(',');
+}
+
+/**
+ * Cache key for Claude's assessment: the same declared versions, the same introduced
+ * lockfile versions, the same policy and the same CI outcome get the same assessment, so a
+ * Dependabot rebase that leaves the lockfile alone does not re-run it. A rebase that pulls
+ * new transitive versions changes the key (the code review never saw them), and a newly
+ * red CI changes it too, so the failure still gets read.
+ * @param {object} p
+ * @param {{name: string, version?: string}[]} p.updates - declared updates
+ * @param {{status: string, conclusion: string|null}[]} p.checks - head SHA check runs
+ * @param {string} p.policyHash - fingerprint of policy.md, prompt.md and the schema
+ * @param {string} p.lockFingerprint - lockFingerprint() of the introduced versions
+ * @returns {string} the cache key
+ */
+export function assessmentKey({ updates, checks, policyHash, lockFingerprint }) {
+  const ci = failedChecks(checks).length ? 'red' : 'green';
+  return `${policyHash}|ci-${ci}|${updatesKey(updates)}|lock-${lockFingerprint}`;
+}
+
+/**
+ * Fingerprint of every version the lockfile introduces. A rebase that re-resolves the
+ * lockfile (new transitive versions) changes it, so a cached assessment, whose code review
+ * never saw those versions, and an owner override, which approved a specific lockfile, stop
+ * applying. A rebase that leaves the introduced versions alone keeps both.
+ * @param {{name: string, to: string}[]} changed - diffLockfiles().changed
+ * @returns {string} short hex digest
+ */
+export function lockFingerprint(changed) {
+  const specs = changed.map((c) => `${c.name}@${c.to}`).sort();
+  return shortHash(specs.join('\n'), 16);
+}
+
+/**
+ * Classify a version change. 0.x minors and 0.0.x patches are treated as majors
+ * (semver gives no compatibility promise below 1.0), as are prereleases.
+ * @param {string} from - installed version before the bump
+ * @param {string} to - installed version after the bump
+ * @returns {'major'|'minor'|'patch'|'none'} the effective update type
+ */
+export function classifyBump(from, to) {
+  if (from === to) return 'none';
+  const parse = (v) => {
+    const m = v.match(/^(\d+)\.(\d+)\.(\d+)(-.+)?$/);
+    return m ? { major: +m[1], minor: +m[2], patch: +m[3], pre: Boolean(m[4]) } : null;
+  };
+  const a = parse(from);
+  const b = parse(to);
+  if (!a || !b || a.pre || b.pre) return 'major';
+  if (a.major !== b.major) return 'major';
+  if (a.major === 0 && (a.minor !== b.minor || a.minor === 0)) return 'major';
+  return a.minor !== b.minor ? 'minor' : 'patch';
+}
+
+/**
+ * Compare two lockfiles (v3 `packages` map).
+ * @param {{packages?: Record<string, {version?: string, hasInstallScript?: boolean}>}} base
+ * @param {{packages?: Record<string, {version?: string, name?: string, hasInstallScript?: boolean}>}} head
+ * @returns {{added: string[], newInstallScripts: string[],
+ *   changed: {name: string, from: string|null, to: string, installScript: boolean}[],
+ *   foreignSources: string[]}} where foreignSources lists every entry whose resolved URL or
+ *   version is new or changed and that does not come from registry.npmjs.org
+ *   names of packages main did not have at all; names of packages that gained an install
+ *   script (no copy on main had one); and every introduced version (one main did not have
+ *   anywhere), direct or transitive, deduplicated by `name@to` and sorted. `from` is the
+ *   version at the same key, else the base copy of the same name (a bump that moves it)
+ */
+export function diffLockfiles(base, head) {
+  const b = base.packages ?? {};
+  const h = head.packages ?? {};
+  // Base copies by package name: a bump can also move a package (hoisted <-> nested), so
+  // what was installed before is looked up by name, not only at the same lockfile key.
+  const baseByName = new Map();
+  for (const [key, entry] of Object.entries(b)) {
+    if (!key || !entry.version) continue;
+    const name = packageName(key, entry);
+    const known = baseByName.get(name) ?? { versions: new Set(), prev: entry.version, script: false };
+    known.versions.add(entry.version);
+    if (key === `node_modules/${name}`) known.prev = entry.version; // the hoisted copy wins
+    known.script ||= Boolean(entry.hasInstallScript);
+    baseByName.set(name, known);
+  }
+  const added = new Set();
+  const newInstallScripts = [];
+  const changed = new Map();
+  const foreignSources = [];
+  for (const [key, entry] of Object.entries(h)) {
+    if (!key) continue; // root project entry
+    const name = packageName(key, entry);
+    const known = baseByName.get(name);
+    if (!known) added.add(name);
+    // Per lockfile entry, not per name@version: a second copy of a version, or a resolved
+    // URL swapped without a version change, must not hide behind a clean first copy.
+    const resolvedChanged =
+      !(key in b) || b[key]?.resolved !== entry.resolved || b[key]?.version !== entry.version;
+    if (entry.version && resolvedChanged && !entry.inBundle && !entry.link && !entry.resolved?.startsWith(NPM_REGISTRY)) {
+      foreignSources.push(`${name}@${entry.version} from ${entry.resolved ?? '(no resolved URL)'}`);
+    }
+    if (entry.hasInstallScript && !known?.script && !newInstallScripts.includes(name)) newInstallScripts.push(name);
+    // Introduced = a version main did not have anywhere. A copy that only moved is not.
+    if (entry.version && !known?.versions.has(entry.version)) {
+      const atKey = b[key] && packageName(key, b[key]) === name ? b[key].version : null;
+      // The same version can sit at several places (hoisted and nested). Merge them, keeping
+      // a known previous version over "new here", so read order cannot drop it from review.
+      const spec = `${name}@${entry.version}`;
+      const seen = changed.get(spec);
+      changed.set(spec, {
+        name,
+        from: seen?.from ?? atKey ?? known?.prev ?? null,
+        to: entry.version,
+        installScript: Boolean(seen?.installScript || entry.hasInstallScript),
+      });
+    }
+  }
+  const sorted = [...changed.entries()].sort(([a], [z]) => a.localeCompare(z));
+  return { added: [...added], newInstallScripts, changed: sorted.map(([, c]) => c), foreignSources };
+}
+
+/**
+ * Published name of a lockfile entry. An npm alias (`"string-width-cjs":
+ * "npm:string-width@4"`) is installed under the alias path but published under
+ * `entry.name`: registry and malware lookups need the real name.
+ */
+function packageName(key, entry) {
+  return entry.name ?? key.slice(key.lastIndexOf('node_modules/') + 'node_modules/'.length);
+}
+
+/**
+ * One registry fact, built from a slimmed packument (cli.mjs `slimPackument`). Pure, and
+ * the only place the fact shape is defined: the CLI maps over it and the tests call it, so
+ * a test fixture can never drift from what the CLI produces.
+ * @param {object} p
+ * @param {string} p.name - package name
+ * @param {string|null} p.from - previous version (null for a new package)
+ * @param {string} p.to - introduced version
+ * @param {boolean} p.direct - declared by the PR
+ * @param {{time: Record<string, string>, versions: Record<string, {attested: boolean,
+ *   publisher: string|null, installCmd: string|null, repo: string|null}>}|null} p.doc
+ *   slimmed packument; null when the registry did not answer (an outage), as opposed to an
+ *   answer without this version: the gate waits on the first and escalates on the second
+ * @returns {object} the registry fact the gate rules read
+ */
+export function registryFact({ name, from, to, direct, doc }) {
+  const prev = from ? doc?.versions?.[from] : null;
+  const cur = doc?.versions?.[to];
+  return {
+    name,
+    version: to,
+    direct,
+    publishedAt: doc?.time[to] ?? null,
+    prevAttested: Boolean(prev?.attested),
+    attested: Boolean(cur?.attested),
+    prevPublisher: prev?.publisher ?? null,
+    publisher: cur?.publisher ?? null,
+    prevInstallCmd: prev?.installCmd ?? null,
+    installCmd: cur?.installCmd ?? null,
+    prevRepo: prev?.repo ?? null,
+    repo: cur?.repo ?? null,
+    repoUrl: cur?.repo ? `https://${cur.repo}` : null,
+    registryError: doc === null,
+  };
+}
+
+/** Review order of a transitive change: install scripts first, then new packages. */
+const risk = (c) => 2 * Number(c.installScript) + Number(!c.from);
+
+/**
+ * What the published-code review diffs: declared updates with an old and a new version,
+ * and transitive changes (new packages included), riskiest first. Shared by the diff
+ * step (cli.mjs `package-diffs`) and the codeReview rule, so "what should have been
+ * reviewed" can never drift from "what was offered for review".
+ * @param {{updates: {name: string, from: string|null, to: string|null}[],
+ *   lock: {changed: {name: string, from: string|null, to: string, installScript: boolean}[]}}} f
+ * @returns {{direct: {name: string, from: string|null, to: string|null}[],
+ *   transitive: {name: string, from: string|null, to: string, installScript: boolean}[]}} diff targets
+ */
+export function diffTargets(f) {
+  // Only the copy at the declared version is the PR's direct update: a nested copy of the
+  // same package moving to another version is reviewed like any transitive change.
+  const declaredTo = new Map(f.updates.map((u) => [u.name, u.to]));
+  return {
+    direct: f.updates.filter((u) => u.from && u.to),
+    // New packages too (diffed against nothing): a package that did not exist before is how
+    // event-stream's payload arrived. Riskiest first: install scripts, then new packages.
+    transitive: f.lock.changed
+      .filter((c) => declaredTo.get(c.name) !== c.to)
+      .sort((a, b) => risk(b) - risk(a)),
+  };
+}
+
+/**
+ * Packages we know legitimately run an install script and bump often. A new version of one
+ * of these passes the installScripts rule only when its install command is byte-identical
+ * to the previous version's and both versions carry npm provenance. The 7-day cooldown and
+ * a clean code review (install-script packages are diffed first) are enforced by their own
+ * rules. Anything else (a new script, a changed command, lost or missing provenance, an
+ * unlisted package) still escalates. Decided in ADR-010.
+ */
+export const TRUSTED_INSTALL_SCRIPTS = new Set(['better-sqlite3', 'esbuild', 'msw', 'unrs-resolver']);
+
+/**
+ * Install-time code the bump introduces: packages that gain an install script, and new
+ * versions of packages that already run one (a hijacked better-sqlite3 or esbuild release
+ * would run its script during `npm ci` in the Docker build).
+ * @param {{newInstallScripts: string[],
+ *   changed: {name: string, from: string|null, to: string, installScript: boolean}[]}} lock
+ * @param {{name: string, version: string, prevAttested?: boolean, attested?: boolean,
+ *   prevInstallCmd?: string|null, installCmd?: string|null}[]} [registry] - registry facts
+ * @returns {{offenders: string[], trusted: string[]}} what escalates, and trusted packages
+ *   whose new version passed with an unchanged command and provenance
+ */
+export function installScriptChanges(lock, registry = []) {
+  const gained = new Set(lock.newInstallScripts);
+  const facts = new Map(registry.map((r) => [label(r), r]));
+  const unchangedAndAttested = (c, r) => {
+    if (!TRUSTED_INSTALL_SCRIPTS.has(c.name)) return false;
+    return (
+      Boolean(r?.prevAttested && r.attested && r.installCmd) &&
+      r.installCmd === r.prevInstallCmd &&
+      !repoChanged(r)
+    );
+  };
+  const offenders = [...gained].map((name) => `${name} (new script)`);
+  const trusted = [];
+  for (const c of lock.changed) {
+    const spec = `${c.name}@${c.to}`;
+    const r = facts.get(spec);
+    // Reported once as "new script"; or registry down (the command is unknown, not changed,
+    // and the `registry` rule keeps the PR waiting).
+    if (gained.has(c.name) || r?.registryError) continue;
+    if (!c.installScript) {
+      // The lockfile's hasInstallScript is the PR's own claim. If the registry lists an install
+      // command the lockfile does not declare, trust the registry (a lockfile can be edited).
+      // The opposite (flag set, nothing published) is normal: npm implies `node-gyp rebuild`.
+      if (r?.installCmd) offenders.push(`${spec} (the registry lists an install script the lockfile does not declare)`);
+    } else if (c.from) {
+      if (unchangedAndAttested(c, r)) trusted.push(spec);
+      else offenders.push(`${c.name} ${c.from}→${c.to} (runs an install script)`);
+    }
+  }
+  return { offenders, trusted };
+}
+
+/**
+ * True when package.json changed only in the version ranges of the declared updates.
+ * @param {Record<string, unknown>} base - package.json on main
+ * @param {Record<string, unknown>} head - package.json on the PR head
+ * @param {string[]} names - declared dependency names
+ * @returns {boolean} whether the manifest change is limited to those ranges
+ */
+export function manifestChangeIsScoped(base, head, names) {
+  const strip = (pkg) => {
+    const copy = structuredClone(pkg);
+    for (const field of DEP_FIELDS) {
+      const deps = copy[field];
+      if (deps && typeof deps === 'object') for (const n of names) delete deps[n];
+    }
+    return copy;
+  };
+  return JSON.stringify(strip(base)) === JSON.stringify(strip(head));
+}
+
+const result = (id, status, detail) => ({ id, kind: RULE_KIND[id], status, detail });
+/** Pass when `offenders` is empty, else fail listing them. */
+const unless = (id, offenders, failMsg, passMsg) =>
+  offenders.length ? result(id, 'fail', `${failMsg}: ${offenders.join(', ')}`) : result(id, 'pass', passMsg);
+const TRI = { true: 'pass', false: 'fail' };
+/**
+ * What an owner override matches a failing soft rule on: a hash of its full detail, computed
+ * before the record is ever trimmed for display. A rule may give a `matchKey` instead when its
+ * detail legitimately shrinks without the problem changing (see the overdue cooldown).
+ * @param {{detail: string, matchKey?: string}} rule - a rule result
+ * @returns {string} the key an override stores and compares
+ */
+export const waiverKey = (rule) => shortHash(rule.matchKey ?? rule.detail, 16);
+
+/**
+ * What makes an escalation "the same one" for ping dedupe: each failing hard/soft rule and its
+ * waiverKey. Transient rules (main busy, branch behind) describe the world, not the PR, and an
+ * overdue cooldown whose list of aging versions shrinks is the same problem getting better.
+ * @param {{id: string, kind: string, status: string, detail: string, matchKey?: string}[]} rules
+ * @returns {string} short fingerprint
+ */
+export function escalationFingerprint(rules) {
+  return shortHash(
+    rules
+      .filter((r) => r.status === 'fail' && r.kind !== 'transient')
+      .map((r) => `${r.id}:${waiverKey(r)}`)
+      .join('\n'),
+  );
+}
+
+/** `name@version` of a registry fact. */
+const label = (r) => `${r.name}@${r.version}`;
+
+/**
+ * npm only accepts a provenance publish when package.json's `repository.url` matches the
+ * attestation's source repo. So a stolen token publishing "with provenance" from the
+ * attacker's own GitHub repo has to change `repository`: comparing it with the previous
+ * version's catches that, where a bare "has an attestation" check does not. Only attested
+ * versions are compared: without an attestation `repository` is free text an attacker would
+ * simply keep, while legitimate moves (org renames, transfers) would escalate for nothing.
+ */
+const repoChanged = (r) => Boolean(r.attested && r.prevRepo && r.repo && r.prevRepo !== r.repo);
+
+/** Author email of every commit Dependabot creates (GitHub signs them). */
+export const DEPENDABOT_COMMIT_EMAIL = '49699333+dependabot[bot]@users.noreply.github.com';
+const NPM_REGISTRY = 'https://registry.npmjs.org/';
+
+/**
+ * The PR author alone does not prove the branch content is Dependabot's: anyone with push
+ * access could add a commit. The head commit must be authored by Dependabot and carry a
+ * valid signature.
+ */
+function authorRule(f) {
+  if (f.author !== DEPENDABOT_LOGIN) return result('author', 'fail', `PR author ${f.author}`);
+  const c = f.headCommit;
+  if (!c || c.authorEmail !== DEPENDABOT_COMMIT_EMAIL || !c.verified) {
+    return result('author', 'fail', `head commit is not a signed Dependabot commit (author ${c?.authorEmail ?? '?'}, verified ${c?.verified ?? '?'})`);
+  }
+  return result('author', 'pass', 'Dependabot PR, head commit signed by Dependabot');
+}
+
+/**
+ * Required checks that have not completed on the head SHA.
+ * @param {{name: string, status: string}[]} checks - from latestCheckRuns
+ * @returns {string[]} required check names still missing or running
+ */
+export function pendingChecks(checks) {
+  const byName = new Map(checks.map((c) => [c.name, c]));
+  return REQUIRED_CHECKS.filter((n) => byName.get(n)?.status !== 'completed');
+}
+
+/** Conclusions of a run that was stopped rather than failed (by hand, or superseded). */
+const INTERRUPTED = ['cancelled', 'stale'];
+
+/** Hours a cancelled check may wait for a re-run (by hand or a new push) before escalating. */
+const CANCELLED_WAIT_HOURS = 24;
+
+/**
+ * Completed check runs that did not succeed.
+ * @param {{name: string, status: string, conclusion: string|null}[]} checks - from latestCheckRuns
+ * @returns {{name: string}[]} the failed runs
+ */
+export function failedChecks(checks) {
+  return checks.filter((c) => c.status === 'completed' && !passes(c) && !INTERRUPTED.includes(c.conclusion));
+}
+
+/**
+ * A required check must succeed: skipped or neutral would let a future `if:` in ci.yml
+ * (e.g. "skip E2E for bots") merge bumps that never ran it. Other checks may skip.
+ */
+const passes = (c) =>
+  c.conclusion === 'success' || (!REQUIRED_CHECKS.includes(c.name) && ['skipped', 'neutral'].includes(c.conclusion));
+
+/** Whether a cancelled run (stamped `since`) has waited past CANCELLED_WAIT_HOURS for a re-run. */
+const cancelledWaitExpired = (since, now) =>
+  Boolean(since) && now.getTime() - new Date(since).getTime() > CANCELLED_WAIT_HOURS * 3_600_000;
+
+
+/** Minutes after a push with no check run at all before we call CI missing, not slow. */
+const NO_CI_GRACE_MINUTES = 60;
+
+function checksRule(checks, headCommittedAt, now) {
+  const failed = failedChecks(checks);
+  if (failed.length) return unless('checks', failed.map((c) => `${c.name} (${c.conclusion})`), 'failed', '');
+  const interrupted = checks.filter((c) => c.status === 'completed' && INTERRUPTED.includes(c.conclusion));
+  if (interrupted.length) {
+    const names = interrupted.map((c) => c.name).join(', ');
+    // Clocked from the cancellation (a day-old head can be cancelled now), else the commit.
+    const since = interrupted.map((c) => c.completedAt).filter(Boolean).sort().at(-1) ?? headCommittedAt;
+    return cancelledWaitExpired(since, now)
+      ? result('checks', 'fail', `not re-run within ${CANCELLED_WAIT_HOURS} h of being cancelled: ${names} (re-run CI)`)
+      : result('checks', 'pending', `cancelled, waiting for a re-run: ${names}`);
+  }
+  const pending = pendingChecks(checks);
+  if (!pending.length) return result('checks', 'pass', 'all required checks green');
+  if (!checks.length) {
+    const age = headCommittedAt ? (now.getTime() - new Date(headCommittedAt).getTime()) / 60_000 : 0;
+    return age > NO_CI_GRACE_MINUTES
+      ? result('checks', 'fail', `no CI ran on this commit within ${NO_CI_GRACE_MINUTES} min`)
+      : result('checks', 'pending', 'waiting for CI to start');
+  }
+  // Everything that ran has finished, yet a required name never appeared: a CI job was
+  // renamed or removed. Escalate instead of waiting forever.
+  const idle = checks.every((c) => c.status === 'completed');
+  return idle
+    ? unless('checks', pending, 'required check never ran (renamed in ci.yml?)', '')
+    : result('checks', 'pending', `waiting on: ${pending.join(', ')}`);
+}
+
+/**
+ * Release age for every introduced version, direct or transitive. Dependabot's cooldown
+ * only delays the package it bumps; the lockfile can still pull a transitive version
+ * published minutes earlier (how the 2025 chalk/debug hijack reached most projects).
+ * A young transitive version waits until it ages; a young direct version (in practice a
+ * security update, which skips Dependabot's cooldown) escalates so the owner can
+ * fast-track it; an unknown publish time escalates.
+ */
+function cooldownRule(registry, now, waitingSince) {
+  const cutoff = now.getTime() - LIMITS.cooldownDays * 86_400_000;
+  const young = (r) => r.publishedAt && new Date(r.publishedAt).getTime() > cutoff;
+  // The registry answered but has no publish time for this version: suspicious, escalate.
+  const blocking = registry.filter((r) => !r.publishedAt || (r.direct && young(r)));
+  if (blocking.length) {
+    return unless('cooldown', blocking.map(label), `published < ${LIMITS.cooldownDays}d ago (or unknown)`, '');
+  }
+  const aging = registry.filter(young);
+  if (!aging.length) {
+    return result('cooldown', 'pass', `all ${registry.length} introduced versions older than ${LIMITS.cooldownDays}d`);
+  }
+  // `waiting` marks the aging state for the CLI's clock. Waiting too long (a fast-moving
+  // dependency can reset the clock with every rebase) becomes a failure: it escalates, and
+  // the owner can waive it with /deps merge, which a pending rule could never be.
+  const overdue =
+    waitingSince && now.getTime() - new Date(waitingSince).getTime() > LIMITS.cooldownWaitDays * 86_400_000;
+  return overdue
+    ? {
+        ...result(
+          'cooldown',
+          'fail',
+          `still not ${LIMITS.cooldownDays} days old after ${LIMITS.cooldownWaitDays} days of waiting: ${aging.map(label).join(', ')}`,
+        ),
+        waiting: true,
+        // An override is tied to one lockfile, so the aging list can only shrink: a version
+        // that matures is the same problem getting better, and must not void the waiver.
+        matchKey: 'cooldown:overdue',
+      }
+    : { ...result('cooldown', 'pending', `waiting for dependency versions to age: ${aging.map(label).join(', ')}`), waiting: true };
+}
+
+/**
+ * The verdict's detail. An "escalate" carries a short fingerprint of the model's reasons
+ * (summary, question, breaking changes): an override waives the verdict only for the
+ * reasons the owner read, and a re-assessment that escalates for something else is a new
+ * failure, not the same one.
+ * @param {{verdict: string, summary?: string, escalation?: {question?: string},
+ *   breakingChangesAffectingUs?: unknown[]}} assessment - an assessment
+ * @returns {string} the verdict rule's detail
+ */
+export function verdictDetail(assessment) {
+  if (assessment.verdict === 'merge') return 'assessment: merge';
+  const reasons = JSON.stringify([
+    assessment.summary ?? '',
+    assessment.escalation?.question ?? '',
+    assessment.breakingChangesAffectingUs ?? [],
+  ]);
+  return `assessment: escalate [${shortHash(reasons, 8)}]`;
+}
+
+/**
+ * Suspicious findings from Claude's review of the published code diff. An empty
+ * `suspicious` list only means something if the model actually saw code: coverage "none"
+ * while there were version changes to diff is a review that did not happen (e.g. the
+ * model could not read the diff files), so it fails instead of passing silently.
+ */
+function codeReviewRule(assessment, diffsExpected) {
+  if (!assessment) return result('codeReview', 'pending', 'not assessed yet');
+  const review = assessment.codeReview;
+  if (!review) return result('codeReview', 'fail', 'assessment has no code review');
+  if (review.coverage === 'none' && diffsExpected) {
+    return result('codeReview', 'fail', 'the code review saw no code although version changes had diffs');
+  }
+  return unless(
+    'codeReview',
+    review.suspicious.map((s) => `${s.file}: ${s.finding}`),
+    'suspicious code',
+    `nothing suspicious (coverage: ${review.coverage})`,
+  );
+}
+
+/**
+ * Evaluate every gate rule against collected facts.
+ * @param {object} f - facts gathered by cli.mjs `collectFacts`
+ * @param {string} f.author - PR author login
+ * @param {string} f.branch - PR head branch
+ * @param {string[]} f.files - changed file paths
+ * @param {{name: string, type: string, from: string|null, to: string|null}[]} f.updates
+ * @param {boolean} f.manifestScoped - result of manifestChangeIsScoped
+ * @param {{name: string, status: string, conclusion: string|null}[]} f.checks - head SHA check runs
+ * @param {string|null} [f.headCommittedAt] - when the head commit was created (no-CI timeout)
+ * @param {{added: string[], newInstallScripts: string[],
+ *   changed: {name: string, from: string|null, to: string, installScript: boolean}[]}} f.lock
+ *   result of diffLockfiles
+ * @param {{name: string, version: string, direct: boolean, publishedAt: string|null,
+ *   prevAttested: boolean, attested: boolean, prevPublisher: string|null,
+ *   publisher: string|null}[]} f.registry - one per introduced version (direct and transitive)
+ * @param {string[]|null} f.newAdvisories - advisory ids present on head but not on main
+ *   (null = npm audit could not run)
+ * @param {string[]|null} f.malware - GitHub malware advisories for introduced versions
+ *   (null = feed unavailable)
+ * @param {boolean|null} f.mergeable - GitHub mergeability (null = still computing)
+ * @param {boolean} f.fresh - head contains main, or main has not touched package*.json since
+ * @param {'healthy'|'pending'|'broken'} f.main - main CI + deploy state
+ * @param {{verdict: string, injectionSuspected?: boolean,
+ *   codeReview?: {coverage: string, suspicious: {file: string, finding: string}[]}}|null} f.assessment
+ *   LLM assessment for this head
+ * @param {string|null} [f.cooldownWaitSince] - when the PR started waiting on young versions
+ * @param {number} [f.registryOverflow] - introduced versions, when over maxVerifiableVersions
+ * @param {Date} f.now - evaluation time
+ * @returns {{id: string, kind: string, status: 'pass'|'fail'|'pending', detail: string}[]}
+ */
+export function evaluateRules(f) {
+  const bumps = f.updates.map((u) => ({
+    ...u,
+    kind: u.from && u.to ? classifyBump(u.from, u.to) : 'major',
+  }));
+  const injected = Boolean(f.assessment?.injectionSuspected);
+  const targets = diffTargets(f);
+  const scripts = installScriptChanges(f.lock, f.registry);
+  // An npm registry outage leaves facts empty, not suspicious: rules that read them skip
+  // those entries, and the cooldown rule keeps the PR waiting until the registry answers.
+  const reachable = [];
+  const unreachable = [];
+  for (const r of f.registry) (r.registryError ? unreachable : reachable).push(r);
+
+  return [
+    authorRule(f),
+    f.registryOverflow
+      ? result(
+          'scale',
+          'fail',
+          `${f.registryOverflow} introduced versions, more than the ${LIMITS.maxVerifiableVersions} the agent can verify (provenance, publisher, cooldown)`,
+        )
+      : result('scale', 'pass', 'every introduced version was checked against the registry'),
+    unless(
+      'sources',
+      f.lock.foreignSources ?? [],
+      'not resolved from registry.npmjs.org',
+      'every introduced version resolves from registry.npmjs.org',
+    ),
+    result('ecosystem', TRI[f.branch.startsWith(NPM_BRANCH_PREFIX)], `branch ${f.branch}`),
+    result(
+      'injection',
+      TRI[!injected],
+      injected ? 'PR or changelog text tried to instruct the agent' : 'no instructions found',
+    ),
+    unless(
+      'files',
+      f.files.filter((p) => !LOCK_FILES.has(p)),
+      'unexpected files',
+      'package.json/lockfile only',
+    ),
+    f.updates.length
+      ? result(
+          'manifest',
+          TRI[f.manifestScoped],
+          f.manifestScoped
+            ? 'only declared version ranges changed'
+            : 'package.json changed beyond the declared updates',
+        )
+      : result('manifest', 'fail', 'no updated-dependencies metadata in the commit'),
+    checksRule(f.checks, f.headCommittedAt, f.now),
+    f.malware
+      ? unless('malware', f.malware, 'malware advisory', 'no malware advisory for any introduced version')
+      : result('malware', 'pending', 'malware feed unavailable, retrying next run'),
+    result(
+      'semver',
+      TRI[!bumps.some((u) => u.kind === 'major')],
+      bumps.map((u) => `${u.name} ${u.from ?? '?'}→${u.to ?? '?'} (${u.kind})`).join('; '),
+    ),
+    unless(
+      'installScripts',
+      scripts.offenders,
+      'install-time code',
+      scripts.trusted.length
+        ? `trusted install script unchanged, with provenance: ${scripts.trusted.join(', ')}`
+        : 'no install script added or updated',
+    ),
+    result(
+      'newPackages',
+      TRI[f.lock.added.length <= LIMITS.maxNewPackages],
+      `${f.lock.added.length} new package(s) in lockfile`,
+    ),
+    // An npm registry outage is its own transient rule, not a cooldown state: transient
+    // rules can never be waived, so a waived cooldown failure on one package cannot hide
+    // the fact that another package's install script and provenance were never checked.
+    unreachable.length
+      ? result('registry', 'pending', `npm registry unavailable for: ${unreachable.map(label).join(', ')}`)
+      : result('registry', 'pass', 'npm registry answered for every introduced version'),
+    cooldownRule(reachable, f.now, f.cooldownWaitSince),
+    unless(
+      'provenance',
+      reachable.flatMap((r) => {
+        if (repoChanged(r)) return [`${label(r)} (source repo ${r.prevRepo} → ${r.repo})`];
+        return r.prevAttested && !r.attested ? [`${label(r)} (provenance dropped)`] : [];
+      }),
+      'provenance regression',
+      'no provenance drop or source-repo change in any introduced version',
+    ),
+    // Direct packages only: maintainer rotation in transitive packages is common enough
+    // that it would escalate most bumps; transitive versions get cooldown, provenance,
+    // malware and (within budget) the code review instead.
+    unless(
+      'publisher',
+      reachable
+        .filter((r) => r.direct && (!r.publisher || (r.prevPublisher && r.publisher !== r.prevPublisher)))
+        .map((r) => `${r.name} (${r.prevPublisher ?? '?'} → ${r.publisher ?? '?'})`),
+      'publisher changed',
+      'same npm publisher as the previous version',
+    ),
+    // A failed audit run is an outage, not a finding: it waits like the registry and the
+    // malware feed, so it can neither ping the owner over a network hiccup nor be waived.
+    f.newAdvisories
+      ? unless('audit', f.newAdvisories, 'new advisories', 'no new advisories')
+      : result('audit', 'pending', 'npm audit could not run, retrying next run'),
+    codeReviewRule(f.assessment, targets.direct.length + targets.transitive.length > 0),
+    f.assessment
+      ? result('verdict', TRI[f.assessment.verdict === 'merge'], verdictDetail(f.assessment))
+      : result('verdict', 'pending', 'not assessed yet'),
+    result(
+      'mergeable',
+      TRI[f.mergeable] ?? 'pending',
+      f.mergeable === false ? 'merge conflict (waiting for a rebase)' : `mergeable: ${f.mergeable}`,
+    ),
+    result(
+      'fresh',
+      TRI[f.fresh],
+      f.fresh ? 'dependency state matches main' : 'main changed package*.json since this PR was built',
+    ),
+    result('mainHealthy', TRI[f.main === 'healthy'], `main is ${f.main}`),
+  ];
+}
+
+/**
+ * Turn rule results into one outcome.
+ * @param {object} p
+ * @param {{kind: string, status: string}[]} p.rules - from evaluateRules
+ * @param {'off'|'shadow'|'merge'} p.mode - DEPS_AGENT_MODE
+ * @param {Map<string, string>} [p.waived] - soft rules the owner's `/deps merge` waived for
+ *   this exact lockfile, each with the waiverKey() it failed with at the time. A rule is skipped
+ *   only while it still fails with that same detail: a rule that starts failing later, or
+ *   fails for a different reason (e.g. a re-assessment that finds suspicious code), or is
+ *   merely pending (not assessed yet), is not covered
+ * @param {boolean} p.slotFree - no merge has happened yet in this run
+ * @returns {'escalate'|'wait'|'would-merge'|'queued'|'merge'} the outcome (held PRs never reach it)
+ */
+export function decide({ rules, mode, waived = new Map(), slotFree }) {
+  const isWaived = (r) => r.kind === 'soft' && r.status === 'fail' && waived.get(r.id) === waiverKey(r);
+  if (rules.some((r) => r.kind === 'hard' && r.status === 'fail')) return 'escalate';
+  if (rules.some((r) => r.kind === 'soft' && r.status === 'fail' && !isWaived(r))) return 'escalate';
+  const blocking = rules.filter((r) => r.status !== 'pass' && !isWaived(r));
+  if (blocking.length) return 'wait';
+  if (mode !== 'merge') return 'would-merge';
+  return slotFree ? 'merge' : 'queued';
+}
+
+/**
+ * Keep the latest run per check name (re-runs create new check runs on the same SHA).
+ * @param {{id: number, name: string, status: string, conclusion: string|null,
+ *   completed_at?: string|null}[]} runs
+ * @returns {{name: string, status: string, conclusion: string|null, completedAt: string|null}[]}
+ *   one entry per name
+ */
+export function latestCheckRuns(runs) {
+  const byName = new Map();
+  for (const r of [...runs].sort((a, b) => a.id - b.id)) {
+    byName.set(r.name, { name: r.name, status: r.status, conclusion: r.conclusion, completedAt: r.completed_at ?? null });
+  }
+  return [...byName.values()];
+}
+
+/**
+ * A cancelled run on main proves nothing either way: merges wait for a re-run, and main
+ * only counts as broken (issue, ping, revert of a deps-agent merge) a day later.
+ */
+function interruptedOnMain(what, run, now) {
+  return cancelledWaitExpired(run.updated_at, now)
+    ? { state: 'broken', detail: `${what} on main was cancelled and not re-run within ${CANCELLED_WAIT_HOURS} h` }
+    : { state: 'pending', detail: `${what} on main was cancelled, waiting for a re-run` };
+}
+
+/**
+ * Classify main from its latest push CI run and the Deploy run that CI triggered.
+ * A missing Deploy run 30 minutes after CI finished counts as broken, so a disabled or
+ * stuck deploy pipeline escalates instead of freezing merges silently.
+ * @param {{status: string, conclusion: string|null, updated_at: string}|null} ci
+ * @param {{status: string, conclusion: string|null}|null} deploy
+ * @param {Date} now - evaluation time
+ * @param {string|null} [pushedAt] - when main's head commit was created
+ * @returns {{state: 'healthy'|'pending'|'broken', detail: string}} main's state
+ */
+export function classifyMain(ci, deploy, now, pushedAt = null) {
+  // A push with no CI run at all (e.g. [skip ci]) would otherwise freeze merges silently.
+  if (!ci) {
+    const stale = pushedAt && now.getTime() - new Date(pushedAt).getTime() > MAIN_STALE_MS;
+    return stale
+      ? { state: 'broken', detail: 'no CI run on main 30 min after the push' }
+      : { state: 'pending', detail: 'waiting for CI on main to start' };
+  }
+  if (ci.status !== 'completed') return { state: 'pending', detail: 'CI on main is running' };
+  if (INTERRUPTED.includes(ci.conclusion)) return interruptedOnMain('CI', ci, now);
+  if (ci.conclusion !== 'success') return { state: 'broken', detail: `CI on main: ${ci.conclusion}` };
+  if (!deploy) {
+    const stale = now.getTime() - new Date(ci.updated_at).getTime() > MAIN_STALE_MS;
+    return stale
+      ? { state: 'broken', detail: 'no Deploy run 30 min after CI succeeded' }
+      : { state: 'pending', detail: 'waiting for Deploy to start' };
+  }
+  if (deploy.status !== 'completed') return { state: 'pending', detail: 'Deploy is running' };
+  if (INTERRUPTED.includes(deploy.conclusion)) return interruptedOnMain('Deploy', deploy, now);
+  return ['success', 'skipped'].includes(deploy.conclusion)
+    ? { state: 'healthy', detail: `CI green, Deploy ${deploy.conclusion}` }
+    : { state: 'broken', detail: `Deploy: ${deploy.conclusion}` };
+}
+
+/**
+ * Advisory identifiers in an `npm audit --json` report.
+ * @param {{vulnerabilities?: Record<string, {via: unknown[]}>}} report
+ * @returns {string[]} sorted unique advisory URLs (or source ids when no URL)
+ */
+export function advisoryKeys(report) {
+  const keys = new Set();
+  for (const v of Object.values(report.vulnerabilities ?? {})) {
+    for (const via of v.via) {
+      if (via && typeof via === 'object') keys.add(String(via.url ?? via.source));
+    }
+  }
+  return [...keys].sort();
+}

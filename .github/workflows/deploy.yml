@@ -67,8 +67,24 @@ jobs:
           username: ubuntu
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           script: |
+            set -e
             echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
             cd /opt/gleanary
             docker compose pull
             docker compose up -d --remove-orphans
-            docker image prune -f
+            # Fail the run if the new container never turns healthy: deps-agent reads a
+            # failed Deploy as "main is broken" and freezes merges. Old images are only
+            # pruned once healthy, so after a failed deploy the previous image is still on
+            # the server for a manual rollback (a successful deploy prunes it).
+            # The check runs inside the container: the server's compose file does not
+            # publish port 3000 on the host (Caddy reaches the app over the Docker network).
+            for i in $(seq 1 30); do
+              if docker compose exec -T app node -e "fetch('http://127.0.0.1:3000/api/health').then((r) => process.exit(r.ok ? 0 : 1), () => process.exit(1))"; then
+                docker image prune -f
+                exit 0
+              fi
+              sleep 2
+            done
+            echo "health check failed after 60s"
+            docker compose ps
+            exit 1

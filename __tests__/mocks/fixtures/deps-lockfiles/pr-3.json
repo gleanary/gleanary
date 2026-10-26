@@ -1,0 +1,37 @@
+{
+  "pr": 3,
+  "title": "build(deps-dev): bump @testing-library/react from 16.3.2 to 16.3.3",
+  "declared": [
+    {
+      "name": "@testing-library/react",
+      "type": "direct:development",
+      "version": "16.3.3"
+    }
+  ],
+  "base": {
+    "packages": {
+      "node_modules/@testing-library/react": {
+        "version": "16.3.2",
+        "resolved": "https://registry.npmjs.org/@testing-library/react/-/react-16.3.2.tgz",
+        "integrity": "sha512-XU5/SytQM+ykqMnAnvB2umaJNIOsLF3PVv//1Ew4CTcpz0/BRyy/af40qqrt7SjKpDdT1saBMc42CUok5gaw+g==",
+        "dev": true
+      }
+    }
+  },
+  "head": {
+    "packages": {
+      "node_modules/@testing-library/react": {
+        "version": "16.3.3",
+        "resolved": "https://registry.npmjs.org/@testing-library/react/-/react-16.3.3.tgz",
+        "integrity": "sha512-Uo193NgQbPMz6lrrhtRQQFcMC6Re/ELLFbbuVL30WDlZxlpZf9/lMHTAVxPRLw1q1iu9OJmR1c2BLiENRstdBg==",
+        "dev": true
+      }
+    }
+  },
+  "expected": {
+    "introduced": ["@testing-library/react 16.3.2→16.3.3"],
+    "added": [],
+    "newInstallScripts": [],
+    "foreignSources": []
+  }
+}

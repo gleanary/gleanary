@@ -658,6 +658,7 @@ App updates (CI/CD — automatic):
   1. Push to main of gleanary/gleanary
   2. CI green → deploy.yml builds the image → pushes ghcr.io/gleanary/gleanary:latest
   3. SSH into server (production environment secrets) → docker compose pull && docker compose up -d
+  4. Poll /api/health from inside the app container for 60s → prune old images if healthy, else fail the run
 
 App updates (manual):
   1. ssh ubuntu@<server-ip>
@@ -683,9 +684,9 @@ Backup restore:
 
 ### 9.1 Pipeline Design
 
-The CI/CD pipeline is intentionally simple — fast feedback, automated deploy, no bureaucratic gates. Quality is enforced at development time by Claude Code's workflow, not by CI blocking merges.
+The CI/CD pipeline is intentionally simple — fast feedback, automated deploy, no bureaucratic gates. Quality is enforced at development time by Claude Code's workflow, not by CI blocking merges. The one exception is unattended dependency merges (§9.5): nobody reviews those at development time, so a deterministic gate stands in.
 
-Two workflows:
+Two workflows on the code path, plus the dependency agent (§9.5):
 
 ```
 PR / push (any branch → main)          Push/merge to main
@@ -716,21 +717,41 @@ The four CI jobs run in parallel (E2E does not wait for the others); deploy is a
   - **Real-auth mode**: the Playwright config derives `SETTINGS_AUTH_HASH` from `E2E_AUTH_PASSWORD` (plus a fixed `SETTINGS_ENCRYPTION_KEY`) for the spawned server, so the whole suite runs against the built-in auth gate, including the login journey.
   - Playwright browsers are cached (`actions/cache` keyed on `package-lock.json`); the HTML report and traces upload as artifacts whenever the run isn't cancelled.
 
-**`deploy.yml`** — a separate, owner-specific workflow triggered by `workflow_run` when CI completes successfully on `main`. It runs only when the repository variable `DEPLOY_ENABLED == 'true'` (forks never set it) **and** the CI run was a `push` from this repository (`workflow_run.event == 'push'` and `head_repository == github.repository`), so a fork PR whose branch is named `main` cannot trigger it. The job uses the `production` environment (deployable from `main` only), checks out exactly the commit CI tested (`workflow_run.head_sha`), never runs two deploys at once (`concurrency: deploy-production`) and times out after 20 minutes. Steps: Docker build → push `ghcr.io/<repo>:latest` → SSH to the server as `ubuntu` → `docker compose pull && up -d`. Deploy logs are public on the public repo; secrets are masked.
+**`deploy.yml`** — a separate, owner-specific workflow triggered by `workflow_run` when CI completes successfully on `main`. It runs only when the repository variable `DEPLOY_ENABLED == 'true'` (forks never set it) **and** the CI run was a `push` from this repository (`workflow_run.event == 'push'` and `head_repository == github.repository`), so a fork PR whose branch is named `main` cannot trigger it. The job uses the `production` environment (deployable from `main` only), checks out exactly the commit CI tested (`workflow_run.head_sha`), never runs two deploys at once (`concurrency: deploy-production`) and times out after 20 minutes. Steps: Docker build → push `ghcr.io/<repo>:latest` → SSH to the server as `ubuntu` → `docker compose pull && up -d` → poll `/api/health` (unauthenticated) for up to 60 s. A container that never turns healthy fails the run, and old images are pruned only after a healthy check, so the previous image stays available for a manual rollback. Deploy logs are public on the public repo; secrets are masked.
+
+**`deps-agent.yml`**: the unattended Dependabot babysitter, see §9.5.
 
 ### 9.3 Required GitHub Secrets & Variables
 
-| Name              | Kind                             | Source / purpose                                                             |
-| ----------------- | -------------------------------- | ---------------------------------------------------------------------------- |
-| `SERVER_IP`       | secret, `production` environment | `tofu output server_ip`                                                      |
-| `SSH_PRIVATE_KEY` | secret, `production` environment | Dedicated deploy key whose public half is in `authorized_keys` on the server |
-| `DEPLOY_ENABLED`  | repository variable              | `'true'` enables deploy.yml (unset on forks)                                 |
+| Name                                       | Kind                             | Source / purpose                                                                     |
+| ------------------------------------------ | -------------------------------- | ------------------------------------------------------------------------------------ |
+| `SERVER_IP`                                | secret, `production` environment | `tofu output server_ip`                                                              |
+| `SSH_PRIVATE_KEY`                          | secret, `production` environment | Dedicated deploy key whose public half is in `authorized_keys` on the server         |
+| `DEPLOY_ENABLED`                           | repository variable              | `'true'` enables deploy.yml (unset on forks)                                         |
+| `ANTHROPIC_API_KEY`                        | repository secret                | deps-agent assessment; a dedicated key with its own spend limit                      |
+| `DEPS_AGENT_APP_KEY`                       | repository secret                | Private key of the deps-agent GitHub App                                             |
+| `DEPS_AGENT_APP_ID`, `DEPS_AGENT_APP_SLUG` | repository variables             | Identify the deps-agent GitHub App (the slug also authenticates its record comments) |
+| `DEPS_AGENT_OWNER`                         | repository variable              | The only login whose `/deps` commands are obeyed and who is pinged on escalations    |
+| `DEPS_AGENT_MODE`                          | repository variable              | `off` · `shadow` (default: records and escalations, no merges) · `merge`             |
+| `DEPS_AGENT_MODEL`                         | repository variable (optional)   | Assessment model; defaults to `claude-opus-5-5`                                      |
 
 The `production` environment only allows deployments from `main`. `GITHUB_TOKEN` is provided automatically and has `packages:write` for GHCR. The E2E env values (`E2E_AUTH_PASSWORD`, `SETTINGS_ENCRYPTION_KEY`) are non-secret CI-only fixtures defined inline in `ci.yml`.
 
 ### 9.4 Package Scripts
 
 See `package.json` for the authoritative list. The CI-relevant ones: `lint` (ESLint + Prettier check), `typecheck`, `test` (Vitest unit + integration), `test:coverage` (same, plus v8 coverage with enforced thresholds), `build`. `predev`/`prestart` run `scripts/migrate.mjs` automatically before the dev/prod server starts.
+
+### 9.5 Dependency Updates (deps-agent)
+
+Dependabot opens weekly npm and GitHub Actions PRs (7-day release cooldown, dev patch/minor bumps grouped, production bumps one per PR). `deps-agent.yml` merges the safe ones to `main`, and therefore to production, every 3 h. It is split by trust:
+
+- **Read-only jobs** pick PRs and have Claude assess each changelog against our code. They check out `main`, never the PR head, and output a schema-validated `merge`/`escalate` verdict.
+- **Supply-chain checks** include the GitHub malware feed for every introduced version and Claude's review of the published code diff (`npm diff`, size-capped).
+- **A deterministic gate** (`.github/deps-agent/gate.mjs`, no LLM) is the only holder of a write token, a GitHub App token. It merges at most one PR per run, and only while main's CI, Deploy and health check are green.
+- **The owner** is pinged on anything needing judgment and answers with `/deps` PR comments.
+- **Decisions** are recorded in a sticky comment on each PR and in a dashboard issue. The agent never commits to `main`.
+
+**Process, sequence diagrams and runbooks:** [`docs/deps/README.md`](deps/README.md) · **rules:** [`.github/deps-agent/policy.md`](../.github/deps-agent/policy.md) · **rationale:** [ADR-010](adrs/ADR-010-unattended-dependency-merges.md).
 
 ## 10. Observability
 

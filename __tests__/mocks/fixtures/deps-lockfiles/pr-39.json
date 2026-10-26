@@ -1,0 +1,35 @@
+{
+  "pr": 39,
+  "title": "chore(deps): bump drizzle-orm from 0.45.2 to 0.45.4",
+  "declared": [
+    {
+      "name": "drizzle-orm",
+      "type": "direct:production",
+      "version": "0.45.4"
+    }
+  ],
+  "base": {
+    "packages": {
+      "node_modules/drizzle-orm": {
+        "version": "0.45.2",
+        "resolved": "https://registry.npmjs.org/drizzle-orm/-/drizzle-orm-0.45.2.tgz",
+        "integrity": "sha512-kY0BSaTNYWnoDMVoyY8uxmyHjpJW1geOmBMdSSicKo9CIIWkSxMIj2rkeSR51b8KAPB7m+qysjuHme5nKP+E5Q=="
+      }
+    }
+  },
+  "head": {
+    "packages": {
+      "node_modules/drizzle-orm": {
+        "version": "0.45.4",
+        "resolved": "https://registry.npmjs.org/drizzle-orm/-/drizzle-orm-0.45.4.tgz",
+        "integrity": "sha512-NiM1YZpJ2UxyeE67DpDDZ+Tsw4YLX3trSlkNT7Tm9eKoUNb1LvaAaQzXgYQsWs+AQ9TUmmwMmBOCXuqqxUWKKQ=="
+      }
+    }
+  },
+  "expected": {
+    "introduced": ["drizzle-orm 0.45.2→0.45.4"],
+    "added": [],
+    "newInstallScripts": [],
+    "foreignSources": []
+  }
+}
