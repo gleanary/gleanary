@@ -107,7 +107,9 @@ PR locally ONLY when all of these hold for its current head commit:
    - every updated version is at least 7 days old (`npm view <pkg> time --json`);
    - no malware advisory: `gh api -X GET /advisories -f type=malware -f ecosystem=npm -f affects=<pkg>@<version>`
      returns `[]` for each updated version;
-   - the lockfile diff adds no `"hasInstallScript": true` entry.
+   - no lockfile entry that is added or changes version has `"hasInstallScript": true`
+     (check the entry in the new lockfile, not just the diff: a version bump of a package
+     that already runs a script leaves that line unchanged).
 2. You install with `--ignore-scripts`, as above.
 
 If any check fails, do NOT check out. Escalate to the user with the proposed fix as a patch
