@@ -45,7 +45,7 @@ PR declares (direct) **and** the dependency versions that change with them (tran
 | verdict        | soft      | the assessment says `merge`                                                     |
 | mergeable      | transient | no conflict (Dependabot rebases on its own)                                     |
 | fresh          | transient | main has not changed `package*.json` since the PR was built                     |
-| registry       | transient | the npm registry answered for every introduced version. During an outage (timeout, 5xx) the PR **waits**, and the registry-based rules (cooldown, provenance, publisher, install scripts) skip what they could not check. Transient, so no override can waive it |
+| registry       | transient | the npm registry answered for every introduced version. During an outage (timeout, 5xx) the PR **waits**, and the registry-based rules (cooldown, provenance, publisher, install scripts) skip what they could not check; after 48 h of waiting the owner is pinged. Transient, so no override can waive it |
 | mainHealthy    | transient | main's latest CI and Deploy succeeded                                           |
 
 A failing **hard** or **soft** rule escalates. A failing **transient** rule waits for the

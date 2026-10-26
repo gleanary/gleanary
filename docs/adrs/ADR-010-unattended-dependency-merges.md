@@ -271,6 +271,12 @@ review, so it is not the preferred lever.
 - Pings are deduplicated on each failing rule's id and reason, and an "escalate" verdict
   carries a fingerprint of the model's reasons: a waived rule that fails again for a new
   reason, including a re-assessment that escalates for something else, pings the owner
-  again instead of sitting silently under the old override.
+  again instead of sitting silently under the old override. Transient rules (main busy,
+  branch behind, conflict) are left out of that key: they flip on their own, and an early
+  version re-pinged the owner about the same escalation each time main's CI ran or a sibling
+  merged.
+- Rules that only ever wait get a clock, so nothing waits silently forever: young transitive
+  versions ping after 14 days, an npm registry outage after 48 hours, an unanswered
+  `@dependabot rebase` after 24 hours.
 - Requires a GitHub App, an Anthropic API key (with its own spend limit), and repository
   variables; see `docs/deps/README.md`.

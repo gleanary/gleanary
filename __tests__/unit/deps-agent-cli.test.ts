@@ -445,6 +445,33 @@ describe('npm registry failures', () => {
     const { outcome } = await evaluate();
     expect(outcome).toBe('escalate');
   });
+
+  it('pings the owner once an outage on this PR has lasted 48 hours', async () => {
+    state.registryStatus = 503;
+    expect((await evaluate()).outcome).toBe('wait');
+    cli.clearRunCaches(); // a later run is a fresh process
+    const later = new Date(NOW.getTime() + 49 * 3_600_000);
+    const { outcome } = await cli.evaluatePr(PR, { main: healthy, now: later, slotFree: true });
+    expect(outcome).toBe('escalate');
+    expect(pings()).toHaveLength(1);
+    expect(pings()[0]?.body).toContain('npm registry');
+  });
+});
+
+describe('ping deduplication', () => {
+  const escalate = (main = healthy) =>
+    cli.evaluatePr(PR, { main, now: NOW, assessment: assessed('escalate'), slotFree: true });
+
+  it('does not ping again when only transient state changes (main busy, branch behind)', async () => {
+    await escalate();
+    expect(pings()).toHaveLength(1);
+    state.fresh = false; // another PR merged: this one is behind until Dependabot rebases
+    await escalate();
+    state.fresh = true;
+    await escalate();
+    await escalate({ sha: 'main1', state: 'pending', detail: 'CI on main is running' });
+    expect(pings()).toHaveLength(1);
+  });
 });
 
 describe('cooldown wait', () => {

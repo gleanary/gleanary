@@ -85,6 +85,8 @@ const REGISTRY_MAX_PACKAGES = 300;
 const REBASE_STUCK_HOURS = 24;
 // Days a PR may wait on young transitive versions before the owner is asked.
 const COOLDOWN_WAIT_ESCALATE_DAYS = 14;
+// Hours a PR may wait on an npm registry that does not answer for one of its versions.
+const REGISTRY_WAIT_ESCALATE_HOURS = 48;
 
 // ── GitHub / registry I/O ────────────────────────────────────────────────────
 
@@ -473,21 +475,32 @@ async function evaluatePr(number, { main, now, assessment, slotFree, by = 'agent
   // Our `@dependabot rebase` may be ignored (Dependabot might not take commands from an
   // App): after REBASE_STUCK_HOURS on the same commit, hand it to the owner.
   const needsRebase = !facts.fresh || facts.mergeable === false;
+  const waitedLonger = (since, ms) => now.getTime() - new Date(since).getTime() > ms;
   const stuck =
     outcome === 'wait' &&
     needsRebase &&
     record.rebaseSha === meta.headSha &&
-    now.getTime() - new Date(record.rebaseAt ?? now).getTime() > REBASE_STUCK_HOURS * 3_600_000;
+    waitedLonger(record.rebaseAt ?? now, REBASE_STUCK_HOURS * 3_600_000);
   // A young transitive version only ever makes the PR wait. If every Dependabot rebase pulls
   // in an even newer version of a fast-moving dependency, it would wait forever, visible
   // only on the dashboard. The clock lives in the record, so it survives rebases.
   const coolingDown = rules.find((r) => r.id === 'cooldown' && r.status === 'pending');
-  if (!coolingDown) delete record.cooldownWaitSince;
-  else record.cooldownWaitSince ??= now.toISOString();
+  // The registry outage rule has the same blind spot (it only ever waits), so it gets the
+  // same kind of clock. While the registry is down, the cooldown rule only sees reachable
+  // versions, so its clock is left alone rather than reset.
+  const registryDown = rules.find((r) => r.id === 'registry' && r.status === 'pending');
+  if (coolingDown) record.cooldownWaitSince ??= now.toISOString();
+  else if (!registryDown) delete record.cooldownWaitSince;
+  if (registryDown) record.registryWaitSince ??= now.toISOString();
+  else delete record.registryWaitSince;
   const coolingTooLong =
     outcome === 'wait' &&
     coolingDown &&
-    now.getTime() - new Date(record.cooldownWaitSince).getTime() > COOLDOWN_WAIT_ESCALATE_DAYS * 86_400_000;
+    waitedLonger(record.cooldownWaitSince, COOLDOWN_WAIT_ESCALATE_DAYS * 86_400_000);
+  const registryTooLong =
+    outcome === 'wait' &&
+    registryDown &&
+    waitedLonger(record.registryWaitSince, REGISTRY_WAIT_ESCALATE_HOURS * 3_600_000);
   let why = '';
   if (stuck) {
     outcome = 'escalate';
@@ -495,6 +508,9 @@ async function evaluatePr(number, { main, now, assessment, slotFree, by = 'agent
   } else if (coolingTooLong) {
     outcome = 'escalate';
     why = `This PR has waited ${COOLDOWN_WAIT_ESCALATE_DAYS} days for dependency versions to age (${coolingDown.detail}); a fast-moving dependency may keep resetting the clock. \`/deps merge\` to take it as is, or \`/deps hold\`.`;
+  } else if (registryTooLong) {
+    outcome = 'escalate';
+    why = `The npm registry has not answered for ${REGISTRY_WAIT_ESCALATE_HOURS} h (${registryDown.detail}), so those versions' provenance, publisher and install scripts are still unchecked. Check the package on npm, then \`/deps recheck\` or \`/deps hold\`.`;
   } else if (outcome === 'escalate' && overrideStale) {
     why = 'Your earlier `/deps merge` covered a different lockfile: a rebase brought in different dependency versions, so it no longer applies. Review this state and reply `/deps merge` again if it is fine.';
   }
@@ -520,11 +536,13 @@ async function evaluatePr(number, { main, now, assessment, slotFree, by = 'agent
   pushHistory(record, { at: now.toISOString(), sha: meta.headSha, outcome, by, ...(note ? { note } : {}) });
 
   // Ping once per reason: a rebase with the same versions and the same failing gates stays quiet.
-  // Each failing rule with its reason (hashed to keep the key short): a waived rule that
-  // fails again for a new reason is a new escalation and pings, not a repeat of the old one.
+  // Each failing hard/soft rule with its reason (hashed to keep the key short): a waived rule
+  // that fails again for a new reason is a new escalation and pings. Transient rules (main
+  // busy, branch behind, conflict) describe the world, not the PR: they flip on their own
+  // and must not re-ping the owner about the same problem.
   const failing = shortHash(
     rules
-      .filter((r) => r.status === 'fail')
+      .filter((r) => r.status === 'fail' && r.kind !== 'transient')
       .map((r) => `${r.id}:${r.detail}`)
       .join('\n'),
   );
@@ -533,6 +551,7 @@ async function evaluatePr(number, { main, now, assessment, slotFree, by = 'agent
     failing,
     stuck && 'rebase-stuck',
     coolingTooLong && 'cooldown-wait',
+    registryTooLong && 'registry-wait',
     overrideStale && 'override-stale',
   ]
     .filter(Boolean)
