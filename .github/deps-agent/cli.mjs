@@ -32,6 +32,7 @@ import {
   decide,
   diffLockfiles,
   diffTargets,
+  escalationFingerprint,
   lockFingerprint,
   OUTCOME_FIXED_BY,
   waiverKey,
@@ -96,6 +97,8 @@ const OUTAGE_WAIT_ESCALATE_HOURS = 48;
 const OUTAGE_RULES = new Set(['registry', 'malware', 'audit']);
 // Hours without any outage before the outage clock resets (a flapping source keeps it).
 const OUTAGE_RESET_HOURS = 24;
+// GitHub truncates a compare's file list here (unrelated to LIMITS.maxVerifiableVersions).
+const COMPARE_FILE_CAP = 300;
 
 // ── GitHub / registry I/O ────────────────────────────────────────────────────
 
@@ -168,17 +171,17 @@ const packument = (name) => {
  * Publish time, provenance and publisher for every introduced version, direct or
  * transitive. A failed lookup leaves nulls, which the gate escalates.
  * @param {{name: string, from: string|null, to: string}[]} changes - lock.changed
- * @param {Set<string>} direct - names of the packages the PR declares
+ * @param {Map<string, string>} directTo - declared package name -> its declared version
  * @returns {Promise<object[]>} one registry fact per change
  */
-async function registryFacts(changes, direct) {
+async function registryFacts(changes, directTo) {
   const facts = new Array(changes.length);
   let next = 0;
   const worker = async () => {
     while (next < changes.length) {
       const i = next++;
       const { name, from, to } = changes[i];
-      facts[i] = registryFact({ name, from, to, direct: direct.has(name), doc: await packument(name) });
+      facts[i] = registryFact({ name, from, to, direct: directTo.get(name) === to, doc: await packument(name) });
     }
   };
   await Promise.all(Array.from({ length: REGISTRY_CONCURRENCY }, worker));
@@ -303,7 +306,7 @@ const lockAt = (sha) => {
   if (!lockCache.has(sha)) lockCache.set(sha, rawFile('package-lock.json', sha));
   return lockCache.get(sha);
 };
-const NO_LOCK_CHANGES = { added: [], newInstallScripts: [], changed: [] };
+const NO_LOCK_CHANGES = { added: [], newInstallScripts: [], changed: [], foreignSources: [] };
 /**
  * The lockfile diff of a Dependabot PR, from its own base: empty for non-npm PRs and PRs
  * without updated-dependencies metadata. plan, assess and act all use this one function,
@@ -353,8 +356,10 @@ async function collectFacts(pr, main, now) {
   const declared = parseUpdatedDependencies(commit.message);
   const checks = checkRunsFor(pr.head.sha);
   const compare = api(`repos/${REPO}/compare/${pr.head.sha}...${main.sha}`);
+  const mainFiles = compare.files ?? [];
   const fresh =
-    compare.ahead_by === 0 || !(compare.files ?? []).some((f) => LOCK_FILES.has(f.filename));
+    compare.ahead_by === 0 ||
+    (mainFiles.length < COMPARE_FILE_CAP && !mainFiles.some((f) => LOCK_FILES.has(f.filename)));
 
   const facts = {
     author: pr.user.login,
@@ -397,7 +402,7 @@ async function collectFacts(pr, main, now) {
     // rules passing on facts that were never collected.
     facts.registryOverflow = facts.lock.changed.length;
   } else {
-    facts.registry = await registryFacts(facts.lock.changed, new Set(declared.map((u) => u.name)));
+    facts.registry = await registryFacts(facts.lock.changed, new Map(facts.updates.map((u) => [u.name, u.to])));
   }
   try {
     if (before instanceof Error) throw before;
@@ -453,11 +458,12 @@ function merge(meta) {
  * Evaluate one PR end to end and persist the result.
  * @param {number} number - PR number
  * @param {{main: {sha: string, state: string, detail?: string}, now: Date,
- *   assessment?: {key: string, assessment: object}, slotFree: boolean, by?: string,
+ *   assessment?: {key: string, assessment: object, assessedAt?: string}, slot: {free: boolean},
+ *   by?: string,
  *   note?: string}} opts - run context; `assessment` is this run's fresh assessment, if any
  * @returns {Promise<{outcome: string, record: {outcome?: string, rules: object[]}, meta: object}>}
  */
-async function evaluatePr(number, { main, now, assessment, slotFree, by = 'agent', note }) {
+async function evaluatePr(number, { main, now, assessment, slot, by = 'agent', note }) {
   const comments = prComments(number);
   const { comment: existing, record: prior } = findRecord(number, comments);
   const record = prior ?? { pr: number };
@@ -466,7 +472,14 @@ async function evaluatePr(number, { main, now, assessment, slotFree, by = 'agent
   const pr = api(`repos/${REPO}/pulls/${number}`);
   if (pr.labels.some((l) => l.name === LABEL.hold)) {
     const meta = metaOf(pr);
-    Object.assign(record, { headSha: meta.headSha, outcome: 'held', rules: record.rules ?? [], updatedAt: now.toISOString() });
+    // headSha is left alone: it names the commit the stored rules were evaluated on, which
+    // /deps merge checks against ("has the PR changed since you saw it?").
+    Object.assign(record, {
+      headSha: record.headSha ?? meta.headSha, // only set if this PR was never evaluated
+      outcome: 'held',
+      rules: record.rules ?? [],
+      updatedAt: now.toISOString(),
+    });
     pushHistory(record, { at: now.toISOString(), sha: meta.headSha, outcome: 'held', by });
     setLabel(number, LABEL.escalated, false, meta.labels);
     saveRecord(number, existing, record);
@@ -483,7 +496,9 @@ async function evaluatePr(number, { main, now, assessment, slotFree, by = 'agent
   if (assessment && assessment.key === key) {
     record.assessment = assessment.assessment;
     record.assessmentKey = key;
-    record.assessedAt = now.toISOString(); // a pending /deps recheck is now satisfied
+    // When the assessment was MADE (carried in the artifact): one made before a /deps recheck
+    // must not mark that recheck done.
+    record.assessedAt = assessment.assessedAt ?? now.toISOString();
   }
   const current = record.assessmentKey === key ? record.assessment : null;
   // An assessment made for another state is kept (it may match again) but never shown as live.
@@ -524,7 +539,7 @@ async function evaluatePr(number, { main, now, assessment, slotFree, by = 'agent
     rules,
     mode: mode(),
     waived: new Map((override?.waive ?? []).map((w) => [w.id, w.key])),
-    slotFree,
+    slotFree: slot.free,
   });
 
   // Our `@dependabot rebase` may be ignored (Dependabot might not take commands from an
@@ -555,6 +570,9 @@ async function evaluatePr(number, { main, now, assessment, slotFree, by = 'agent
   if (outcome === 'merge') {
     try {
       merge(meta);
+      // Mark the run's merge slot used right away: if anything below throws, the caller's
+      // error path must still not let a second PR merge in this run.
+      slot.free = false;
     } catch (err) {
       outcome = 'wait';
       note = `merge refused by GitHub: ${err.message.slice(0, 200)}`;
@@ -574,16 +592,8 @@ async function evaluatePr(number, { main, now, assessment, slotFree, by = 'agent
   });
   pushHistory(record, { at: now.toISOString(), sha: meta.headSha, outcome, by, ...(note ? { note } : {}) });
 
-  // Ping once per reason. Each failing hard/soft rule with its reason (hashed to keep the key
-  // short): a waived rule that fails again for a new reason is a new escalation and pings.
-  // Transient rules (main busy, branch behind, conflict) describe the world, not the PR: they
-  // flip on their own and must not re-ping the owner about the same problem.
-  const failing = shortHash(
-    rules
-      .filter((r) => r.status === 'fail' && r.kind !== 'transient')
-      .map((r) => `${r.id}:${r.detail}`)
-      .join('\n'),
-  );
+  // Ping once per reason: what counts as the same escalation is escalationFingerprint's call.
+  const failing = escalationFingerprint(rules);
   const escalation = [approved, failing, stuck && 'rebase-stuck', outageTooLong && 'outage-wait', overrideStale && 'override-stale']
     .filter(Boolean)
     .join('|');
@@ -785,11 +795,12 @@ const commands = {
     const { meta, facts: f } = JSON.parse(readFileSync(facts, 'utf8'));
     const diffIndex = readFileSync(join(diffs, 'index.json'), 'utf8');
     const prompt = readFileSync(join(HERE, 'prompt.md'), 'utf8')
-      .replaceAll('{{REPO}}', REPO)
-      .replaceAll('{{PR}}', String(pr))
-      .replaceAll('{{POLICY}}', readFileSync(join(HERE, 'policy.md'), 'utf8'))
-      .replaceAll('{{FACTS}}', JSON.stringify({ title: meta.title, headSha: meta.headSha, ...f, now: undefined }, null, 2))
-      .replaceAll('{{DIFFS}}', diffIndex);
+      // Functions, not strings: a string replacement interprets $&, $' and $$ in the value.
+      .replaceAll('{{REPO}}', () => REPO)
+      .replaceAll('{{PR}}', () => String(pr))
+      .replaceAll('{{POLICY}}', () => readFileSync(join(HERE, 'policy.md'), 'utf8'))
+      .replaceAll('{{FACTS}}', () => JSON.stringify({ title: meta.title, headSha: meta.headSha, ...f, now: undefined }, null, 2))
+      .replaceAll('{{DIFFS}}', () => diffIndex);
     output('prompt', prompt);
     output(
       'claude_args',
@@ -817,7 +828,11 @@ const commands = {
       throw new Error(`PR #${pr}: invalid assessment output`);
     }
     const key = keyFor(f.updates, f.checks, f.lock.changed);
-    writeFileSync(out, JSON.stringify({ pr: Number(pr), headSha: meta.headSha, key, assessment: clampAssessment(assessment, ASSESSMENT_SCHEMA) }));
+    const assessedAt = new Date().toISOString();
+    writeFileSync(
+      out,
+      JSON.stringify({ pr: Number(pr), headSha: meta.headSha, key, assessedAt, assessment: clampAssessment(assessment, ASSESSMENT_SCHEMA) }),
+    );
   },
 
   async act({ assessments }) {
@@ -842,7 +857,7 @@ const commands = {
       }
     }
 
-    let slotFree = true;
+    const slot = { free: true };
     const rows = [];
     for (const pr of dependabotPrs()) {
       try {
@@ -850,9 +865,8 @@ const commands = {
           main,
           now,
           assessment: byPr.get(pr.number),
-          slotFree,
+          slot,
         });
-        if (outcome === 'merge') slotFree = false;
         if (byPr.has(pr.number) && ['merge', 'escalate'].includes(outcome)) openFeatureIssues(record, meta);
         rows.push({ number: pr.number, title: pr.title, outcome, blocking: blockingSummary(record.rules) });
       } catch (err) {

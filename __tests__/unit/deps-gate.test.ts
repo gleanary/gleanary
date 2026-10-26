@@ -10,11 +10,13 @@ import {
   decide,
   diffLockfiles,
   evaluateRules,
+  diffTargets,
   latestCheckRuns,
   lockFingerprint,
   manifestChangeIsScoped,
   parseUpdatedDependencies,
   registryFact,
+  escalationFingerprint,
   updatesKey,
   waiverKey,
 } from '../../.github/deps-agent/gate.mjs';
@@ -190,7 +192,7 @@ describe('diffLockfiles', () => {
         'node_modules/b': { version: '2.0.0' },
       },
     };
-    expect(diffLockfiles(base, head)).toEqual({
+    expect(diffLockfiles(base, head)).toMatchObject({
       added: ['node_modules/b'],
       newInstallScripts: ['node_modules/a'],
       changed: [
@@ -199,16 +201,12 @@ describe('diffLockfiles', () => {
           from: '1.0.0',
           to: '1.0.1',
           installScript: true,
-          resolved: null,
-          bundled: false,
         },
         {
           name: 'b',
           from: null,
           to: '2.0.0',
           installScript: false,
-          resolved: null,
-          bundled: false,
         },
       ],
     });
@@ -643,19 +641,28 @@ describe('evaluateRules + decide', () => {
     });
 
     it('fails an introduced version that does not resolve from registry.npmjs.org', () => {
-      const entry = { name: 'x', from: '1.0.0', to: '1.0.1', installScript: false, bundled: false };
-      const withChanged = (c: Record<string, unknown>) =>
-        cleanFacts({ lock: { added: [], newInstallScripts: [], changed: [{ ...entry, ...c }] } });
-      const git = withChanged({ resolved: 'git+ssh://git@evil.example/x.git' });
+      // Built like production facts: through diffLockfiles on two lockfiles.
+      const base = {
+        packages: {
+          'node_modules/x': {
+            version: '1.0.0',
+            resolved: 'https://registry.npmjs.org/x/-/x-1.0.0.tgz',
+          },
+        },
+      };
+      const withHead = (entry: Record<string, unknown>) =>
+        cleanFacts({
+          lock: diffLockfiles(base, {
+            packages: { 'node_modules/x': { version: '1.0.1', ...entry } },
+          }),
+        });
+      const git = withHead({ resolved: 'git+ssh://git@evil.example/x.git' });
       expect(statusOf(git, 'sources')).toBe('fail');
       expect(outcome(git, { override: true })).toBe('escalate');
       expect(
-        statusOf(
-          withChanged({ resolved: 'https://registry.npmjs.org/x/-/x-1.0.1.tgz' }),
-          'sources',
-        ),
+        statusOf(withHead({ resolved: 'https://registry.npmjs.org/x/-/x-1.0.1.tgz' }), 'sources'),
       ).toBe('pass');
-      expect(statusOf(withChanged({ resolved: null, bundled: true }), 'sources')).toBe('pass');
+      expect(statusOf(withHead({ inBundle: true }), 'sources')).toBe('pass'); // never fetched on its own
     });
 
     it('fails a version whose source repository changed, even though it is attested', () => {
@@ -933,6 +940,101 @@ describe('advisoryKeys', () => {
   });
 });
 
+describe('ninth review: gate', () => {
+  it('pings once for an overdue cooldown, even as aging versions mature', () => {
+    const overdue = (list: string) => [
+      {
+        id: 'cooldown',
+        kind: 'soft',
+        status: 'fail',
+        detail: `still not 7 days old: ${list}`,
+        matchKey: 'cooldown:overdue',
+      },
+    ];
+    expect(escalationFingerprint(overdue('a@1, b@1'))).toBe(escalationFingerprint(overdue('b@1')));
+    const semver = [{ id: 'semver', kind: 'soft', status: 'fail', detail: 'x 1→2 (major)' }];
+    expect(escalationFingerprint(semver)).not.toBe(
+      escalationFingerprint([{ ...semver[0]!, detail: 'x 1→3 (major)' }]),
+    );
+  });
+
+  it('checks the source of every lockfile entry whose resolved URL is new or changed', () => {
+    const reg = (n: string, v: string) => `https://registry.npmjs.org/${n}/-/${n}-${v}.tgz`;
+    const base = {
+      packages: { 'node_modules/a': { version: '1.0.0', resolved: reg('a', '1.0.0') } },
+    };
+    // a second copy of the same version, from a git URL
+    const dup = {
+      packages: {
+        'node_modules/a': { version: '1.0.1', resolved: reg('a', '1.0.1') },
+        'node_modules/b/node_modules/a': {
+          version: '1.0.1',
+          resolved: 'git+ssh://git@evil.example/a.git',
+        },
+      },
+    };
+    expect(diffLockfiles(base, dup).foreignSources.length).toBe(1);
+    // a resolved URL that changed without a version change
+    const swapped = {
+      packages: {
+        'node_modules/a': { version: '1.0.0', resolved: 'https://evil.example/a-1.0.0.tgz' },
+      },
+    };
+    expect(diffLockfiles(base, swapped).foreignSources.length).toBe(1);
+    const facts = cleanFacts({
+      lock: { ...diffLockfiles(base, swapped), added: [], newInstallScripts: [] },
+    });
+    expect(statusOf(facts, 'sources')).toBe('fail');
+  });
+
+  it('escalates a version the registry says runs an install script the lockfile does not declare', () => {
+    const facts = cleanFacts({
+      lock: {
+        added: [],
+        newInstallScripts: [],
+        changed: [
+          {
+            name: 'x',
+            from: '1.0.0',
+            to: '1.0.1',
+            installScript: false,
+            resolved: 'https://registry.npmjs.org/x/-/x-1.0.1.tgz',
+            bundled: false,
+          },
+        ],
+        foreignSources: [],
+      },
+      registry: [
+        cleanFacts().registry[0]!,
+        {
+          ...cleanFacts().registry[0]!,
+          name: 'x',
+          version: '1.0.1',
+          direct: false,
+          installCmd: '[null,"node evil.js",null]',
+        },
+      ],
+    });
+    expect(statusOf(facts, 'installScripts')).toBe('fail');
+    expect(detailOf(facts, 'installScripts')).toContain('x');
+  });
+
+  it('reviews a nested copy of a declared package that moves to another version', () => {
+    const facts = {
+      updates: [{ name: 'zod', from: '4.4.3', to: '4.6.7' }],
+      lock: {
+        changed: [
+          { name: 'zod', from: '4.4.3', to: '4.6.7', installScript: false },
+          { name: 'zod', from: '3.22.0', to: '3.23.8', installScript: false }, // nested copy
+        ],
+      },
+    };
+    const { direct, transitive } = diffTargets(facts as Parameters<typeof diffTargets>[0]);
+    expect(direct.map((u) => u.to)).toEqual(['4.6.7']);
+    expect(transitive.map((c) => c.to)).toEqual(['3.23.8']);
+  });
+});
+
 describe('clampAssessment', () => {
   it('bounds strings and lists to the schema limits and drops unknown keys', () => {
     const long = 'z'.repeat(10_000);
@@ -980,6 +1082,12 @@ describe('decision records', () => {
   it('returns null for a body without a payload or with a corrupt one', () => {
     expect(decodeRecord('hello')).toBeNull();
     expect(decodeRecord('<!-- deps-agent:data !!!! -->')).toBeNull();
+  });
+
+  it('neutralizes markdown links and images copied from changelogs', () => {
+    const out = neutralize('see [docs](https://evil.example) ![](https://evil.example/pixel.png)');
+    expect(out).not.toMatch(/\]\(/);
+    expect(out).not.toMatch(/(^|[^\\])!\[/);
   });
 
   it('neutralizes mentions and hidden comments from untrusted text', () => {

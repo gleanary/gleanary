@@ -172,7 +172,9 @@ export function classifyBump(from, to) {
  * @param {{packages?: Record<string, {version?: string, hasInstallScript?: boolean}>}} base
  * @param {{packages?: Record<string, {version?: string, name?: string, hasInstallScript?: boolean}>}} head
  * @returns {{added: string[], newInstallScripts: string[],
- *   changed: {name: string, from: string|null, to: string, installScript: boolean}[]}}
+ *   changed: {name: string, from: string|null, to: string, installScript: boolean}[],
+ *   foreignSources: string[]}} where foreignSources lists every entry whose resolved URL or
+ *   version is new or changed and that does not come from registry.npmjs.org
  *   lock keys added; keys that gained an install script (new package, or existing one that
  *   did not have one); and every introduced version, direct or transitive (added, or version
  *   changed), deduplicated by `name@to` and sorted
@@ -183,9 +185,17 @@ export function diffLockfiles(base, head) {
   const added = [];
   const newInstallScripts = [];
   const changed = new Map();
+  const foreignSources = [];
   for (const [key, entry] of Object.entries(h)) {
     if (!key) continue; // root project entry
     if (!(key in b)) added.push(key);
+    // Per lockfile entry, not per name@version: a second copy of a version, or a resolved
+    // URL swapped without a version change, must not hide behind a clean first copy.
+    const resolvedChanged =
+      !(key in b) || b[key]?.resolved !== entry.resolved || b[key]?.version !== entry.version;
+    if (entry.version && resolvedChanged && !entry.inBundle && !entry.link && !entry.resolved?.startsWith(NPM_REGISTRY)) {
+      foreignSources.push(`${key.replace(/^.*node_modules\//, '')}@${entry.version} from ${entry.resolved ?? '(no resolved URL)'}`);
+    }
     if (entry.hasInstallScript && !b[key]?.hasInstallScript) newInstallScripts.push(key);
     if (entry.version && b[key]?.version !== entry.version) {
       // An npm alias (`"string-width-cjs": "npm:string-width@4"`) is installed under the
@@ -196,20 +206,16 @@ export function diffLockfiles(base, head) {
       // a known previous version over "new here", so read order cannot drop it from review.
       const spec = `${name}@${entry.version}`;
       const seen = changed.get(spec);
-      // Bundled (inBundle) and linked entries are never fetched on their own.
-      const bundledHere = Boolean(entry.inBundle || entry.link);
       changed.set(spec, {
         name,
         from: seen?.from ?? b[key]?.version ?? null,
         to: entry.version,
         installScript: Boolean(seen?.installScript || entry.hasInstallScript),
-        resolved: seen?.resolved ?? entry.resolved ?? null,
-        bundled: seen ? seen.bundled && bundledHere : bundledHere,
       });
     }
   }
   const sorted = [...changed.entries()].sort(([a], [z]) => a.localeCompare(z));
-  return { added, newInstallScripts, changed: sorted.map(([, c]) => c) };
+  return { added, newInstallScripts, changed: sorted.map(([, c]) => c), foreignSources };
 }
 
 /**
@@ -255,14 +261,17 @@ export function registryFact({ name, from, to, direct, doc }) {
  * reviewed" can never drift from "what was offered for review".
  * @param {{updates: {name: string, from: string|null, to: string|null}[],
  *   lock: {changed: {name: string, from: string|null, to: string, installScript: boolean}[]}}} f
- * @returns {{direct: object[], transitive: object[]}} diff targets
+ * @returns {{direct: {name: string, from: string|null, to: string|null}[],
+ *   transitive: {name: string, from: string|null, to: string, installScript: boolean}[]}} diff targets
  */
 export function diffTargets(f) {
-  const declared = new Set(f.updates.map((u) => u.name));
+  // Only the copy at the declared version is the PR's direct update: a nested copy of the
+  // same package moving to another version is reviewed like any transitive change.
+  const declaredTo = new Map(f.updates.map((u) => [u.name, u.to]));
   return {
     direct: f.updates.filter((u) => u.from && u.to),
     transitive: f.lock.changed
-      .filter((c) => c.from && !declared.has(c.name))
+      .filter((c) => c.from && declaredTo.get(c.name) !== c.to)
       .sort((a, b) => Number(b.installScript) - Number(a.installScript)),
   };
 }
@@ -301,14 +310,21 @@ export function installScriptChanges(lock, registry = []) {
   };
   const offenders = [...gained].map((name) => `${name} (new script)`);
   const trusted = [];
-  // A package that gains a script while changing version is reported once, as "new script".
   for (const c of lock.changed) {
-    if (!c.installScript || !c.from || gained.has(c.name)) continue;
-    const r = facts.get(`${c.name}@${c.to}`);
-    // Registry down: the install command is unknown, not changed. Cooldown keeps the PR waiting.
-    if (r?.registryError) continue;
-    if (unchangedAndAttested(c, r)) trusted.push(`${c.name}@${c.to}`);
-    else offenders.push(`${c.name} ${c.from}→${c.to} (runs an install script)`);
+    const spec = `${c.name}@${c.to}`;
+    const r = facts.get(spec);
+    // Reported once as "new script"; or registry down (the command is unknown, not changed,
+    // and the `registry` rule keeps the PR waiting).
+    if (gained.has(c.name) || r?.registryError) continue;
+    if (!c.installScript) {
+      // The lockfile's hasInstallScript is the PR's own claim. If the registry lists an install
+      // command the lockfile does not declare, trust the registry (a lockfile can be edited).
+      // The opposite (flag set, nothing published) is normal: npm implies `node-gyp rebuild`.
+      if (r?.installCmd) offenders.push(`${spec} (the registry lists an install script the lockfile does not declare)`);
+    } else if (c.from) {
+      if (unchangedAndAttested(c, r)) trusted.push(spec);
+      else offenders.push(`${c.name} ${c.from}→${c.to} (runs an install script)`);
+    }
   }
   return { offenders, trusted };
 }
@@ -345,6 +361,22 @@ const TRI = { true: 'pass', false: 'fail' };
  * @returns {string} the key an override stores and compares
  */
 export const waiverKey = (rule) => shortHash(rule.matchKey ?? rule.detail, 16);
+
+/**
+ * What makes an escalation "the same one" for ping dedupe: each failing hard/soft rule and its
+ * waiverKey. Transient rules (main busy, branch behind) describe the world, not the PR, and an
+ * overdue cooldown whose list of aging versions shrinks is the same problem getting better.
+ * @param {{id: string, kind: string, status: string, detail: string, matchKey?: string}[]} rules
+ * @returns {string} short fingerprint
+ */
+export function escalationFingerprint(rules) {
+  return shortHash(
+    rules
+      .filter((r) => r.status === 'fail' && r.kind !== 'transient')
+      .map((r) => `${r.id}:${waiverKey(r)}`)
+      .join('\n'),
+  );
+}
 
 /** `name@version` of a registry fact. */
 const label = (r) => `${r.name}@${r.version}`;
@@ -556,7 +588,7 @@ export function evaluateRules(f) {
       : result('scale', 'pass', 'every introduced version was checked against the registry'),
     unless(
       'sources',
-      f.lock.changed.filter((c) => !c.bundled && !c.resolved?.startsWith(NPM_REGISTRY)).map((c) => `${c.name}@${c.to} from ${c.resolved ?? '?'}`),
+      f.lock.foreignSources ?? [],
       'not resolved from registry.npmjs.org',
       'every introduced version resolves from registry.npmjs.org',
     ),

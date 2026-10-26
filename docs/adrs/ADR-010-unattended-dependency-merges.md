@@ -275,6 +275,22 @@ review, so it is not the preferred lever.
   branch behind, conflict) are left out of that key: they flip on their own, and an early
   version re-pinged the owner about the same escalation each time main's CI ran or a sibling
   merged.
+- The run's single merge slot is marked used the moment `merge()` succeeds: a failure later in
+  the same evaluation (saving the record, a label) used to free it again, so a second PR
+  could merge in the same run.
+- Ping dedupe uses each failing rule's `waiverKey`, like waivers, so an overdue cooldown whose
+  aging list shrinks stays one escalation instead of one @-mention per maturing version.
+- The `sources` rule checks every lockfile entry whose `resolved` URL is new or changed, not
+  one entry per package version; the install-script flag is cross-checked against the
+  registry's published scripts (a lockfile can be edited; only the "registry has a script the
+  lockfile hides" direction counts, since npm implies one for native builds); only the copy
+  at the declared version counts as a direct update, so nested copies of a declared package
+  are reviewed; text copied into the App's comments cannot render links or images.
+- Robustness: the prompt template is filled with literal replacements (`$&` and friends are
+  not interpreted), a compare result at GitHub's 300-file cap counts as "main changed the
+  lockfile" (rebase requested), an assessment is dated by when it was made (an older one
+  cannot satisfy a newer `/deps recheck`), and a held evaluation no longer moves the commit
+  that `/deps merge` checks against.
 - Waivers match a hash of each rule's full failure detail (`waiverKey`), stored with the rule
   before the record is trimmed for display: an earlier version compared details, and a
   record trimmed to fit a comment produced overrides that could never match, silently. The

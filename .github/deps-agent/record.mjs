@@ -29,7 +29,7 @@ const OUTCOME_LABEL = {
 
 /**
  * Neutralize untrusted text (LLM output derived from changelogs) before it lands
- * in a comment: HTML escaped, no @-mentions, bounded length.
+ * in a comment: HTML escaped, no @-mentions, no markdown links or images, bounded length.
  * @param {unknown} text - text to embed
  * @param {number} [max] - maximum length
  * @returns {string} safe markdown text
@@ -39,7 +39,9 @@ export function neutralize(text, max = 1500) {
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
-    .replace(/@/g, '@\u200b');
+    .replace(/@/g, '@\u200b')
+    // No live links or images (tracking pixels) from changelog text in the App's comments.
+    .replace(/[[\]()]/g, '\\$&');
   return s.length > max ? `${s.slice(0, max)}…` : s;
 }
 

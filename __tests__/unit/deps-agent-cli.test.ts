@@ -45,6 +45,7 @@ interface FakeState {
   branch: string;
   gitPushFails: boolean;
   extraFiles: string[];
+  compareCapped: boolean;
   deployConclusion: string;
   auditFails: boolean;
   recordSaveFails: boolean;
@@ -132,9 +133,14 @@ function get(path: string): unknown {
     [
       /\/compare\//,
       () =>
-        state.fresh
-          ? { ahead_by: 0, files: [] }
-          : { ahead_by: 1, files: [{ filename: 'package-lock.json' }] },
+        state.compareCapped
+          ? {
+              ahead_by: 400,
+              files: Array.from({ length: 300 }, (_, i) => ({ filename: `src/f${i}.ts` })),
+            }
+          : state.fresh
+            ? { ahead_by: 0, files: [] }
+            : { ahead_by: 1, files: [{ filename: 'package-lock.json' }] },
     ],
     [/contents\/package\.json\?ref=base1/, () => pkg('4.4.3')],
     [
@@ -326,6 +332,7 @@ beforeEach(() => {
     branch: 'dependabot/npm_and_yarn/zod-4.6.7',
     gitPushFails: false,
     extraFiles: [],
+    compareCapped: false,
     deployConclusion: 'success',
     auditFails: false,
     recordSaveFails: false,
@@ -350,7 +357,7 @@ describe('evaluatePr', () => {
       main: healthy,
       now: NOW,
       assessment: assessed('merge'),
-      slotFree: true,
+      slot: { free: true },
     });
     expect(outcome).toBe('merge');
     expect(merges()).toHaveLength(1);
@@ -363,11 +370,11 @@ describe('evaluatePr', () => {
       main: healthy,
       now: NOW,
       assessment: assessed('escalate'),
-      slotFree: true,
+      slot: { free: true },
     });
     expect(pings()).toHaveLength(1);
     state.headSha = 'head2'; // Dependabot rebased: new commit, same versions
-    const { outcome } = await cli.evaluatePr(PR, { main: healthy, now: NOW, slotFree: true });
+    const { outcome } = await cli.evaluatePr(PR, { main: healthy, now: NOW, slot: { free: true } });
     expect(outcome).toBe('escalate'); // the cached assessment still applies after the rebase
     expect(pings()).toHaveLength(1);
   });
@@ -382,7 +389,7 @@ describe('evaluatePr', () => {
       main: healthy,
       now: NOW,
       assessment: assessed('escalate'),
-      slotFree: true,
+      slot: { free: true },
     });
     expect(merges()).toHaveLength(1);
   });
@@ -397,7 +404,7 @@ describe('evaluatePr', () => {
       main: healthy,
       now: NOW,
       assessment: assessed('escalate'),
-      slotFree: true,
+      slot: { free: true },
     });
     expect(outcome).toBe('escalate');
     expect(merges()).toHaveLength(0);
@@ -414,7 +421,7 @@ describe('evaluatePr', () => {
       main: healthy,
       now: NOW,
       assessment: assessed('escalate'),
-      slotFree: true,
+      slot: { free: true },
     });
     expect(outcome).toBe('escalate');
     expect(merges()).toHaveLength(0);
@@ -427,14 +434,18 @@ describe('evaluatePr', () => {
       main: healthy,
       now: NOW,
       assessment: assessed('merge'),
-      slotFree: true,
+      slot: { free: true },
     });
     const rebaseRequests = () => state.comments.filter((c) => c.body === '@dependabot rebase');
     expect(rebaseRequests()).toHaveLength(1);
     expect(pings()).toHaveLength(0);
 
     const later = new Date(NOW.getTime() + 25 * 3_600_000);
-    const { outcome } = await cli.evaluatePr(PR, { main: healthy, now: later, slotFree: true });
+    const { outcome } = await cli.evaluatePr(PR, {
+      main: healthy,
+      now: later,
+      slot: { free: true },
+    });
     expect(outcome).toBe('escalate');
     expect(rebaseRequests()).toHaveLength(1);
     expect(pings()[0]?.body).toContain('has not rebased');
@@ -481,7 +492,7 @@ describe('plan', () => {
       main: healthy,
       now: NOW,
       assessment: assessed('merge'),
-      slotFree: false,
+      slot: { free: false },
     });
     expect(await planned()).toEqual([]);
     state.headSha = 'head2'; // a rebase that leaves the lockfile alone reuses the assessment
@@ -495,7 +506,12 @@ describe('plan', () => {
 
 describe('npm registry failures', () => {
   const evaluate = () =>
-    cli.evaluatePr(PR, { main: healthy, now: NOW, assessment: assessed('merge'), slotFree: true });
+    cli.evaluatePr(PR, {
+      main: healthy,
+      now: NOW,
+      assessment: assessed('merge'),
+      slot: { free: true },
+    });
 
   it('waits through a registry outage instead of pinging the owner', async () => {
     state.registryStatus = 503;
@@ -515,7 +531,11 @@ describe('npm registry failures', () => {
     expect((await evaluate()).outcome).toBe('wait');
     cli.clearRunCaches(); // a later run is a fresh process
     const later = new Date(NOW.getTime() + 49 * 3_600_000);
-    const { outcome } = await cli.evaluatePr(PR, { main: healthy, now: later, slotFree: true });
+    const { outcome } = await cli.evaluatePr(PR, {
+      main: healthy,
+      now: later,
+      slot: { free: true },
+    });
     expect(outcome).toBe('escalate');
     expect(pings()).toHaveLength(1);
     expect(pings()[0]?.body).toContain('npm registry');
@@ -524,7 +544,7 @@ describe('npm registry failures', () => {
 
 describe('ping deduplication', () => {
   const escalate = (main = healthy) =>
-    cli.evaluatePr(PR, { main, now: NOW, assessment: assessed('escalate'), slotFree: true });
+    cli.evaluatePr(PR, { main, now: NOW, assessment: assessed('escalate'), slot: { free: true } });
 
   it('does not ping again when only transient state changes (main busy, branch behind)', async () => {
     await escalate();
@@ -546,7 +566,7 @@ describe('cooldown wait', () => {
       main: healthy,
       now: NOW,
       assessment: assessed('merge'),
-      slotFree: true,
+      slot: { free: true },
     });
     expect(first.outcome).toBe('wait');
     expect(pings()).toHaveLength(0);
@@ -555,7 +575,11 @@ describe('cooldown wait', () => {
     const later = new Date(NOW.getTime() + 15 * 86_400_000);
     state.msPublishedAt = new Date(later.getTime() - 86_400_000).toISOString();
     cli.clearRunCaches(); // a later run is a fresh process
-    const { outcome } = await cli.evaluatePr(PR, { main: healthy, now: later, slotFree: true });
+    const { outcome } = await cli.evaluatePr(PR, {
+      main: healthy,
+      now: later,
+      slot: { free: true },
+    });
     expect(outcome).toBe('escalate');
     expect(pings()[0]?.body).toContain('waited 14 days');
 
@@ -564,8 +588,104 @@ describe('cooldown wait', () => {
     await cli.commands.command();
     expect(state.comments.some((c) => c.body.includes('deps-agent:override'))).toBe(true);
     cli.clearRunCaches();
-    const after = await cli.evaluatePr(PR, { main: healthy, now: later, slotFree: true });
+    const after = await cli.evaluatePr(PR, { main: healthy, now: later, slot: { free: true } });
     expect(after.outcome).toBe('merge');
+  });
+});
+
+describe('ninth review', () => {
+  const rebaseRequests = () => state.comments.filter((c) => c.body === '@dependabot rebase');
+
+  it('keeps the merge slot used when something fails after a successful merge', async () => {
+    const slot = { free: true };
+    state.recordSaveFails = true; // the merge succeeds, then saving the record throws
+    await expect(
+      cli.evaluatePr(PR, { main: healthy, now: NOW, assessment: assessed('merge'), slot }),
+    ).rejects.toThrow();
+    expect(merges()).toHaveLength(1);
+    expect(slot.free).toBe(false); // a second PR in the same run must not merge
+  });
+
+  it('does not let a held evaluation reset the commit /deps merge checks against', async () => {
+    await cli.evaluatePr(PR, {
+      main: healthy,
+      now: NOW,
+      assessment: assessed('escalate'),
+      slot: { free: true },
+    });
+    state.labels = ['deps:hold'];
+    state.headSha = 'head2'; // Dependabot pushed while the PR was held
+    await cli.evaluatePr(PR, { main: healthy, now: NOW, slot: { free: true } });
+    state.labels = [];
+    Object.assign(process.env, { PR: String(PR), COMMENTER: 'owner', COMMENT_BODY: '/deps merge' });
+    await cli.commands.command();
+    expect(state.comments.some((c) => c.body.includes('deps-agent:override'))).toBe(false);
+    expect(state.comments.at(-1)?.body).toContain('changed since deps-agent last evaluated it');
+  });
+
+  it('treats a main change past the compare API file cap as not fresh', async () => {
+    state.compareCapped = true;
+    vi.stubEnv('MODE', 'merge');
+    try {
+      await cli.evaluatePr(PR, {
+        main: healthy,
+        now: NOW,
+        assessment: assessed('merge'),
+        slot: { free: true },
+      });
+    } finally {
+      vi.unstubAllEnvs();
+    }
+    expect(merges()).toHaveLength(0);
+    expect(rebaseRequests()).toHaveLength(1);
+  });
+
+  it('dates an assessment by when it was made, so an older one cannot satisfy a recheck', async () => {
+    const t0 = new Date(Date.now() - 60_000);
+    await cli.evaluatePr(PR, {
+      main: healthy,
+      now: t0,
+      assessment: assessed('merge'),
+      slot: { free: false },
+    });
+    Object.assign(process.env, {
+      PR: String(PR),
+      COMMENTER: 'owner',
+      COMMENT_BODY: '/deps recheck',
+    });
+    await cli.commands.command();
+    // This run carries an assessment made BEFORE the recheck (e.g. a queued older run).
+    const stale = { ...assessed('merge'), assessedAt: t0.toISOString() };
+    await cli.evaluatePr(PR, {
+      main: healthy,
+      now: new Date(),
+      assessment: stale,
+      slot: { free: false },
+    });
+    expect(await planned()).toEqual([PR]);
+  });
+
+  it('builds the prompt literally, whatever $ patterns the inputs contain', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'deps-prompt-'));
+    const facts = join(dir, 'facts.json');
+    writeFileSync(
+      facts,
+      JSON.stringify({
+        meta: { title: "costs $& and $' and $$", headSha: 'h' },
+        facts: { updates: [] },
+      }),
+    );
+    writeFileSync(join(dir, 'index.json'), JSON.stringify({ diffs: [], transitiveNotReviewed: 0 }));
+    const out = join(dir, 'out');
+    writeFileSync(out, '');
+    vi.stubEnv('GITHUB_OUTPUT', out);
+    try {
+      await cli.commands.prompt({ pr: '7', facts, diffs: dir });
+      expect(readFileSync(out, 'utf8')).toContain("costs $& and $' and $$");
+    } finally {
+      vi.unstubAllEnvs();
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 
@@ -582,7 +702,7 @@ describe('eighth review', () => {
 
   it('does not re-assess a commit that already failed a hard rule no review can change', async () => {
     state.extraFiles = ['src/proxy.ts']; // `files` (hard): the PR touches more than the lockfile
-    await cli.evaluatePr(PR, { main: healthy, now: NOW, slotFree: false });
+    await cli.evaluatePr(PR, { main: healthy, now: NOW, slot: { free: false } });
     expect(await planned()).toEqual([]);
   });
 
@@ -616,7 +736,7 @@ describe('eighth review', () => {
         main: healthy,
         now: at(h),
         assessment: assessed('merge'),
-        slotFree: false,
+        slot: { free: false },
       });
     };
     state.registryStatus = 503;
@@ -644,7 +764,7 @@ describe('seventh review', () => {
       main: healthy,
       now: NOW,
       assessment: assessed('escalate'),
-      slotFree: true,
+      slot: { free: true },
       ...over,
     });
   const rebaseRequests = () => state.comments.filter((c) => c.body === '@dependabot rebase');
@@ -719,7 +839,11 @@ describe('seventh review', () => {
     expect(pings()).toHaveLength(0);
     cli.clearRunCaches();
     const later = new Date(NOW.getTime() + 49 * 3_600_000);
-    const { outcome } = await cli.evaluatePr(PR, { main: healthy, now: later, slotFree: true });
+    const { outcome } = await cli.evaluatePr(PR, {
+      main: healthy,
+      now: later,
+      slot: { free: true },
+    });
     expect(outcome).toBe('escalate');
     expect(pings()[0]?.body).toContain('audit');
   });
@@ -730,7 +854,7 @@ describe('seventh review', () => {
       main: healthy,
       now: t0,
       assessment: assessed('merge'),
-      slotFree: false,
+      slot: { free: false },
     });
     expect(await planned()).toEqual([]); // assessed, nothing to do
     Object.assign(process.env, {
@@ -745,18 +869,18 @@ describe('seventh review', () => {
       main: healthy,
       now: new Date(),
       assessment: assessed('merge'),
-      slotFree: false,
+      slot: { free: false },
     });
     expect(await planned()).toEqual([]);
   });
 
   it('marks an assessment as outdated once the PR state no longer matches it', async () => {
-    await evaluate({ assessment: assessed('merge'), slotFree: false });
+    await evaluate({ assessment: assessed('merge'), slot: { free: false } });
     expect(recordBody()).toContain('**Assessment**');
     state.withMs = true; // a rebase re-resolved the lockfile
     state.headSha = 'head2';
     cli.clearRunCaches();
-    await cli.evaluatePr(PR, { main: healthy, now: NOW, slotFree: false });
+    await cli.evaluatePr(PR, { main: healthy, now: NOW, slot: { free: false } });
     expect(recordBody()).not.toContain('**Assessment**');
     expect(recordBody()).toContain('outdated');
   });
@@ -832,7 +956,7 @@ describe('command', () => {
       main: healthy,
       now: NOW,
       assessment: assessed('escalate'),
-      slotFree: true,
+      slot: { free: true },
     });
   const overrideComments = () =>
     state.comments.filter((c) => c.body.includes('deps-agent:override'));
@@ -859,7 +983,7 @@ describe('command', () => {
       main: healthy,
       now: NOW,
       assessment: withFinding('finding A'),
-      slotFree: true,
+      slot: { free: true },
     });
     expect(pings()).toHaveLength(1);
     await run('/deps merge'); // waives codeReview (finding A) and verdict
@@ -869,7 +993,7 @@ describe('command', () => {
       main: healthy,
       now: NOW,
       assessment: withFinding('finding B'),
-      slotFree: true,
+      slot: { free: true },
     });
     expect(outcome).toBe('escalate');
     expect(pings()).toHaveLength(2);
@@ -877,7 +1001,7 @@ describe('command', () => {
 
   it('does not waive what was still pending: a later suspicious review escalates', async () => {
     // First evaluation before the review: verdict and codeReview are pending, nothing fails.
-    await cli.evaluatePr(PR, { main: healthy, now: NOW, slotFree: true });
+    await cli.evaluatePr(PR, { main: healthy, now: NOW, slot: { free: true } });
     await run('/deps merge');
     expect(overrideComments()).toHaveLength(0);
     expect(state.comments.at(-1)?.body).toContain('Nothing is failing yet');
@@ -892,7 +1016,7 @@ describe('command', () => {
       main: healthy,
       now: NOW,
       assessment: flagged,
-      slotFree: true,
+      slot: { free: true },
     });
     expect(outcome).toBe('escalate');
     expect(merges()).toHaveLength(0);
