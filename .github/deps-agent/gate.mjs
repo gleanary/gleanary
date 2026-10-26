@@ -180,20 +180,43 @@ export function diffTargets(f) {
 }
 
 /**
+ * Packages we know legitimately run an install script and bump often. A new version of one
+ * of these passes the installScripts rule only when its install command is byte-identical
+ * to the previous version's and both versions carry npm provenance. The 7-day cooldown and
+ * a clean code review (install-script packages are diffed first) are enforced by their own
+ * rules. Anything else (a new script, a changed command, lost or missing provenance, an
+ * unlisted package) still escalates. Decided in ADR-010.
+ */
+export const TRUSTED_INSTALL_SCRIPTS = new Set(['better-sqlite3', 'esbuild', 'msw', 'unrs-resolver']);
+
+/**
  * Install-time code the bump introduces: packages that gain an install script, and new
  * versions of packages that already run one (a hijacked better-sqlite3 or esbuild release
  * would run its script during `npm ci` in the Docker build).
  * @param {{newInstallScripts: string[],
  *   changed: {name: string, from: string|null, to: string, installScript: boolean}[]}} lock
- * @returns {string[]} human-readable offenders
+ * @param {{name: string, version: string, prevAttested?: boolean, attested?: boolean,
+ *   prevInstallCmd?: string|null, installCmd?: string|null}[]} [registry] - registry facts
+ * @returns {{offenders: string[], trusted: string[]}} what escalates, and trusted packages
+ *   whose new version passed with an unchanged command and provenance
  */
-export function installScriptChanges(lock) {
+export function installScriptChanges(lock, registry = []) {
   const gained = new Set(lock.newInstallScripts.map((key) => key.replace(/^.*node_modules\//, '')));
+  const facts = new Map(registry.map((r) => [label(r), r]));
+  const unchangedAndAttested = (c) => {
+    if (!TRUSTED_INSTALL_SCRIPTS.has(c.name)) return false;
+    const r = facts.get(`${c.name}@${c.to}`);
+    return Boolean(r?.prevAttested && r.attested && r.installCmd) && r.installCmd === r.prevInstallCmd;
+  };
+  const offenders = [...gained].map((name) => `${name} (new script)`);
+  const trusted = [];
   // A package that gains a script while changing version is reported once, as "new script".
-  const updated = lock.changed
-    .filter((c) => c.installScript && c.from && !gained.has(c.name))
-    .map((c) => `${c.name} ${c.from}→${c.to} (runs an install script)`);
-  return [...[...gained].map((name) => `${name} (new script)`), ...updated];
+  for (const c of lock.changed) {
+    if (!c.installScript || !c.from || gained.has(c.name)) continue;
+    if (unchangedAndAttested(c)) trusted.push(`${c.name}@${c.to}`);
+    else offenders.push(`${c.name} ${c.from}→${c.to} (runs an install script)`);
+  }
+  return { offenders, trusted };
 }
 
 /**
@@ -343,6 +366,7 @@ export function evaluateRules(f) {
   }));
   const injected = Boolean(f.assessment?.injectionSuspected);
   const targets = diffTargets(f);
+  const scripts = installScriptChanges(f.lock, f.registry);
 
   return [
     result('author', TRI[f.author === DEPENDABOT_LOGIN], `author ${f.author}`),
@@ -376,7 +400,14 @@ export function evaluateRules(f) {
       TRI[!bumps.some((u) => u.kind === 'major')],
       bumps.map((u) => `${u.name} ${u.from ?? '?'}→${u.to ?? '?'} (${u.kind})`).join('; '),
     ),
-    unless('installScripts', installScriptChanges(f.lock), 'install-time code', 'no install script added or updated'),
+    unless(
+      'installScripts',
+      scripts.offenders,
+      'install-time code',
+      scripts.trusted.length
+        ? `trusted install script unchanged, with provenance: ${scripts.trusted.join(', ')}`
+        : 'no install script added or updated',
+    ),
     result(
       'newPackages',
       TRI[f.lock.added.length <= LIMITS.maxNewPackages],

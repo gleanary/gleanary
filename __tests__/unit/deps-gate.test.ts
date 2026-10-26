@@ -447,6 +447,68 @@ describe('evaluateRules + decide', () => {
     expect(statusOf(facts, 'codeReview')).toBe('pass');
   });
 
+  describe('trusted install scripts (option B, ADR-010)', () => {
+    const CMD = JSON.stringify([null, 'prebuild-install || node-gyp rebuild --release', null]);
+    const bump = (name: string, over: Record<string, unknown> = {}) => {
+      const reg = cleanFacts().registry[0];
+      return cleanFacts({
+        lock: {
+          added: [],
+          newInstallScripts: [],
+          changed: [{ name, from: '12.11.1', to: '12.12.0', installScript: true }],
+        },
+        registry: [
+          reg,
+          {
+            ...reg,
+            name,
+            version: '12.12.0',
+            direct: true,
+            prevAttested: true,
+            attested: true,
+            prevInstallCmd: CMD,
+            installCmd: CMD,
+            ...over,
+          },
+        ],
+      });
+    };
+
+    it('passes a trusted package whose install command is unchanged and attested', () => {
+      const facts = bump('better-sqlite3');
+      expect(statusOf(facts, 'installScripts')).toBe('pass');
+      expect(evaluateRules(facts).find((r) => r.id === 'installScripts')?.detail).toContain(
+        'better-sqlite3@12.12.0',
+      );
+    });
+
+    it('escalates when the install command changed', () => {
+      expect(
+        statusOf(
+          bump('better-sqlite3', { installCmd: JSON.stringify([null, 'node evil.js', null]) }),
+          'installScripts',
+        ),
+      ).toBe('fail');
+    });
+
+    it('escalates when either version lacks provenance', () => {
+      expect(statusOf(bump('better-sqlite3', { attested: false }), 'installScripts')).toBe('fail');
+      expect(statusOf(bump('better-sqlite3', { prevAttested: false }), 'installScripts')).toBe(
+        'fail',
+      );
+    });
+
+    it('escalates a package that is not on the trusted list', () => {
+      expect(statusOf(bump('sharp'), 'installScripts')).toBe('fail');
+    });
+
+    it('escalates a trusted package that gains a script it did not have', () => {
+      const facts = bump('esbuild');
+      const lock = { ...facts.lock, newInstallScripts: ['node_modules/esbuild'] };
+      expect(statusOf({ ...facts, lock }, 'installScripts')).toBe('fail');
+    });
+  });
+
   it('escalates when no CI ran 60 minutes after the commit, and waits before that', () => {
     const late = cleanFacts({ checks: [], headCommittedAt: '2026-10-23T10:00:00Z' });
     const early = cleanFacts({ checks: [], headCommittedAt: '2026-10-23T11:30:00Z' });

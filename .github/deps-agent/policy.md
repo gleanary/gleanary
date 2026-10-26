@@ -34,7 +34,7 @@ PR declares (direct) **and** the dependency versions that change with them (tran
 | checks         | hard      | all required CI checks green on the head SHA; no CI at all 60 min after the commit escalates |
 | malware        | hard      | no GitHub malware advisory for any introduced version                           |
 | semver         | soft      | patch or minor; 0.x minors, 0.0.x and prereleases count as major                |
-| installScripts | soft      | no package gains an install script, and no package that runs one changes version |
+| installScripts | soft      | no package gains an install script, and no package that runs one changes version. Exception (option B): a new version of `better-sqlite3`, `esbuild`, `msw` or `unrs-resolver` passes when its install command is identical to the previous version's and both versions have npm provenance (cooldown and the code review still apply) |
 | newPackages    | soft      | ≤ 15 new packages in the lockfile                                               |
 | cooldown       | soft      | every introduced version is ≥ 7 days old. A young transitive version **waits** until it ages; a young direct version (a security update) or an unknown publish time escalates |
 | provenance     | soft      | no introduced version lost the npm provenance its previous version had         |

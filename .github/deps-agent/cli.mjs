@@ -105,13 +105,23 @@ async function getJson(url) {
 // already carries every version manifest. Fetched once per package per run, but only the
 // fields the gate reads are kept: full packuments (e.g. next) run to tens of MB each.
 const packuments = new Map();
+// The lifecycle scripts npm runs at install, as published (null when none).
+const INSTALL_HOOKS = ['preinstall', 'install', 'postinstall'];
+const installCmd = (manifest) => {
+  const scripts = INSTALL_HOOKS.map((k) => manifest.scripts?.[k] ?? null);
+  return scripts.some(Boolean) ? JSON.stringify(scripts) : null;
+};
 const slimPackument = (doc) => ({
   time: doc.time ?? {},
   repoUrl: typeof doc.repository === 'string' ? doc.repository : (doc.repository?.url ?? null),
   versions: Object.fromEntries(
     Object.entries(doc.versions ?? {}).map(([v, m]) => [
       v,
-      { attested: Boolean(m.dist?.attestations), publisher: m._npmUser?.name ?? null },
+      {
+        attested: Boolean(m.dist?.attestations),
+        publisher: m._npmUser?.name ?? null,
+        installCmd: installCmd(m),
+      },
     ]),
   ),
 });
@@ -153,6 +163,8 @@ async function registryFacts(changes, direct) {
         attested: Boolean(cur?.attested),
         prevPublisher: prev?.publisher ?? null,
         publisher: cur?.publisher ?? null,
+        prevInstallCmd: prev?.installCmd ?? null,
+        installCmd: cur?.installCmd ?? null,
         repoUrl: doc?.repoUrl ?? null,
       };
     }
