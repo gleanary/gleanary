@@ -249,6 +249,7 @@ export async function POST(req: NextRequest) {
 - **Conventional commits**: `feat(module): description`, `fix(module): description`, `refactor: description`, `docs: description`, `test: description`
 - **One module per branch** when feasible: `feat/module-3-rss-engine`
 - **Never commit `.env`**: use `.env.example` as template
+- **No CI skip markers in commit messages**, not even quoted: GitHub skips every push workflow when the message contains `[skip ci]`, `[ci skip]`, `[no ci]`, `[skip actions]` or `[actions skip]` anywhere. A squash merge copies every commit body into the merge commit, so one quoted marker in any branch commit skips CI on `main`, and with it Deploy (this happened when PR #45 merged)
 
 ### Security (Mandatory — see architecture.md §16 and [`docs/sessions/security-audit.md`](docs/sessions/security-audit.md))
 
