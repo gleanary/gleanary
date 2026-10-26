@@ -68,41 +68,51 @@ export function fromApp(c, bot) {
 }
 
 /**
+ * An owner override approves one evaluated state, not a package name: the declared
+ * versions, the exact set of introduced lockfile versions, and the soft rules that were
+ * failing when the owner looked. Anything that changes after that (a rebase that pulls new
+ * transitive versions, a soft rule that starts failing) is not covered.
+ * @typedef {{versions: string, lock: string, waive: string[], by: string}} Override
+ */
+
+/**
  * Render the comment that records an owner's `/deps merge` override.
- * @param {string} versions - updatesKey of the approved package versions
- * @param {string} by - owner login
+ * @param {Override} override - what was approved
  * @param {string} reason - optional text after the command
  * @returns {string} comment body
  */
-export function renderOverride(versions, by, reason) {
-  const encoded = Buffer.from(JSON.stringify({ versions, by })).toString('base64');
+export function renderOverride(override, reason) {
+  const encoded = Buffer.from(JSON.stringify(override)).toString('base64');
+  const waived = override.waive.length ? override.waive.map((id) => `\`${id}\``).join(', ') : 'none';
   return [
-    `Override recorded by ${neutralize(by, 60)} for \`${neutralize(versions, 300)}\`: the soft gates are waived for these exact versions (rebases keep it; a newer version needs a new decision). Hard gates still apply. A run has been started to act on it.`,
+    `Override recorded by ${neutralize(override.by, 60)} for \`${neutralize(override.versions, 300)}\`, waiving: ${waived}.`,
+    'It covers this exact lockfile: if a rebase brings in different dependency versions, or another soft gate starts failing, deps-agent asks again. Hard gates always apply. A run has been started to act on it.',
     reason.trim() ? `\n> ${neutralize(reason, 300)}` : '',
     `<!-- deps-agent:override ${encoded} -->`,
   ].join('\n');
 }
 
 /**
- * Package versions the owner approved, from override comments written by our App only
- * (an override marker pasted by anyone else is ignored).
+ * Overrides from comments written by our App only (an override marker pasted by anyone
+ * else is ignored), oldest first.
  * @param {{body: string, user: {login: string, type: string}}[]} comments - PR comments
  * @param {string} bot - the App's bot login
- * @returns {Set<string>} approved updatesKey values
+ * @returns {Override[]} recorded overrides
  */
-export function approvedVersions(comments, bot) {
-  const approved = new Set();
+export function overridesFrom(comments, bot) {
+  const overrides = [];
   for (const c of comments) {
     if (!fromApp(c, bot)) continue;
     const m = c.body.match(OVERRIDE);
     if (!m) continue;
     try {
-      approved.add(JSON.parse(Buffer.from(m[1], 'base64').toString('utf8')).versions);
+      const o = JSON.parse(Buffer.from(m[1], 'base64').toString('utf8'));
+      if (typeof o.versions === 'string' && typeof o.lock === 'string' && Array.isArray(o.waive)) overrides.push(o);
     } catch {
       // corrupt marker: ignore
     }
   }
-  return approved;
+  return overrides;
 }
 
 /**

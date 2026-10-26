@@ -31,6 +31,7 @@ import {
   decide,
   diffLockfiles,
   diffTargets,
+  lockFingerprint,
   evaluateRules,
   latestCheckRuns,
   manifestChangeIsScoped,
@@ -40,13 +41,13 @@ import {
 } from './gate.mjs';
 import {
   MARKER,
-  approvedVersions,
   decodeRecord,
   fromApp,
   neutralize,
   pushHistory,
   renderDashboard,
   renderEscalation,
+  overridesFrom,
   renderOverride,
   renderRecord,
 } from './record.mjs';
@@ -111,9 +112,21 @@ const installCmd = (manifest) => {
   const scripts = INSTALL_HOOKS.map((k) => manifest.scripts?.[k] ?? null);
   return scripts.some(Boolean) ? JSON.stringify(scripts) : null;
 };
+// `git+https://github.com/Foo/bar.git` and `https://github.com/foo/bar` are the same repo.
+const normalizeRepo = (repository) => {
+  const url = typeof repository === 'string' ? repository : repository?.url;
+  if (!url) return null;
+  return url
+    .toLowerCase()
+    .replace(/^git\+/, '')
+    .replace(/^(https?|git|ssh):\/\/(git@)?/, '')
+    .replace(/^git@([^:]+):/, '$1/')
+    .replace(/^github:/, 'github.com/')
+    .replace(/\.git$/, '')
+    .replace(/\/+$/, '');
+};
 const slimPackument = (doc) => ({
   time: doc.time ?? {},
-  repoUrl: typeof doc.repository === 'string' ? doc.repository : (doc.repository?.url ?? null),
   versions: Object.fromEntries(
     Object.entries(doc.versions ?? {}).map(([v, m]) => [
       v,
@@ -121,6 +134,8 @@ const slimPackument = (doc) => ({
         attested: Boolean(m.dist?.attestations),
         publisher: m._npmUser?.name ?? null,
         installCmd: installCmd(m),
+        // Per version, not the package's latest: provenance is checked against it.
+        repo: normalizeRepo(m.repository),
       },
     ]),
   ),
@@ -165,7 +180,12 @@ async function registryFacts(changes, direct) {
         publisher: cur?.publisher ?? null,
         prevInstallCmd: prev?.installCmd ?? null,
         installCmd: cur?.installCmd ?? null,
-        repoUrl: doc?.repoUrl ?? null,
+        prevRepo: prev?.repo ?? null,
+        repo: cur?.repo ?? null,
+        repoUrl: cur?.repo ? `https://${cur.repo}` : null,
+        // The registry did not answer at all (outage), as opposed to answering without this
+        // version's publish time: the gate waits on the first and escalates on the second.
+        registryError: doc === null,
       };
     }
   };
@@ -283,17 +303,37 @@ const POLICY_HASH = (() => {
 
 /** Base-side files and advisories, shared by every PR built on the same base in one run. */
 const baseCache = new Map();
+const lockCache = new Map();
+/** package-lock.json at a commit, cached for the run (PRs share bases). */
+const lockAt = (sha) => {
+  if (!lockCache.has(sha)) lockCache.set(sha, rawFile('package-lock.json', sha));
+  return lockCache.get(sha);
+};
+const NO_LOCK_CHANGES = { added: [], newInstallScripts: [], changed: [] };
+/**
+ * The lockfile diff of a Dependabot PR, from its own base: empty for non-npm PRs and PRs
+ * without updated-dependencies metadata. plan, assess and act all use this one function,
+ * so they agree on what the PR introduces.
+ */
+const lockDiff = (pr, declared) =>
+  pr.head.ref.startsWith(NPM_BRANCH_PREFIX) && declared.length
+    ? diffLockfiles(lockAt(pr.base.sha), lockAt(pr.head.sha))
+    : NO_LOCK_CHANGES;
+
+/** The one way to build the assessment cache key (plan, save-assessment and act). */
+const keyFor = (updates, checks, changed) =>
+  assessmentKey({ updates, checks, policyHash: POLICY_HASH, lockFingerprint: lockFingerprint(changed) });
+
 function baseSide(sha) {
   if (!baseCache.has(sha)) {
     const pkg = rawFile('package.json', sha);
-    const lock = rawFile('package-lock.json', sha);
     let advisories;
     try {
-      advisories = new Set(auditAdvisories(pkg, lock));
+      advisories = new Set(auditAdvisories(pkg, lockAt(sha)));
     } catch (err) {
       advisories = err;
     }
-    baseCache.set(sha, { pkg, lock, advisories });
+    baseCache.set(sha, { pkg, advisories });
   }
   return baseCache.get(sha);
 }
@@ -321,7 +361,8 @@ async function collectFacts(number, main, now) {
     manifestScoped: false,
     checks,
     headCommittedAt: commit.committer?.date ?? null,
-    lock: { added: [], newInstallScripts: [], changed: [] },
+    headCommit: { authorEmail: commit.author?.email ?? null, verified: Boolean(commit.verification?.verified) },
+    lock: NO_LOCK_CHANGES,
     registry: [],
     newAdvisories: [],
     malware: [],
@@ -341,13 +382,14 @@ async function collectFacts(number, main, now) {
 
   // Compare against the PR's own base, so the diff is exactly what Dependabot changed;
   // drift from main is the `fresh` rule's job.
-  const { pkg: basePkg, lock: baseLock, advisories: before } = baseSide(pr.base.sha);
+  const { pkg: basePkg, advisories: before } = baseSide(pr.base.sha);
+  const baseLock = lockAt(pr.base.sha);
   const headPkg = rawFile('package.json', pr.head.sha);
-  const headLock = rawFile('package-lock.json', pr.head.sha);
+  const headLock = lockAt(pr.head.sha);
   const version = (lock, name) => lock.packages?.[`node_modules/${name}`]?.version ?? null;
   facts.updates = declared.map((u) => ({ ...u, from: version(baseLock, u.name), to: version(headLock, u.name) }));
   facts.manifestScoped = manifestChangeIsScoped(basePkg, headPkg, declared.map((u) => u.name));
-  facts.lock = diffLockfiles(baseLock, headLock);
+  facts.lock = lockDiff(pr, declared);
   try {
     facts.malware = malwareAdvisories(facts.lock.changed.map((c) => `${c.name}@${c.to}`));
   } catch {
@@ -413,9 +455,12 @@ async function evaluatePr(number, { main, now, assessment, slotFree, by = 'agent
   const comments = prComments(number);
   const { comment: existing, record: prior } = findRecord(number, comments);
   const record = prior ?? { pr: number };
-  // Assessments and owner overrides belong to the package versions, not the commit, so a
-  // Dependabot rebase keeps them; every gate is still re-evaluated on the new commit.
-  const key = assessmentKey({ updates: facts.updates, checks: facts.checks, policyHash: POLICY_HASH });
+  // Assessments and owner overrides belong to the evaluated dependency state (declared
+  // versions + introduced lockfile versions), not the commit: a rebase that leaves the
+  // lockfile alone keeps them, one that re-resolves it does not. Every gate is still
+  // re-evaluated on each commit.
+  const fingerprint = lockFingerprint(facts.lock.changed);
+  const key = keyFor(facts.updates, facts.checks, facts.lock.changed);
   if (assessment && assessment.key === key) {
     record.assessment = assessment.assessment;
     record.assessmentKey = key;
@@ -423,12 +468,24 @@ async function evaluatePr(number, { main, now, assessment, slotFree, by = 'agent
   const current = record.assessmentKey === key ? record.assessment : null;
   const rules = evaluateRules({ ...facts, assessment: current });
   const versions = updatesKey(facts.updates);
-  const override = approvedVersions(comments, BOT).has(versions);
-  if (override && record.overrideSeen !== versions) {
-    record.overrideSeen = versions;
-    pushHistory(record, { at: now.toISOString(), sha: meta.headSha, outcome: 'override', by: OWNER || 'owner' });
+  // An override waives only the soft rules the owner saw failing, and only for the exact
+  // lockfile they approved. A rule that starts failing later, or a rebase that brings in
+  // different dependency versions, escalates again instead of riding on the override.
+  const forVersions = overridesFrom(comments, BOT).filter((o) => o.versions === versions);
+  const override = forVersions.findLast((o) => o.lock === fingerprint);
+  const overrideStale = !override && forVersions.length > 0;
+  const approved = `${versions}|${fingerprint}`;
+  if (override && record.overrideSeen !== approved) {
+    record.overrideSeen = approved;
+    pushHistory(record, { at: now.toISOString(), sha: meta.headSha, outcome: 'override', by: override.by });
   }
-  let outcome = decide({ rules, mode: MODE, override, held: meta.labels.includes(LABEL.hold), slotFree });
+  let outcome = decide({
+    rules,
+    mode: MODE,
+    waived: new Set(override?.waive ?? []),
+    held: meta.labels.includes(LABEL.hold),
+    slotFree,
+  });
 
   // Our `@dependabot rebase` may be ignored (Dependabot might not take commands from an
   // App): after REBASE_STUCK_HOURS on the same commit, hand it to the owner.
@@ -455,6 +512,8 @@ async function evaluatePr(number, { main, now, assessment, slotFree, by = 'agent
   } else if (coolingTooLong) {
     outcome = 'escalate';
     why = `This PR has waited ${COOLDOWN_WAIT_ESCALATE_DAYS} days for dependency versions to age (${coolingDown.detail}); a fast-moving dependency may keep resetting the clock. \`/deps merge\` to take it as is, or \`/deps hold\`.`;
+  } else if (outcome === 'escalate' && overrideStale) {
+    why = 'Your earlier `/deps merge` covered a different lockfile: a rebase brought in different dependency versions, so it no longer applies. Review this state and reply `/deps merge` again if it is fine.';
   }
 
   if (outcome === 'merge') {
@@ -466,7 +525,15 @@ async function evaluatePr(number, { main, now, assessment, slotFree, by = 'agent
     }
   }
 
-  Object.assign(record, { headSha: meta.headSha, outcome, rules, updatedAt: now.toISOString() });
+  Object.assign(record, {
+    headSha: meta.headSha,
+    // What `/deps merge` approves: exactly this evaluated state.
+    versions,
+    lockFingerprint: fingerprint,
+    outcome,
+    rules,
+    updatedAt: now.toISOString(),
+  });
   pushHistory(record, { at: now.toISOString(), sha: meta.headSha, outcome, by, ...(note ? { note } : {}) });
 
   // Ping once per reason: a rebase with the same versions and the same failing gates stays quiet.
@@ -474,7 +541,15 @@ async function evaluatePr(number, { main, now, assessment, slotFree, by = 'agent
     .filter((r) => r.status === 'fail')
     .map((r) => r.id)
     .join(',');
-  const escalation = `${versions}|${failing}${stuck ? '|rebase-stuck' : ''}${coolingTooLong ? '|cooldown-wait' : ''}`;
+  const escalation = [
+    approved,
+    failing,
+    stuck && 'rebase-stuck',
+    coolingTooLong && 'cooldown-wait',
+    overrideStale && 'override-stale',
+  ]
+    .filter(Boolean)
+    .join('|');
   if (outcome === 'escalate' && record.escalatedKey !== escalation && OWNER) {
     comment(number, renderEscalation(record, OWNER, why));
     record.escalatedKey = escalation;
@@ -602,7 +677,7 @@ const commands = {
       const checks = checkRunsFor(pr.head.sha);
       if (pendingChecks(checks).length) continue;
       const updates = parseUpdatedDependencies(commitMessage(pr.head.sha));
-      const key = assessmentKey({ updates, checks, policyHash: POLICY_HASH });
+      const key = keyFor(updates, checks, lockDiff(pr, updates).changed);
       if (findRecord(pr.number).record?.assessmentKey !== key) queue.push(pr.number);
     }
     output('prs', JSON.stringify(queue.slice(0, MAX_ASSESS_PER_RUN)));
@@ -676,7 +751,7 @@ const commands = {
     if (!assessment || !['merge', 'escalate'].includes(assessment.verdict)) {
       throw new Error(`PR #${pr}: invalid assessment output`);
     }
-    const key = assessmentKey({ updates: f.updates, checks: f.checks, policyHash: POLICY_HASH });
+    const key = keyFor(f.updates, f.checks, f.lock.changed);
     writeFileSync(out, JSON.stringify({ pr: Number(pr), headSha: meta.headSha, key, assessment }));
   },
 
@@ -735,7 +810,30 @@ const commands = {
     // then never race `act`, and needs no shared concurrency group that could drop it.
     const dispatch = (...inputs) => gh(['workflow', 'run', 'deps-agent.yml', '--repo', REPO, ...inputs]);
     if (verb === 'merge') {
-      comment(number, renderOverride(updatesKey(parseUpdatedDependencies(commitMessage(pr.head.sha))), by, reason));
+      // Approve exactly the state the owner was shown: the last evaluated record. If the PR
+      // moved since (Dependabot pushed a newer version, or a rebase), refuse rather than
+      // approve versions nobody has looked at.
+      const { record } = findRecord(number);
+      if (!record?.versions || record.headSha !== pr.head.sha) {
+        comment(
+          number,
+          `This PR changed since deps-agent last evaluated it (or it has not been evaluated yet), so \`/deps merge\` would approve something you have not seen. A run has been started: read the refreshed decision record, then reply \`/deps merge\` again.`,
+        );
+        dispatch();
+        return;
+      }
+      const waive = record.rules.filter((r) => r.kind === 'soft' && r.status !== 'pass').map((r) => r.id);
+      const hard = record.rules.filter((r) => r.kind === 'hard' && r.status === 'fail').map((r) => r.id);
+      if (!waive.length) {
+        comment(
+          number,
+          hard.length
+            ? `\`/deps merge\` only waives soft gates, and none is blocking. Hard gates block this PR: ${hard.join(', ')}.`
+            : 'Nothing for `/deps merge` to waive: no soft gate is blocking this PR.',
+        );
+        return;
+      }
+      comment(number, renderOverride({ versions: record.versions, lock: record.lockFingerprint, waive, by }, reason));
       dispatch();
     } else if (verb === 'recheck') {
       comment(number, `Re-assessment requested by ${by}; a run has been started.`);
@@ -754,6 +852,7 @@ const commands = {
 function clearRunCaches() {
   packuments.clear();
   baseCache.clear();
+  lockCache.clear();
 }
 
 export { POLICY_HASH, clearRunCaches, commands, evaluatePr, handleMain };

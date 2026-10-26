@@ -3,7 +3,12 @@ import { execFileSync } from 'node:child_process';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { REQUIRED_CHECKS, assessmentKey } from '../../.github/deps-agent/gate.mjs';
+import {
+  DEPENDABOT_COMMIT_EMAIL,
+  REQUIRED_CHECKS,
+  assessmentKey,
+  lockFingerprint,
+} from '../../.github/deps-agent/gate.mjs';
 import { decodeRecord, renderOverride } from '../../.github/deps-agent/record.mjs';
 
 // The CLI shells out to `gh`, `git` and `npm`; every call goes through this fake GitHub,
@@ -48,30 +53,38 @@ interface FakeState {
 let state: FakeState;
 let nextId = 1000;
 
+const tarball = (name: string, v: string) =>
+  `https://registry.npmjs.org/${name}/-/${name}-${v}.tgz`;
 const lock = (zod: string, ms?: string) => ({
   packages: {
     '': { version: '0.1.0' },
-    'node_modules/zod': { version: zod },
-    ...(ms ? { 'node_modules/ms': { version: ms } } : {}),
+    'node_modules/zod': { version: zod, resolved: tarball('zod', zod) },
+    ...(ms ? { 'node_modules/ms': { version: ms, resolved: tarball('ms', ms) } } : {}),
   },
 });
+/** Fingerprint of what the fake head lockfile introduces (zod, plus ms when enabled). */
+const headFingerprint = () =>
+  lockFingerprint([
+    { name: 'zod', to: '4.6.7' },
+    ...(state.withMs ? [{ name: 'ms', to: '2.1.4' }] : []),
+  ]);
 const pkg = (zod: string) => ({ name: 'gleanary', dependencies: { zod: `^${zod}` } });
+
+const fakePr = () => ({
+  number: PR,
+  title: 'chore(deps): bump zod from 4.4.3 to 4.6.7',
+  html_url: `https://github.com/${REPO}/pull/${PR}`,
+  user: { login: 'dependabot[bot]' },
+  head: { sha: state.headSha, ref: 'dependabot/npm_and_yarn/zod-4.6.7' },
+  base: { sha: 'base1' },
+  mergeable: state.mergeable,
+  labels: state.labels.map((name) => ({ name })),
+});
 
 function get(path: string): unknown {
   const routes: [RegExp, () => unknown][] = [
-    [
-      new RegExp(`^repos/${REPO}/pulls/${PR}$`),
-      () => ({
-        number: PR,
-        title: 'chore(deps): bump zod from 4.4.3 to 4.6.7',
-        html_url: `https://github.com/${REPO}/pull/${PR}`,
-        user: { login: 'dependabot[bot]' },
-        head: { sha: state.headSha, ref: 'dependabot/npm_and_yarn/zod-4.6.7' },
-        base: { sha: 'base1' },
-        mergeable: state.mergeable,
-        labels: state.labels.map((name) => ({ name })),
-      }),
-    ],
+    [new RegExp(`^repos/${REPO}/pulls/${PR}$`), () => fakePr()],
+    [new RegExp(`^repos/${REPO}/pulls\\?state=open`), () => [fakePr()]],
     [
       /\/pulls\/\d+\/files/,
       () => [{ filename: 'package.json' }, { filename: 'package-lock.json' }],
@@ -80,7 +93,15 @@ function get(path: string): unknown {
       /\/git\/commits\/main1$/,
       () => ({ message: state.mainMessage, committer: { date: '2026-10-23T11:00:00Z' } }),
     ],
-    [/\/git\/commits\//, () => ({ message: MESSAGE, committer: { date: '2026-10-23T11:00:00Z' } })],
+    [
+      /\/git\/commits\//,
+      () => ({
+        message: MESSAGE,
+        committer: { date: '2026-10-23T11:00:00Z' },
+        author: { email: DEPENDABOT_COMMIT_EMAIL },
+        verification: { verified: true },
+      }),
+    ],
     [
       /\/check-runs/,
       () => ({
@@ -176,6 +197,7 @@ const assessed = (verdict: 'merge' | 'escalate') => ({
     updates: [{ name: 'zod', version: '4.6.7' }],
     checks: REQUIRED_CHECKS.map((name) => ({ name, status: 'completed', conclusion: 'success' })),
     policyHash: cli.POLICY_HASH,
+    lockFingerprint: headFingerprint(),
   }),
   assessment: {
     verdict,
@@ -265,7 +287,10 @@ describe('evaluatePr', () => {
   it('applies an override written by the App, and survives a rebase', async () => {
     state.comments.push({
       id: 1,
-      body: renderOverride('zod@4.6.7', 'owner', ''),
+      body: renderOverride(
+        { versions: 'zod@4.6.7', lock: headFingerprint(), waive: ['verdict'], by: 'owner' },
+        '',
+      ),
       user: { login: BOT, type: 'Bot' },
     });
     await cli.evaluatePr(PR, {
@@ -280,7 +305,10 @@ describe('evaluatePr', () => {
   it('ignores an override marker pasted by anyone else', async () => {
     state.comments.push({
       id: 1,
-      body: renderOverride('zod@4.6.7', 'owner', ''),
+      body: renderOverride(
+        { versions: 'zod@4.6.7', lock: headFingerprint(), waive: ['verdict'], by: 'owner' },
+        '',
+      ),
       user: { login: 'mallory', type: 'User' },
     });
     const { outcome } = await cli.evaluatePr(PR, {
@@ -291,6 +319,27 @@ describe('evaluatePr', () => {
     });
     expect(outcome).toBe('escalate');
     expect(merges()).toHaveLength(0);
+  });
+
+  it('drops an override once a rebase changes the lockfile, and says why', async () => {
+    state.comments.push({
+      id: 1,
+      body: renderOverride(
+        { versions: 'zod@4.6.7', lock: headFingerprint(), waive: ['verdict'], by: 'owner' },
+        '',
+      ),
+      user: { login: BOT, type: 'Bot' },
+    });
+    state.withMs = true; // the rebase re-resolved the lockfile: ms is now introduced too
+    const { outcome } = await cli.evaluatePr(PR, {
+      main: healthy,
+      now: NOW,
+      assessment: assessed('escalate'),
+      slotFree: true,
+    });
+    expect(outcome).toBe('escalate');
+    expect(merges()).toHaveLength(0);
+    expect(pings()[0]?.body).toContain('covered a different lockfile');
   });
 
   it('asks Dependabot to rebase once, then escalates if nothing happened after 24 h', async () => {
@@ -341,6 +390,40 @@ describe('handleMain', () => {
     state.issues = [{ number: 50, title: 'deps-agent: main old1234 is broken' }];
     cli.handleMain(healthy);
     expect(state.writes.some((w) => w.method === 'PATCH' && w.body.state === 'closed')).toBe(true);
+  });
+});
+
+describe('plan', () => {
+  /** PR numbers `plan` would send to the assess matrix. */
+  const planned = async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'deps-plan-'));
+    const file = join(dir, 'out');
+    writeFileSync(file, '');
+    vi.stubEnv('GITHUB_OUTPUT', file);
+    try {
+      await cli.commands.plan();
+      return JSON.parse(readFileSync(file, 'utf8').split('\n')[1] ?? '[]') as number[];
+    } finally {
+      vi.unstubAllEnvs();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  };
+
+  it('agrees with act on the cache key: an assessed PR is not queued again', async () => {
+    expect(await planned()).toEqual([PR]); // no record yet
+    await cli.evaluatePr(PR, {
+      main: healthy,
+      now: NOW,
+      assessment: assessed('merge'),
+      slotFree: false,
+    });
+    expect(await planned()).toEqual([]);
+    state.headSha = 'head2'; // a rebase that leaves the lockfile alone reuses the assessment
+    expect(await planned()).toEqual([]);
+    // A rebase that re-resolves the lockfile (always a new commit) needs a fresh one.
+    state.withMs = true;
+    state.headSha = 'head3';
+    expect(await planned()).toEqual([PR]);
   });
 });
 
@@ -425,12 +508,35 @@ describe('command', () => {
     return cli.commands.command();
   };
 
-  it('records /deps merge as an App override comment and starts a run, never merging itself', async () => {
+  const evaluated = () =>
+    cli.evaluatePr(PR, {
+      main: healthy,
+      now: NOW,
+      assessment: assessed('escalate'),
+      slotFree: true,
+    });
+  const overrideComments = () =>
+    state.comments.filter((c) => c.body.includes('deps-agent:override'));
+
+  it('approves exactly the last evaluated state, starts a run, and never merges itself', async () => {
+    await evaluated(); // escalates on the verdict
+    const writesBefore = state.writes.length;
     await run('/deps merge looks fine');
-    expect(state.comments.some((c) => c.body.includes('deps-agent:override'))).toBe(true);
+    expect(overrideComments()).toHaveLength(1);
+    expect(overrideComments()[0]?.body).toContain('`verdict`');
     expect(state.dispatches).toHaveLength(1);
     expect(merges()).toHaveLength(0);
-    expect(state.comments.some((c) => c.body.includes('deps-agent:record'))).toBe(false);
+    // The command only appended the override comment: the record is left to `act`.
+    expect(state.writes.slice(writesBefore).every((w) => w.method === 'POST')).toBe(true);
+  });
+
+  it('refuses to approve when the PR moved since the last evaluation', async () => {
+    await evaluated();
+    state.headSha = 'head2'; // Dependabot pushed a newer version after the escalation
+    await run('/deps merge');
+    expect(overrideComments()).toHaveLength(0);
+    expect(state.comments.at(-1)?.body).toContain('changed since deps-agent last evaluated it');
+    expect(state.dispatches).toHaveLength(1);
   });
 
   it('ignores commands from anyone but the owner', async () => {

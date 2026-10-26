@@ -5,6 +5,8 @@
 // rule); it can only turn a permitted merge into an escalation, never the
 // reverse. Policy rationale lives in policy.md next to this file.
 
+import { createHash } from 'node:crypto';
+
 /** Check runs that must be green on the PR head SHA (names from ci.yml). */
 export const REQUIRED_CHECKS = [
   'Lint',
@@ -27,6 +29,7 @@ export const LIMITS = {
  */
 export const RULE_KIND = {
   author: 'hard',
+  sources: 'hard',
   ecosystem: 'hard',
   injection: 'hard',
   files: 'hard',
@@ -88,18 +91,34 @@ export function updatesKey(updates) {
 }
 
 /**
- * Cache key for Claude's assessment: the same package versions under the same policy and
- * the same CI outcome get the same assessment, so a Dependabot rebase does not re-run it.
- * A newly red CI changes the key, so the failure still gets read.
+ * Cache key for Claude's assessment: the same declared versions, the same introduced
+ * lockfile versions, the same policy and the same CI outcome get the same assessment, so a
+ * Dependabot rebase that leaves the lockfile alone does not re-run it. A rebase that pulls
+ * new transitive versions changes the key (the code review never saw them), and a newly
+ * red CI changes it too, so the failure still gets read.
  * @param {object} p
  * @param {{name: string, version?: string}[]} p.updates - declared updates
  * @param {{status: string, conclusion: string|null}[]} p.checks - head SHA check runs
  * @param {string} p.policyHash - fingerprint of policy.md, prompt.md and the schema
+ * @param {string} p.lockFingerprint - lockFingerprint() of the introduced versions
  * @returns {string} the cache key
  */
-export function assessmentKey({ updates, checks, policyHash }) {
+export function assessmentKey({ updates, checks, policyHash, lockFingerprint }) {
   const ci = failedChecks(checks).length ? 'red' : 'green';
-  return `${policyHash}|ci-${ci}|${updatesKey(updates)}`;
+  return `${policyHash}|ci-${ci}|${updatesKey(updates)}|lock-${lockFingerprint}`;
+}
+
+/**
+ * Fingerprint of every version the lockfile introduces. A rebase that re-resolves the
+ * lockfile (new transitive versions) changes it, so a cached assessment, whose code review
+ * never saw those versions, and an owner override, which approved a specific lockfile, stop
+ * applying. A rebase that leaves the introduced versions alone keeps both.
+ * @param {{name: string, to: string}[]} changed - diffLockfiles().changed
+ * @returns {string} short hex digest
+ */
+export function lockFingerprint(changed) {
+  const specs = changed.map((c) => `${c.name}@${c.to}`).sort();
+  return createHash('sha256').update(specs.join('\n')).digest('hex').slice(0, 16);
 }
 
 /**
@@ -153,6 +172,9 @@ export function diffLockfiles(base, head) {
         from: b[key]?.version ?? null,
         to: entry.version,
         installScript: Boolean(entry.hasInstallScript),
+        resolved: entry.resolved ?? null,
+        // Bundled (inBundle) and linked entries are never fetched on their own.
+        bundled: Boolean(entry.inBundle || entry.link),
       });
     }
   }
@@ -206,7 +228,11 @@ export function installScriptChanges(lock, registry = []) {
   const unchangedAndAttested = (c) => {
     if (!TRUSTED_INSTALL_SCRIPTS.has(c.name)) return false;
     const r = facts.get(`${c.name}@${c.to}`);
-    return Boolean(r?.prevAttested && r.attested && r.installCmd) && r.installCmd === r.prevInstallCmd;
+    return (
+      Boolean(r?.prevAttested && r.attested && r.installCmd) &&
+      r.installCmd === r.prevInstallCmd &&
+      !repoChanged(r)
+    );
   };
   const offenders = [...gained].map((name) => `${name} (new script)`);
   const trusted = [];
@@ -245,6 +271,32 @@ const unless = (id, offenders, failMsg, passMsg) =>
 const TRI = { true: 'pass', false: 'fail' };
 /** `name@version` of a registry fact. */
 const label = (r) => `${r.name}@${r.version}`;
+
+/**
+ * npm only accepts a provenance publish when package.json's `repository.url` matches the
+ * attestation's source repo. So a stolen token publishing "with provenance" from the
+ * attacker's own GitHub repo has to change `repository`: comparing it with the previous
+ * version's catches that, where a bare "has an attestation" check does not.
+ */
+const repoChanged = (r) => Boolean(r.prevRepo && r.repo && r.prevRepo !== r.repo);
+
+/** Author email of every commit Dependabot creates (GitHub signs them). */
+export const DEPENDABOT_COMMIT_EMAIL = '49699333+dependabot[bot]@users.noreply.github.com';
+const NPM_REGISTRY = 'https://registry.npmjs.org/';
+
+/**
+ * The PR author alone does not prove the branch content is Dependabot's: anyone with push
+ * access could add a commit. The head commit must be authored by Dependabot and carry a
+ * valid signature.
+ */
+function authorRule(f) {
+  if (f.author !== DEPENDABOT_LOGIN) return result('author', 'fail', `PR author ${f.author}`);
+  const c = f.headCommit;
+  if (!c || c.authorEmail !== DEPENDABOT_COMMIT_EMAIL || !c.verified) {
+    return result('author', 'fail', `head commit is not a signed Dependabot commit (author ${c?.authorEmail ?? '?'}, verified ${c?.verified ?? '?'})`);
+  }
+  return result('author', 'pass', 'Dependabot PR, head commit signed by Dependabot');
+}
 
 /**
  * Required checks that have not completed on the head SHA.
@@ -300,9 +352,15 @@ function checksRule(checks, headCommittedAt, now) {
 function cooldownRule(registry, now) {
   const cutoff = now.getTime() - LIMITS.cooldownDays * 86_400_000;
   const young = (r) => r.publishedAt && new Date(r.publishedAt).getTime() > cutoff;
-  const blocking = registry.filter((r) => !r.publishedAt || (r.direct && young(r)));
+  // The registry answered but has no publish time for this version: suspicious, escalate.
+  const blocking = registry.filter((r) => !r.registryError && (!r.publishedAt || (r.direct && young(r))));
   if (blocking.length) {
     return unless('cooldown', blocking.map(label), `published < ${LIMITS.cooldownDays}d ago (or unknown)`, '');
+  }
+  // The registry did not answer: an outage, not a finding. Wait, as for the malware feed.
+  const unreachable = registry.filter((r) => r.registryError);
+  if (unreachable.length) {
+    return result('cooldown', 'pending', `npm registry unavailable for: ${unreachable.map(label).join(', ')}`);
   }
   const aging = registry.filter(young);
   return aging.length
@@ -369,7 +427,13 @@ export function evaluateRules(f) {
   const scripts = installScriptChanges(f.lock, f.registry);
 
   return [
-    result('author', TRI[f.author === DEPENDABOT_LOGIN], `author ${f.author}`),
+    authorRule(f),
+    unless(
+      'sources',
+      f.lock.changed.filter((c) => !c.bundled && !c.resolved?.startsWith(NPM_REGISTRY)).map((c) => `${c.name}@${c.to} from ${c.resolved ?? '?'}`),
+      'not resolved from registry.npmjs.org',
+      'every introduced version resolves from registry.npmjs.org',
+    ),
     result('ecosystem', TRI[f.branch.startsWith(NPM_BRANCH_PREFIX)], `branch ${f.branch}`),
     result(
       'injection',
@@ -416,9 +480,12 @@ export function evaluateRules(f) {
     cooldownRule(f.registry, f.now),
     unless(
       'provenance',
-      f.registry.filter((r) => r.prevAttested && !r.attested).map(label),
-      'provenance dropped',
-      'no provenance regression in any introduced version',
+      f.registry.flatMap((r) => {
+        if (repoChanged(r)) return [`${label(r)} (source repo ${r.prevRepo} → ${r.repo})`];
+        return r.prevAttested && !r.attested ? [`${label(r)} (provenance dropped)`] : [];
+      }),
+      'provenance regression',
+      'no provenance drop or source-repo change in any introduced version',
     ),
     // Direct packages only: maintainer rotation in transitive packages is common enough
     // that it would escalate most bumps; transitive versions get cooldown, provenance,
@@ -455,20 +522,20 @@ export function evaluateRules(f) {
  * @param {object} p
  * @param {{kind: string, status: string}[]} p.rules - from evaluateRules
  * @param {'off'|'shadow'|'merge'} p.mode - DEPS_AGENT_MODE
- * @param {boolean} p.override - the owner commented `/deps merge` on this head SHA
+ * @param {Set<string>} [p.waived] - soft rule ids the owner's `/deps merge` waived for this
+ *   exact lockfile; only those are skipped, so a soft rule that starts failing after the
+ *   override (e.g. a rebase pulled a new transitive version) escalates again
  * @param {boolean} p.held - the PR carries the deps:hold label
  * @param {boolean} p.slotFree - no merge has happened yet in this run
  * @returns {'held'|'escalate'|'wait'|'would-merge'|'queued'|'merge'} the outcome
  */
-export function decide({ rules, mode, override, held, slotFree }) {
+export function decide({ rules, mode, waived = new Set(), held, slotFree }) {
   if (held) return 'held';
-  const failing = (kind) => rules.some((r) => r.kind === kind && r.status === 'fail');
-  if (failing('hard')) return 'escalate';
-  if (failing('soft') && !override) return 'escalate';
-  // An owner override stands in for the assessment, so a pending verdict does not block it.
-  const blocking = rules.filter(
-    (r) => r.status !== 'pass' && !(override && r.kind === 'soft'),
-  );
+  const isWaived = (r) => r.kind === 'soft' && waived.has(r.id);
+  if (rules.some((r) => r.kind === 'hard' && r.status === 'fail')) return 'escalate';
+  if (rules.some((r) => r.kind === 'soft' && r.status === 'fail' && !isWaived(r))) return 'escalate';
+  // A waived rule that is merely pending (e.g. the verdict, not assessed yet) does not block.
+  const blocking = rules.filter((r) => r.status !== 'pass' && !isWaived(r));
   if (blocking.length) return 'wait';
   if (mode !== 'merge') return 'would-merge';
   return slotFree ? 'merge' : 'queued';

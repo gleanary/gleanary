@@ -26,7 +26,8 @@ PR declares (direct) **and** the dependency versions that change with them (tran
 
 | Rule           | Kind      | Passes when                                                                     |
 | -------------- | --------- | ------------------------------------------------------------------------------- |
-| author         | hard      | PR author is `dependabot[bot]`                                                  |
+| author         | hard      | PR author is `dependabot[bot]`, and the head commit is authored by Dependabot and carries a valid signature (anyone with push access could otherwise add a commit) |
+| sources        | hard      | every introduced version resolves from `https://registry.npmjs.org/` (no git or tarball URLs; bundled entries excepted) |
 | ecosystem      | hard      | npm (GitHub Actions bumps edit workflows: always a human)                       |
 | injection      | hard      | the assessment found no text addressed to an AI in PR, changelog or code        |
 | files          | hard      | only `package.json` / `package-lock.json` changed                               |
@@ -36,8 +37,8 @@ PR declares (direct) **and** the dependency versions that change with them (tran
 | semver         | soft      | patch or minor; 0.x minors, 0.0.x and prereleases count as major                |
 | installScripts | soft      | no package gains an install script, and no package that runs one changes version. Exception (option B): a new version of `better-sqlite3`, `esbuild`, `msw` or `unrs-resolver` passes when its install command is identical to the previous version's and both versions have npm provenance (cooldown and the code review still apply) |
 | newPackages    | soft      | ≤ 15 new packages in the lockfile                                               |
-| cooldown       | soft      | every introduced version is ≥ 7 days old. A young transitive version **waits** until it ages; a young direct version (a security update) or an unknown publish time escalates |
-| provenance     | soft      | no introduced version lost the npm provenance its previous version had         |
+| cooldown       | soft      | every introduced version is ≥ 7 days old. A young transitive version **waits** until it ages; a young direct version (a security update) or a publish time the registry omits escalates; a registry that does not answer makes the PR **wait** |
+| provenance     | soft      | no introduced version lost the npm provenance its previous version had, or changed source repository (`repository.url`). npm ties provenance to that field, so a stolen token publishing "with provenance" from another repo has to change it |
 | publisher      | soft      | each direct package has the same npm publisher as its previous version (direct only: transitive maintainer changes are too common) |
 | audit          | soft      | `npm audit` finds no advisory that main does not already have                   |
 | codeReview     | soft      | Claude's review of the published code diff found nothing suspicious. Covers the direct packages and up to 10 transitive versions (install-script packages first); coverage is reported, and coverage "none" fails when there were version changes to review (a review that saw nothing is not a pass) |
@@ -47,9 +48,12 @@ PR declares (direct) **and** the dependency versions that change with them (tran
 | mainHealthy    | transient | main's latest CI and Deploy succeeded                                           |
 
 A failing **hard** or **soft** rule escalates. A failing **transient** rule waits for the
-next run. The owner's `/deps merge` overrides **soft** rules for those exact package versions
-(it survives Dependabot rebases; a newer version needs a new decision). Hard rules are
-re-checked on every commit.
+next run. The owner's `/deps merge` approves the exact state the owner last saw: it waives
+only the **soft** rules that were failing in that evaluation, for those package versions
+and that exact lockfile. A rebase that brings in different dependency versions, or a soft
+rule that starts failing later, escalates again. If the PR changed since the last
+evaluation, `/deps merge` refuses and asks the owner to look again. Hard rules are
+re-checked on every commit and can never be waived.
 
 ## The assessment escalates when
 

@@ -1,6 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import {
+  DEPENDABOT_COMMIT_EMAIL,
   REQUIRED_CHECKS,
+  RULE_KIND,
   advisoryKeys,
   assessmentKey,
   classifyBump,
@@ -9,6 +11,7 @@ import {
   diffLockfiles,
   evaluateRules,
   latestCheckRuns,
+  lockFingerprint,
   manifestChangeIsScoped,
   parseUpdatedDependencies,
   updatesKey,
@@ -30,6 +33,7 @@ type Facts = Parameters<typeof evaluateRules>[0];
 function cleanFacts(overrides: Record<string, unknown> = {}): Facts {
   return {
     author: 'dependabot[bot]',
+    headCommit: { authorEmail: DEPENDABOT_COMMIT_EMAIL, verified: true },
     branch: 'dependabot/npm_and_yarn/zod-4.6.7',
     files: ['package.json', 'package-lock.json'],
     updates: [{ name: 'zod', type: 'direct:production', from: '4.4.3', to: '4.6.7' }],
@@ -62,18 +66,31 @@ function cleanFacts(overrides: Record<string, unknown> = {}): Facts {
 const statusOf = (facts: Facts, id: string) =>
   evaluateRules(facts).find((r) => r.id === id)?.status;
 
+const SOFT_RULES = Object.entries(RULE_KIND)
+  .filter(([, kind]) => kind === 'soft')
+  .map(([id]) => id);
+
+/** `override: true` waives every soft rule (what an owner override can at most do). */
 const outcome = (
   facts: Facts,
-  opts: Partial<{ mode: string; override: boolean; held: boolean; slotFree: boolean }> = {},
-) =>
-  decide({
+  opts: Partial<{
+    mode: string;
+    override: boolean;
+    waived: Set<string>;
+    held: boolean;
+    slotFree: boolean;
+  }> = {},
+) => {
+  const { override, ...rest } = opts;
+  return decide({
     rules: evaluateRules(facts),
     mode: 'merge',
-    override: false,
+    waived: override ? new Set(SOFT_RULES) : new Set(),
     held: false,
     slotFree: true,
-    ...opts,
+    ...rest,
   } as Parameters<typeof decide>[0]);
+};
 
 describe('classifyBump', () => {
   it('classifies ordinary patch, minor and major bumps', () => {
@@ -140,8 +157,22 @@ describe('diffLockfiles', () => {
       added: ['node_modules/b'],
       newInstallScripts: ['node_modules/a'],
       changed: [
-        { name: 'a', from: '1.0.0', to: '1.0.1', installScript: true },
-        { name: 'b', from: null, to: '2.0.0', installScript: false },
+        {
+          name: 'a',
+          from: '1.0.0',
+          to: '1.0.1',
+          installScript: true,
+          resolved: null,
+          bundled: false,
+        },
+        {
+          name: 'b',
+          from: null,
+          to: '2.0.0',
+          installScript: false,
+          resolved: null,
+          bundled: false,
+        },
       ],
     });
   });
@@ -165,7 +196,7 @@ describe('assessment cache key', () => {
     { name: '@types/node', version: '22.9.0' },
   ];
   const key = (over: Partial<Parameters<typeof assessmentKey>[0]> = {}) =>
-    assessmentKey({ updates, checks: green, policyHash: 'abc', ...over });
+    assessmentKey({ updates, checks: green, policyHash: 'abc', lockFingerprint: 'lock1', ...over });
 
   it('ignores the commit: same versions in any order give the same key', () => {
     expect(key({ updates: [...updates].reverse() })).toBe(key());
@@ -176,6 +207,15 @@ describe('assessment cache key', () => {
     expect(key({ updates: [{ name: 'zod', version: '4.6.8' }] })).not.toBe(key());
     expect(key({ policyHash: 'def' })).not.toBe(key());
     expect(key({ checks: red })).not.toBe(key());
+    // A rebase that re-resolves the lockfile: the code review never saw the new versions.
+    expect(key({ lockFingerprint: 'lock2' })).not.toBe(key());
+  });
+
+  it('fingerprints the introduced lockfile versions, in any order', () => {
+    const a = { name: 'a', to: '1.0.0' };
+    const b = { name: 'b', to: '2.0.0' };
+    expect(lockFingerprint([a, b])).toBe(lockFingerprint([b, a]));
+    expect(lockFingerprint([a, b])).not.toBe(lockFingerprint([a, { name: 'b', to: '2.0.1' }]));
   });
 });
 
@@ -498,6 +538,14 @@ describe('evaluateRules + decide', () => {
       );
     });
 
+    it('escalates a trusted package whose source repository changed', () => {
+      const moved = bump('better-sqlite3', {
+        prevRepo: 'github.com/wiselibs/better-sqlite3',
+        repo: 'github.com/x/y',
+      });
+      expect(statusOf(moved, 'installScripts')).toBe('fail');
+    });
+
     it('escalates a package that is not on the trusted list', () => {
       expect(statusOf(bump('sharp'), 'installScripts')).toBe('fail');
     });
@@ -506,6 +554,76 @@ describe('evaluateRules + decide', () => {
       const facts = bump('esbuild');
       const lock = { ...facts.lock, newInstallScripts: ['node_modules/esbuild'] };
       expect(statusOf({ ...facts, lock }, 'installScripts')).toBe('fail');
+    });
+  });
+
+  describe('third review: what the gate must not pass', () => {
+    const reg = () => cleanFacts().registry[0]!;
+
+    it('waives only the soft rules the override names', () => {
+      const sdk = {
+        name: '@anthropic-ai/sdk',
+        type: 'direct:production',
+        from: '0.115.0',
+        to: '0.135.0',
+      };
+      const facts = cleanFacts({ updates: [sdk] });
+      expect(outcome(facts, { waived: new Set(['semver']) })).toBe('merge');
+      // After a rebase, a new transitive version drops provenance: not covered, escalate.
+      const later = cleanFacts({
+        updates: [sdk],
+        registry: [
+          reg(),
+          { ...reg(), name: 'esbuild', version: '0.28.3', direct: false, attested: false },
+        ],
+      });
+      expect(outcome(later, { waived: new Set(['semver']) })).toBe('escalate');
+    });
+
+    it('fails a head commit that is not a signed Dependabot commit, even with an override', () => {
+      const unsigned = cleanFacts({
+        headCommit: { authorEmail: DEPENDABOT_COMMIT_EMAIL, verified: false },
+      });
+      const human = cleanFacts({
+        headCommit: { authorEmail: 'someone@example.com', verified: true },
+      });
+      expect(statusOf(unsigned, 'author')).toBe('fail');
+      expect(statusOf(human, 'author')).toBe('fail');
+      expect(outcome(human, { override: true })).toBe('escalate');
+    });
+
+    it('fails an introduced version that does not resolve from registry.npmjs.org', () => {
+      const entry = { name: 'x', from: '1.0.0', to: '1.0.1', installScript: false, bundled: false };
+      const withChanged = (c: Record<string, unknown>) =>
+        cleanFacts({ lock: { added: [], newInstallScripts: [], changed: [{ ...entry, ...c }] } });
+      const git = withChanged({ resolved: 'git+ssh://git@evil.example/x.git' });
+      expect(statusOf(git, 'sources')).toBe('fail');
+      expect(outcome(git, { override: true })).toBe('escalate');
+      expect(
+        statusOf(
+          withChanged({ resolved: 'https://registry.npmjs.org/x/-/x-1.0.1.tgz' }),
+          'sources',
+        ),
+      ).toBe('pass');
+      expect(statusOf(withChanged({ resolved: null, bundled: true }), 'sources')).toBe('pass');
+    });
+
+    it('fails a version whose source repository changed, even though it is attested', () => {
+      const moved = cleanFacts({
+        registry: [
+          { ...reg(), prevRepo: 'github.com/colinhacks/zod', repo: 'github.com/mallory/zod' },
+        ],
+      });
+      expect(statusOf(moved, 'provenance')).toBe('fail');
+      expect(evaluateRules(moved).find((r) => r.id === 'provenance')?.detail).toContain(
+        'github.com/mallory/zod',
+      );
+    });
+
+    it('waits, rather than escalating, when the npm registry is unreachable', () => {
+      const down = cleanFacts({ registry: [{ ...reg(), publishedAt: null, registryError: true }] });
+      expect(statusOf(down, 'cooldown')).toBe('pending');
+      expect(outcome(down)).toBe('wait');
     });
   });
 
