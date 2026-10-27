@@ -960,6 +960,17 @@ describe('assessment tool flags', () => {
     expect(denies(disallowed, '/etc/passwd')).toBe(true);
     expect(list('allowedTools')).toContain('Read(./**)');
   });
+
+  it('passes Claude Code a schema its strict validator accepts: no custom keywords', () => {
+    // Claude Code rejects unknown keywords in --json-schema (it failed every assess job once).
+    const schema = readFileSync(
+      join(__dirname, '../../.github/deps-agent/assessment.schema.json'),
+      'utf8',
+    );
+    const customKey = /"x-[A-Za-z]+"\s*:/;
+    expect(schema).toMatch(customKey); // the file uses them, for clampAssessment
+    expect(cli.schemaArg(JSON.parse(schema))).not.toMatch(customKey);
+  });
 });
 
 describe('command', () => {

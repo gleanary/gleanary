@@ -768,11 +768,16 @@ function updateDashboard(rows, main, now) {
 
 /**
  * The schema as one single-quoted CLI argument. A `'` inside would end the quoting and
- * break every assess job; `\u0027` is the same character to a JSON parser.
+ * break every assess job; `\u0027` is the same character to a JSON parser. Claude Code
+ * validates the schema in strict mode, which rejects unknown keywords, so the `x-*` storage
+ * limits (read by clampAssessment) are left out.
  * @param {object} schema - JSON schema
  * @returns {string} quoted argument
  */
-const schemaArg = (schema) => `'${JSON.stringify(schema).replace(/'/g, '\\u0027')}'`;
+const schemaArg = (schema) => {
+  const json = JSON.stringify(schema, (key, value) => (key.startsWith('x-') ? undefined : value));
+  return `'${json.replace(/'/g, '\\u0027')}'`;
+};
 
 /** GITHUB_OUTPUT writer with a random heredoc delimiter (values may be multi-line). */
 function output(name, value) {
