@@ -12,6 +12,7 @@ All notable changes to this project will be documented in this file.
 
 ### Changed
 
+- **deps: katex 0.19.0** (#33): the reader's KaTeX class-name contract is unchanged; `highlight-anchoring.md` and the contract-test comments now reference 0.19.0.
 - **refactor: unpin eslint-plugin-react-hooks (7.1.1)** and remove setState-in-effect patterns in the draft editor (force-confirm dialog derived from the generation error), highlight layer (`enterEditMode` clears hover and pending selection; render no longer reads refs), settings page (appearance mode and last section read via `useSyncExternalStore`), voice and usage settings (cancellable fetch-on-mount) and the Knowledge Health panel (open state via `useSyncExternalStore`). The sidebar, health panel and settings now share one `createLocalStorageStore` / `useLocalStorageStore` helper (`src/lib/local-storage-store.ts`) instead of three hand-rolled stores. Two small behavior changes: the sidebar now keeps toggling (in memory) when localStorage writes fail, and the Usage tab drops responses superseded by a newer request (range change or post-save refresh) instead of letting a slow one overwrite newer data.
 - **Skipped majors live in `dependabot.yml`**: eslint 10 and TypeScript 7 are held back by `ignore` entries with their reasons (mirrored in TECH_DEBT.md), instead of only by comment-based ignores invisible in the repo.
 

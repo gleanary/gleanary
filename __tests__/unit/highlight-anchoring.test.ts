@@ -738,7 +738,7 @@ describe('recoverAnchorFromText', () => {
 
 // --- KaTeX class-name contract (pins the classes getTextFromNode depends on) ---
 //
-// These tests render real KaTeX markup with the installed version (0.18.1) and assert
+// These tests render real KaTeX markup with the installed version (0.19.0) and assert
 // that extractRangeText reconstructs the LaTeX source from it. They exist to catch a
 // future KaTeX bump that renames any of the four load-bearing class names
 // ('katex', 'katex-mathml', 'katex-html', 'katex-display') or drops the
@@ -800,7 +800,7 @@ describe('KaTeX text extraction (class-name contract)', () => {
 
   it('handles invalid LaTeX rendered as a .katex-error span without breaking extraction', () => {
     const math = katex.renderToString('\\frac{', { throwOnError: false });
-    // 0.18.1 renders an unrecoverable parse error as <span class="katex-error">…</span>
+    // 0.19.0 renders an unrecoverable parse error as <span class="katex-error">…</span>
     // containing the raw source (no .katex wrapper), so it extracts as plain text.
     expect(math).toContain('katex-error');
     const root = makeRoot(`<p>Before ${math} after</p>`);
