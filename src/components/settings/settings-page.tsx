@@ -1,7 +1,8 @@
 'use client';
 
-import { useState, useEffect, useCallback, useRef, useSyncExternalStore } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { useSearchParams } from 'next/navigation';
+import { createLocalStorageStore, useLocalStorageStore } from '@/lib/local-storage-store';
 import { LogOut } from 'lucide-react';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
@@ -35,48 +36,9 @@ type PendingAction =
       resolve: (result: { success: boolean; message: string }) => void;
     };
 
-// --- localStorage-backed store for the appearance mode (hydration-safe) ---
-
-const APPEARANCE_STORAGE_KEY = 'appearance_mode';
-const appearanceListeners = new Set<() => void>();
-// In-memory value, set only after a localStorage write fails, so the picker still updates.
-let memoryAppearance: AppearanceMode | null = null;
-
-function getAppearanceSnapshot(): AppearanceMode {
-  if (memoryAppearance !== null) return memoryAppearance;
-  try {
-    const stored = localStorage.getItem(APPEARANCE_STORAGE_KEY);
-    if (stored === 'dark' || stored === 'light' || stored === 'automatic') return stored;
-  } catch {
-    // localStorage unavailable — use the default
-  }
-  return 'automatic';
+function parseAppearance(value: string | null): AppearanceMode {
+  return value === 'dark' || value === 'light' || value === 'automatic' ? value : 'automatic';
 }
-
-function getAppearanceServerSnapshot(): AppearanceMode {
-  return 'automatic';
-}
-
-function subscribeAppearance(callback: () => void): () => void {
-  appearanceListeners.add(callback);
-  return () => appearanceListeners.delete(callback);
-}
-
-/** Persists the appearance mode to localStorage and notifies subscribers. */
-function setStoredAppearanceMode(mode: AppearanceMode): void {
-  try {
-    localStorage.setItem(APPEARANCE_STORAGE_KEY, mode);
-    memoryAppearance = null;
-  } catch {
-    // localStorage unavailable — fall back to the in-memory value
-    memoryAppearance = mode;
-  }
-  appearanceListeners.forEach((cb) => cb());
-}
-
-// --- Last-selected settings section (localStorage, read after hydration) ---
-
-const SECTION_STORAGE_KEY = 'settingsSection';
 
 function parseSection(value: string | null): SettingsSection | null {
   return value === 'general' || value === 'integrations' || value === 'voice' || value === 'usage'
@@ -84,22 +46,13 @@ function parseSection(value: string | null): SettingsSection | null {
     : null;
 }
 
-function getStoredSectionSnapshot(): SettingsSection | null {
-  try {
-    return parseSection(localStorage.getItem(SECTION_STORAGE_KEY));
-  } catch {
-    return null;
-  }
-}
-
-function getStoredSectionServerSnapshot(): SettingsSection | null {
-  return null;
-}
-
-/** No-op: the stored section only seeds the initial tab; later picks live in component state. */
-function subscribeStoredSection(): () => void {
-  return () => {};
-}
+const appearanceStore = createLocalStorageStore('appearance_mode', parseAppearance, 'automatic');
+// Last-picked tab, restored after hydration; ?tab= and in-session picks take priority.
+const sectionStore = createLocalStorageStore<SettingsSection | null>(
+  'settingsSection',
+  parseSection,
+  null,
+);
 
 /**
  * Main settings page client component with collapsible sections,
@@ -111,11 +64,7 @@ export function SettingsPage() {
   const [selectedSection, setSelectedSection] = useState<SettingsSection | null>(() =>
     parseSection(searchParams.get('tab')),
   );
-  const storedSection = useSyncExternalStore(
-    subscribeStoredSection,
-    getStoredSectionSnapshot,
-    getStoredSectionServerSnapshot,
-  );
+  const storedSection = useLocalStorageStore(sectionStore);
   const activeSection: SettingsSection = selectedSection ?? storedSection ?? 'general';
   const [settings, setSettings] = useState<Record<string, SettingEntry>>({});
   const [encryptionAvailable, setEncryptionAvailable] = useState(true);
@@ -141,11 +90,7 @@ export function SettingsPage() {
   const [importError, setImportError] = useState<string | null>(null);
 
   // Appearance mode — kept in sync with localStorage for instant theme switching
-  const appearanceMode = useSyncExternalStore(
-    subscribeAppearance,
-    getAppearanceSnapshot,
-    getAppearanceServerSnapshot,
-  );
+  const appearanceMode = useLocalStorageStore(appearanceStore);
 
   // IMAP test and poll state
   const [imapTestStatus, setImapTestStatus] = useState<'idle' | 'testing' | 'success' | 'error'>(
@@ -194,7 +139,7 @@ export function SettingsPage() {
 
   function handleSectionChange(section: SettingsSection) {
     setSelectedSection(section);
-    localStorage.setItem(SECTION_STORAGE_KEY, section);
+    sectionStore.set(section);
   }
 
   // Debounced save for non-encrypted settings
@@ -236,7 +181,7 @@ export function SettingsPage() {
    * persists to localStorage for FOUC prevention on next load, and saves to API.
    */
   function handleAppearanceChange(mode: AppearanceMode) {
-    setStoredAppearanceMode(mode);
+    appearanceStore.set(mode);
     const root = document.documentElement;
     if (mode === 'dark') {
       root.classList.add('dark');
