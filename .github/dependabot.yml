@@ -30,6 +30,20 @@ updates:
       dev-dependencies:
         dependency-type: "development"
         update-types: ["minor", "patch"]
+  # Base image (docker/Dockerfile, pinned to an exact Node version): Node patch/minor
+  # bumps arrive as PRs. deps-agent's ecosystem gate sends them to a human, since the
+  # image is the production runtime.
+  - package-ecosystem: "docker"
+    directory: "/docker"
+    schedule:
+      interval: "weekly"
+    labels: ["dependencies"]
+    ignore:
+      # Node majors are a deliberate move to the next LTS (CI, .nvmrc, engines and the
+      # image change together), not a Dependabot PR. Revisit each October when a new
+      # LTS line starts (next: Node 27, 2027-10). (2026-10)
+      - dependency-name: "node"
+        update-types: ["version-update:semver-major"]
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:

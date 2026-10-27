@@ -54,7 +54,7 @@ jobs:
           sparse-checkout: .github/deps-agent
       - uses: actions/setup-node@v7
         with:
-          node-version: 22
+          node-version: 26
       - id: plan
         run: node .github/deps-agent/cli.mjs plan
         env:
@@ -87,7 +87,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@v7
         with:
-          node-version: 22
+          node-version: 26
       - name: Collect facts
         run: node .github/deps-agent/cli.mjs facts --pr ${{ matrix.pr }} > "$RUNNER_TEMP/facts.json"
       # `npm diff` only downloads the two published tarballs; no package code runs.
@@ -145,7 +145,7 @@ jobs:
           token: ${{ steps.app.outputs.token }}
       - uses: actions/setup-node@v7
         with:
-          node-version: 22
+          node-version: 26
       - uses: actions/download-artifact@v8
         continue-on-error: true
         with:
@@ -183,7 +183,7 @@ jobs:
           sparse-checkout: .github/deps-agent
       - uses: actions/setup-node@v7
         with:
-          node-version: 22
+          node-version: 26
       - run: node .github/deps-agent/cli.mjs command
         env:
           GH_TOKEN: ${{ steps.app.outputs.token }}
