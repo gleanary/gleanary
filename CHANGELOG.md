@@ -12,6 +12,7 @@ All notable changes to this project will be documented in this file.
 
 ### Changed
 
+- **deps-agent: runs started by `/deps` commands can assess again**: the commands dispatch the workflow as the `gleanary-deps-agent` App, and `claude-code-action` rejected every assess job with "Workflow initiated by non-human actor"; the assess step now sets `allowed_bots: gleanary-deps-agent`.
 - **No CI skip markers in commit messages** (CLAUDE.md): a quoted marker in one squashed commit skipped CI, and so Deploy, on `main` when PR #45 merged.
 
 - **test: global tripwire for retired Anthropic models**: `__tests__/mocks/anthropic-model-tripwire.ts` (installed by `msw-setup.ts`) inspects every `POST https://api.anthropic.com/v1/messages` in vitest and fails the sending test if its `model` is not in `ACTIVE_MODEL_IDS`, so a retired id can no longer pass the suite unnoticed; self-tests in `msw-tripwire.test.ts`. The stale `claude-sonnet-4-20250514` response fixtures now use `claude-sonnet-4-6`.

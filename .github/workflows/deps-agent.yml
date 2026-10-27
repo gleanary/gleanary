@@ -105,6 +105,8 @@ jobs:
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           github_token: ${{ github.token }}
+          # `/deps` commands dispatch the run as the App, and the action refuses bot actors unless allowed.
+          allowed_bots: gleanary-deps-agent
           prompt: ${{ steps.prompt.outputs.prompt }}
           claude_args: ${{ steps.prompt.outputs.claude_args }}
       - name: Save assessment
