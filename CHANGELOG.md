@@ -40,6 +40,8 @@ All notable changes to this project will be documented in this file.
 
 ### Fixed
 
+- **deps-agent: assess jobs no longer load the repo's developer `.claude/settings.json`** (`--setting-sources user`): its bubblewrap sandbox cannot start on the runner, so Claude exited before its first turn.
+
 - **deps-agent: every assess job failed** on the first scheduled run: Claude Code validates `--json-schema` in strict mode and rejected the schema's custom `x-maxLength`/`x-maxItems` storage limits. The command-line schema now leaves them out (`clampAssessment` still reads them from the file).
 
 - **Listen player: frozen progress bar, no-op click-to-seek, and drifting/disappearing word highlight** (tts): the rAF tracking loop now reads speed and the estimated total via refs (it closed over the pre-metadata `estimatedTotalTime = 0`, so progress never moved). Inworld's whitespace/punctuation/empty word tokens are dropped with their timestamps (`isSpokenToken()` in `src/lib/tts-tokens.ts`), and the highlighter only indexes spoken DOM words and fingerprints blocks on them, so inline links, commas, em dashes and leading emoji no longer shift or lose the highlight. The `metadata` SSE event now carries `paragraphWordCounts`; the player keeps an absolute timeline (a resumed stream starts at its paragraph's estimated position) and seeking into audio that isn't loaded yet (or before a resumed stream's start) restarts the stream at the estimated paragraph and offset.
