@@ -129,6 +129,8 @@ export function SettingsPage() {
   useEffect(() => {
     let cancelled = false;
     const isCancelled = () => cancelled;
+    // Async IIFE: the setState calls all run after an await, which the
+    // react-hooks/set-state-in-effect rule can't see through a direct useCallback call.
     (async () => {
       await Promise.all([fetchSettings(isCancelled), fetchAudit(isCancelled)]);
     })();

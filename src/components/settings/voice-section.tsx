@@ -52,6 +52,8 @@ export function VoiceSection({ hasAnthropicKey }: Props) {
 
   useEffect(() => {
     let cancelled = false;
+    // Async IIFE: the setState calls all run after an await, which the
+    // react-hooks/set-state-in-effect rule can't see through a direct useCallback call.
     (async () => {
       await fetchData(() => cancelled);
     })();

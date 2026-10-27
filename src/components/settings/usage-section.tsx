@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 
@@ -130,7 +130,13 @@ export function UsageSection() {
   const [budgetInput, setBudgetInput] = useState('');
   const [budgetSaving, setBudgetSaving] = useState(false);
 
-  async function fetchAll(r: string, isCancelled: () => boolean = () => false) {
+  // Bumped by every fetchAll: a response superseded by a newer request (range change or
+  // post-save refresh) is dropped, so a slow response can't overwrite newer data.
+  const latestFetchRef = useRef(0);
+
+  async function fetchAll(r: string) {
+    const id = ++latestFetchRef.current;
+    const isCancelled = () => id !== latestFetchRef.current;
     const [sumRes, featRes, modelRes, topRes] = await Promise.all([
       fetch(`/api/usage/summary?range=${r}`),
       fetch(`/api/usage/breakdown?range=${r}&groupBy=feature`),
@@ -161,14 +167,7 @@ export function UsageSection() {
   }
 
   useEffect(() => {
-    // Cancelled on unmount and on range change, so a slow response can't overwrite a newer range.
-    let cancelled = false;
-    (async () => {
-      await fetchAll(range, () => cancelled);
-    })();
-    return () => {
-      cancelled = true;
-    };
+    fetchAll(range);
   }, [range]);
 
   async function saveBudget() {
