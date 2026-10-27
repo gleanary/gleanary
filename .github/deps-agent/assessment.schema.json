@@ -1,5 +1,5 @@
 {
-  "$comment": "x-maxLength / x-maxItems bound what is STORED (record.mjs clampAssessment clips to them); they are custom keywords on purpose, so a validator never rejects an over-long answer and fails the assess job on every run.",
+  "$comment": "x-maxLength / x-maxItems bound what is STORED (record.mjs clampAssessment clips to them) rather than limiting the answer, so an over-long answer is trimmed instead of failing the assess job. Claude Code validates --json-schema strictly and rejects unknown keywords, so cli.mjs schemaArg strips every x-* key before passing the schema on.",
   "type": "object",
   "additionalProperties": false,
   "required": [
