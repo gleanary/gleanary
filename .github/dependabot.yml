@@ -7,11 +7,18 @@ updates:
     open-pull-requests-limit: 10
     labels: ["dependencies"]
     # Versions we deliberately skip: one entry per decision, with a comment giving the
-    # reason and when to revisit (see docs/deps/README.md). Uncomment to use:
-    # ignore:
-    #   # typescript-eslint does not support eslint 10 yet. Revisit when it does. (2026-10)
-    #   - dependency-name: "eslint"
-    #     versions: [">=10"]
+    # reason and when to revisit (see docs/deps/README.md), mirrored in TECH_DEBT.md.
+    ignore:
+      # eslint-config-next 16.2.10 bundles an eslint-plugin-react that calls
+      # context.getFilename(), removed in ESLint 10: `npm run lint` crashes. Revisit when
+      # eslint-config-next supports ESLint 10. 9.x patch/minor bumps keep flowing. (2026-07)
+      - dependency-name: "eslint"
+        versions: [">=10"]
+      # TypeScript 7 (native rewrite): typescript-eslint's peer range caps below it (lint
+      # crashes) and Next.js 16.2.10's TS detection fails on its layout (`next build`
+      # aborts). Revisit when both declare TS7 support. 6.x bumps keep flowing. (2026-07)
+      - dependency-name: "typescript"
+        versions: [">=7"]
     # Supply-chain buffer: most hijacked releases are caught and pulled within days, and a
     # week also gives malware feeds time to list them. Security updates ignore cooldown.
     # deps-agent re-checks release age and the malware feed (policy.md).
