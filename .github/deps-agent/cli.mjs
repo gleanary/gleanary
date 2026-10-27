@@ -52,6 +52,7 @@ import {
   featureIssueTitle,
   fromApp,
   latestRecheckAt,
+  legacyFeatureIssueTitle,
   neutralize,
   pushHistory,
   renderDashboard,
@@ -685,19 +686,13 @@ function openFeatureIssues(record, meta) {
   const features = (record.assessment?.adoptableFeatures ?? []).slice(0, MAX_FEATURE_ISSUES);
   if (!features.length) return;
   enhancementTitles ??= new Set(
-    apiPaged(`repos/${REPO}/issues?state=all&labels=enhancement&per_page=100`).map((i) =>
-      // Titles filed before featureIssueTitle() went through neutralize(); unescape them so
-      // a re-assessment doesn't file the same feature again.
-      i.title
-        .replace(/\\([[\]()])/g, '$1')
-        .replace(/&lt;/g, '<')
-        .replace(/&gt;/g, '>')
-        .replace(/&amp;/g, '&'),
-    ),
+    apiPaged(`repos/${REPO}/issues?state=all&labels=enhancement&per_page=100`).map((i) => i.title),
   );
   for (const f of features) {
     const title = featureIssueTitle(f.title, meta.title);
     if (!title || enhancementTitles.has(title)) continue;
+    // Issues filed before featureIssueTitle() carry the old, escaped title.
+    if (enhancementTitles.has(legacyFeatureIssueTitle(f.title, meta.title))) continue;
     enhancementTitles.add(title);
     apiWrite('POST', `repos/${REPO}/issues`, {
       title,
@@ -1040,9 +1035,19 @@ function clearRunCaches() {
   packuments.clear();
   baseCache.clear();
   lockCache.clear();
+  enhancementTitles = null;
 }
 
-export { POLICY_HASH, clearRunCaches, commands, evaluatePr, handleMain, mainState, schemaArg };
+export {
+  POLICY_HASH,
+  clearRunCaches,
+  commands,
+  evaluatePr,
+  handleMain,
+  mainState,
+  openFeatureIssues,
+  schemaArg,
+};
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const { positionals, values } = parseArgs({

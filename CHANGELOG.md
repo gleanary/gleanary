@@ -46,7 +46,7 @@ All notable changes to this project will be documented in this file.
 
 ### Fixed
 
-- **deps-agent feature issue titles**: "chore: evaluate …" issues no longer show literal backslashes (`\(2.1.0\)`). GitHub renders titles as plain text, so they now go through `featureIssueTitle()` (mentions, newlines and length neutralized; blank titles skipped) instead of the markdown escaping in `neutralize()`. Existing escaped titles are unescaped before the duplicate check, so a re-assessment doesn't file the same feature twice, and truncation no longer splits an emoji.
+- **deps-agent feature issue titles**: "chore: evaluate …" issues no longer show literal backslashes (`\(2.1.0\)`). GitHub renders titles as plain text, so they now go through `featureIssueTitle()` (mentions, newlines and length neutralized; blank titles skipped) instead of the markdown escaping in `neutralize()`. The duplicate check also matches the exact title an issue was filed under before (`legacyFeatureIssueTitle()`), so a re-assessment doesn't file the same feature twice, and truncation no longer splits an emoji.
 - **deps-agent: assess jobs no longer load the repo's developer `.claude/settings.json`** (`--setting-sources user`): its bubblewrap sandbox cannot start on the runner, so Claude exited before its first turn.
 
 - **deps-agent: every assess job failed** on the first scheduled run: Claude Code validates `--json-schema` in strict mode and rejected the schema's custom `x-maxLength`/`x-maxItems` storage limits. The command-line schema now leaves them out (`clampAssessment` still reads them from the file).

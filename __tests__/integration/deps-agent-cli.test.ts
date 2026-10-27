@@ -155,6 +155,7 @@ function get(path: string): unknown {
     [/^advisories\?/, () => []],
     [new RegExp(`issues/${PR}/comments`), () => state.comments],
     [/issues\?state=open&labels=deps:needs-human/, () => state.issues],
+    [/issues\?state=all&labels=enhancement/, () => state.issues],
     [/^users\//, () => ({ id: 99 })],
     // what a full `act` run reads besides the PR itself
     [
@@ -260,6 +261,8 @@ const healthy: MainState = { sha: 'main1', state: 'healthy', detail: 'ok' };
 
 const pings = () => state.comments.filter((c) => c.body.startsWith('@owner'));
 const merges = () => state.writes.filter((w) => w.method === 'PUT' && w.path.endsWith('/merge'));
+const issuesFiled = () =>
+  state.writes.filter((w) => w.method === 'POST' && w.path.endsWith('/issues'));
 const record = () =>
   decodeRecord(state.comments.find((c) => c.body.includes('deps-agent:record'))?.body ?? '') as {
     outcome?: string;
@@ -466,6 +469,42 @@ describe('evaluatePr', () => {
     expect(outcome).toBe('escalate');
     expect(rebaseRequests()).toHaveLength(1);
     expect(pings()[0]?.body).toContain('has not rebased');
+  });
+});
+
+describe('openFeatureIssues', () => {
+  const open = (...titles: string[]) =>
+    cli.openFeatureIssues(
+      { assessment: { adoptableFeatures: titles.map((title) => ({ title, detail: 'd' })) } },
+      { title: fakePr().title, url: fakePr().html_url },
+    );
+  const filed = () => issuesFiled().map((w) => w.body.title);
+
+  it('files each feature under a plain-text title, once', () => {
+    open('z.iban() (4.6.0)', 'z.iban() (4.6.0)');
+    expect(filed()).toEqual(['chore: evaluate z.iban() (4.6.0) (bump zod from 4.4.3 to 4.6.7)']);
+  });
+
+  it('recognizes features filed under the old neutralized title', () => {
+    state.issues = [
+      {
+        number: 66,
+        title: 'chore: evaluate z.iban\\(\\) \\(4.6.0\\) (bump zod from 4.4.3 to 4.6.7)',
+      },
+    ];
+    open('z.iban() (4.6.0)');
+    expect(filed()).toEqual([]);
+  });
+
+  it('recognizes plain-text titles that look like escapes', () => {
+    state.issues = [
+      {
+        number: 68,
+        title: 'chore: evaluate &lt;Foo&gt; and \\(x\\) (bump zod from 4.4.3 to 4.6.7)',
+      },
+    ];
+    open('&lt;Foo&gt; and \\(x\\)');
+    expect(filed()).toEqual([]);
   });
 });
 
