@@ -27,6 +27,7 @@ import {
   MARKER,
   clampAssessment,
   decodeRecord,
+  featureIssueTitle,
   neutralize,
   pushHistory,
   renderEscalation,
@@ -1096,6 +1097,28 @@ describe('decision records', () => {
     expect(out).not.toMatch(/@everyone/);
     expect(out).not.toContain('<');
     expect(neutralize('x'.repeat(50), 10)).toHaveLength(11);
+  });
+
+  it('builds plain-text feature issue titles without markdown escapes', () => {
+    const title = featureIssueTitle(
+      'Exported ImapFlowErrorCode (2.1.0)',
+      'chore(deps): bump imapflow from 1.6.1 to 2.5.8',
+    );
+    expect(title).toBe(
+      'chore: evaluate Exported ImapFlowErrorCode (2.1.0) (bump imapflow from 1.6.1 to 2.5.8)',
+    );
+  });
+
+  it('neutralizes mentions, newlines and length in feature issue titles', () => {
+    expect(featureIssueTitle('ping @everyone\n<b>&</b>', 'chore(deps-dev): bump a')).toBe(
+      'chore: evaluate ping @\u200beveryone <b>&</b> (bump a)',
+    );
+    expect(featureIssueTitle('x'.repeat(100), 'bump a')).toContain(`${'x'.repeat(80)}… (bump a)`);
+  });
+
+  it('skips blank feature titles and never splits an emoji when clipping', () => {
+    expect(featureIssueTitle('  \n ', 'bump a')).toBeNull();
+    expect(featureIssueTitle(`${'x'.repeat(79)}🚀🚀`, 'bump a')).toContain(`${'x'.repeat(79)}🚀…`);
   });
 
   it('records history only when sha, outcome or decider changes', () => {

@@ -49,6 +49,7 @@ import {
   MARKER,
   clampAssessment,
   decodeRecord,
+  featureIssueTitle,
   fromApp,
   latestRecheckAt,
   neutralize,
@@ -684,11 +685,19 @@ function openFeatureIssues(record, meta) {
   const features = (record.assessment?.adoptableFeatures ?? []).slice(0, MAX_FEATURE_ISSUES);
   if (!features.length) return;
   enhancementTitles ??= new Set(
-    apiPaged(`repos/${REPO}/issues?state=all&labels=enhancement&per_page=100`).map((i) => i.title),
+    apiPaged(`repos/${REPO}/issues?state=all&labels=enhancement&per_page=100`).map((i) =>
+      // Titles filed before featureIssueTitle() went through neutralize(); unescape them so
+      // a re-assessment doesn't file the same feature again.
+      i.title
+        .replace(/\\([[\]()])/g, '$1')
+        .replace(/&lt;/g, '<')
+        .replace(/&gt;/g, '>')
+        .replace(/&amp;/g, '&'),
+    ),
   );
   for (const f of features) {
-    const title = `chore: evaluate ${neutralize(f.title, 80)} (${meta.title.replace(/^chore\(deps(-dev)?\): /, '')})`;
-    if (enhancementTitles.has(title)) continue;
+    const title = featureIssueTitle(f.title, meta.title);
+    if (!title || enhancementTitles.has(title)) continue;
     enhancementTitles.add(title);
     apiWrite('POST', `repos/${REPO}/issues`, {
       title,
