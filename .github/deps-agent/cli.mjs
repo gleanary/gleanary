@@ -887,6 +887,12 @@ const commands = {
         '--allowedTools "Read(./**),Grep(./**),Glob(./**),WebFetch(domain:github.com),WebFetch(domain:raw.githubusercontent.com),WebFetch(domain:www.npmjs.com),Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr checks:*),Bash(gh run view:*),Bash(gh release view:*)"',
         '--disallowedTools "Read(//proc/**),Read(//etc/**),Bash(npm:*),Bash(curl:*),Bash(wget:*)"',
         `--json-schema ${schemaArg(ASSESSMENT_SCHEMA)}`,
+        // Skip the repo's developer .claude/settings.json: its sandbox requires bubblewrap
+        // (failIfUnavailable), which cannot start on the Ubuntu 24.04 runner, so Claude exited
+        // before its first turn; its hooks do not belong in CI either. That sandbox exempts
+        // `gh`, this job's only Bash, so the tool flags above are the whole permission set.
+        // claude-code-action reads this flag itself (base-action/src/parse-sdk-options.ts).
+        '--setting-sources user',
       ].join('\n'),
     );
   },

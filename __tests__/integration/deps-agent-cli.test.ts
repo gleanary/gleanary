@@ -959,6 +959,8 @@ describe('assessment tool flags', () => {
     expect(denies(disallowed, '/proc/self/environ')).toBe(true);
     expect(denies(disallowed, '/etc/passwd')).toBe(true);
     expect(list('allowedTools')).toContain('Read(./**)');
+    // Pins --setting-sources user (why: the comment next to it in cli.mjs).
+    expect(args).toMatch(/^--setting-sources user$/m);
   });
 
   it('passes Claude Code a schema its strict validator accepts: no custom keywords', () => {
