@@ -27,6 +27,16 @@ const OUTCOME_LABEL = {
   held: '⏸️ on hold',
 };
 
+/** Untrusted text never pings anyone: a zero-width space after every `@`. */
+const defuseMentions = (s) => s.replace(/@/g, '@\u200b');
+
+/** Cap untrusted text at `max` characters, marking the cut. */
+const clip = (s, max) => {
+  // By code point, so the cut never splits an emoji's surrogate pair.
+  const chars = Array.from(s);
+  return chars.length > max ? `${chars.slice(0, max).join('')}…` : s;
+};
+
 /**
  * Neutralize untrusted text (LLM output derived from changelogs) before it lands
  * in a comment: HTML escaped, no @-mentions, no markdown links or images, bounded length.
@@ -39,11 +49,44 @@ export function neutralize(text, max = 1500) {
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
-    .replace(/@/g, '@\u200b')
     // No live links or images (tracking pixels) from changelog text in the App's comments.
     .replace(/[[\]()]/g, '\\$&');
-  return s.length > max ? `${s.slice(0, max)}…` : s;
+  return clip(defuseMentions(s), max);
 }
+
+/**
+ * Title for an "evaluate this feature" issue. GitHub renders titles as plain text, so
+ * neutralize()'s markdown escapes would show up literally; only mentions, newlines and
+ * length are neutralized here.
+ * @param {unknown} feature - untrusted feature title from the assessment
+ * @param {string} prTitle - Dependabot PR title
+ * @returns {string | null} issue title, or null when the feature title is blank
+ */
+export function featureIssueTitle(feature, prTitle) {
+  const name = defuseMentions(clip(String(feature ?? '').replace(/\s+/g, ' ').trim(), 80));
+  if (!name) return null;
+  return `chore: evaluate ${name} (${bumpOf(prTitle)})`;
+}
+
+/**
+ * The title featureIssueTitle() replaced, so the duplicate check still recognizes issues
+ * filed in that form (e.g. #66, #67). A frozen copy of the neutralize() of that time, cut
+ * after escaping: it must not follow later changes to neutralize().
+ * @param {unknown} feature - untrusted feature title from the assessment
+ * @param {string} prTitle - Dependabot PR title
+ * @returns {string} legacy issue title
+ */
+export function legacyFeatureIssueTitle(feature, prTitle) {
+  const s = String(feature ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/@/g, '@\u200b')
+    .replace(/[[\]()]/g, '\\$&');
+  return `chore: evaluate ${s.length > 80 ? `${s.slice(0, 80)}…` : s} (${bumpOf(prTitle)})`;
+}
+
+const bumpOf = (prTitle) => prTitle.replace(/^chore\(deps(-dev)?\): /, '');
 
 /** neutralize() for a markdown table cell: also keeps `|` and newlines from breaking the row. */
 const cell = (text, max) => neutralize(text, max).replace(/\|/g, '\\|').replace(/\n/g, ' ');

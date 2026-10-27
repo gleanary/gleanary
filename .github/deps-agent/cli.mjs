@@ -49,8 +49,10 @@ import {
   MARKER,
   clampAssessment,
   decodeRecord,
+  featureIssueTitle,
   fromApp,
   latestRecheckAt,
+  legacyFeatureIssueTitle,
   neutralize,
   pushHistory,
   renderDashboard,
@@ -687,8 +689,10 @@ function openFeatureIssues(record, meta) {
     apiPaged(`repos/${REPO}/issues?state=all&labels=enhancement&per_page=100`).map((i) => i.title),
   );
   for (const f of features) {
-    const title = `chore: evaluate ${neutralize(f.title, 80)} (${meta.title.replace(/^chore\(deps(-dev)?\): /, '')})`;
-    if (enhancementTitles.has(title)) continue;
+    const title = featureIssueTitle(f.title, meta.title);
+    if (!title || enhancementTitles.has(title)) continue;
+    // Issues filed before featureIssueTitle() carry the old, escaped title.
+    if (enhancementTitles.has(legacyFeatureIssueTitle(f.title, meta.title))) continue;
     enhancementTitles.add(title);
     apiWrite('POST', `repos/${REPO}/issues`, {
       title,
@@ -1031,9 +1035,19 @@ function clearRunCaches() {
   packuments.clear();
   baseCache.clear();
   lockCache.clear();
+  enhancementTitles = null;
 }
 
-export { POLICY_HASH, clearRunCaches, commands, evaluatePr, handleMain, mainState, schemaArg };
+export {
+  POLICY_HASH,
+  clearRunCaches,
+  commands,
+  evaluatePr,
+  handleMain,
+  mainState,
+  openFeatureIssues,
+  schemaArg,
+};
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const { positionals, values } = parseArgs({
