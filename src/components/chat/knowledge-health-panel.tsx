@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useRef, useSyncExternalStore } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import {
@@ -54,12 +54,48 @@ const CHECKS: CheckMeta[] = [
 
 const STORAGE_KEY = 'lint-panel-open';
 
+// --- localStorage-backed store for the panel's open state (hydration-safe) ---
+
+const listeners = new Set<() => void>();
+// In-memory value, set only after a localStorage write fails, so toggling still works.
+let memoryOpen: boolean | null = null;
+
+function getOpenSnapshot(): boolean {
+  if (memoryOpen !== null) return memoryOpen;
+  try {
+    return window.localStorage.getItem(STORAGE_KEY) === 'true';
+  } catch {
+    return false;
+  }
+}
+
+function getOpenServerSnapshot(): boolean {
+  return false;
+}
+
+function subscribeOpen(callback: () => void): () => void {
+  listeners.add(callback);
+  return () => listeners.delete(callback);
+}
+
+/** Persists the open state and notifies subscribers. */
+function setPanelOpen(value: boolean): void {
+  try {
+    window.localStorage.setItem(STORAGE_KEY, String(value));
+    memoryOpen = null;
+  } catch {
+    // localStorage unavailable — fall back to the in-memory value
+    memoryOpen = value;
+  }
+  listeners.forEach((cb) => cb());
+}
+
 /**
  * Knowledge Health panel — runs lint checks and renders streamed suggestions.
  * Collapsible, client-only, mounted above the chat session list.
  */
 export function KnowledgeHealthPanel() {
-  const [isOpen, setIsOpen] = useState(false);
+  const isOpen = useSyncExternalStore(subscribeOpen, getOpenSnapshot, getOpenServerSnapshot);
   const [activeCheck, setActiveCheck] = useState<LintCheck | null>(null);
   const [lastCheck, setLastCheck] = useState<LintCheck | null>(null);
   const [suggestions, setSuggestions] = useState<LintSuggestion[]>([]);
@@ -67,16 +103,6 @@ export function KnowledgeHealthPanel() {
   const [emptyReason, setEmptyReason] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
-
-  // Hydrate isOpen from localStorage after mount to avoid SSR mismatch.
-  useEffect(() => {
-    try {
-      const stored = window.localStorage.getItem(STORAGE_KEY);
-      if (stored === 'true') setIsOpen(true);
-    } catch {
-      // localStorage unavailable — ignore
-    }
-  }, []);
 
   // Cancel any in-flight lint request on unmount so we don't leak the
   // connection or try to setState after the component is gone.
@@ -86,17 +112,7 @@ export function KnowledgeHealthPanel() {
     };
   }, []);
 
-  const toggleOpen = useCallback(() => {
-    setIsOpen((prev) => {
-      const next = !prev;
-      try {
-        window.localStorage.setItem(STORAGE_KEY, String(next));
-      } catch {
-        // ignore
-      }
-      return next;
-    });
-  }, []);
+  const toggleOpen = useCallback(() => setPanelOpen(!getOpenSnapshot()), []);
 
   async function runCheck(check: LintCheck) {
     if (activeCheck) return;

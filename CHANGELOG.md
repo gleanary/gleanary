@@ -12,6 +12,7 @@ All notable changes to this project will be documented in this file.
 
 ### Changed
 
+- **refactor: unpin eslint-plugin-react-hooks (7.1.1)** and remove setState-in-effect patterns in the draft editor (force-confirm dialog derived from the generation error), highlight layer (`enterEditMode` clears hover and pending selection; render no longer reads refs), settings page (appearance mode and last section read via `useSyncExternalStore`), voice and usage settings (cancellable fetch-on-mount) and the Knowledge Health panel (open state via `useSyncExternalStore`). No behavior change.
 - **Skipped majors live in `dependabot.yml`**: eslint 10 and TypeScript 7 are held back by `ignore` entries with their reasons (mirrored in TECH_DEBT.md), instead of only by comment-based ignores invisible in the repo.
 
 - **deps-agent: runs started by `/deps` commands can assess again**: the commands dispatch the workflow as the `gleanary-deps-agent` App, and `claude-code-action` rejected every assess job with "Workflow initiated by non-human actor"; the assess step now sets `allowed_bots: gleanary-deps-agent`.

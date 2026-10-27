@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useRef, useSyncExternalStore } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { LogOut } from 'lucide-react';
 import { Input } from '@/components/ui/input';
@@ -35,13 +35,88 @@ type PendingAction =
       resolve: (result: { success: boolean; message: string }) => void;
     };
 
+// --- localStorage-backed store for the appearance mode (hydration-safe) ---
+
+const APPEARANCE_STORAGE_KEY = 'appearance_mode';
+const appearanceListeners = new Set<() => void>();
+// In-memory value, set only after a localStorage write fails, so the picker still updates.
+let memoryAppearance: AppearanceMode | null = null;
+
+function getAppearanceSnapshot(): AppearanceMode {
+  if (memoryAppearance !== null) return memoryAppearance;
+  try {
+    const stored = localStorage.getItem(APPEARANCE_STORAGE_KEY);
+    if (stored === 'dark' || stored === 'light' || stored === 'automatic') return stored;
+  } catch {
+    // localStorage unavailable — use the default
+  }
+  return 'automatic';
+}
+
+function getAppearanceServerSnapshot(): AppearanceMode {
+  return 'automatic';
+}
+
+function subscribeAppearance(callback: () => void): () => void {
+  appearanceListeners.add(callback);
+  return () => appearanceListeners.delete(callback);
+}
+
+/** Persists the appearance mode to localStorage and notifies subscribers. */
+function setStoredAppearanceMode(mode: AppearanceMode): void {
+  try {
+    localStorage.setItem(APPEARANCE_STORAGE_KEY, mode);
+    memoryAppearance = null;
+  } catch {
+    // localStorage unavailable — fall back to the in-memory value
+    memoryAppearance = mode;
+  }
+  appearanceListeners.forEach((cb) => cb());
+}
+
+// --- Last-selected settings section (localStorage, read after hydration) ---
+
+const SECTION_STORAGE_KEY = 'settingsSection';
+
+function parseSection(value: string | null): SettingsSection | null {
+  return value === 'general' || value === 'integrations' || value === 'voice' || value === 'usage'
+    ? value
+    : null;
+}
+
+function getStoredSectionSnapshot(): SettingsSection | null {
+  try {
+    return parseSection(localStorage.getItem(SECTION_STORAGE_KEY));
+  } catch {
+    return null;
+  }
+}
+
+function getStoredSectionServerSnapshot(): SettingsSection | null {
+  return null;
+}
+
+/** No-op: the stored section only seeds the initial tab; later picks live in component state. */
+function subscribeStoredSection(): () => void {
+  return () => {};
+}
+
 /**
  * Main settings page client component with collapsible sections,
  * API key management, and audit log.
  */
 export function SettingsPage() {
   const searchParams = useSearchParams();
-  const [activeSection, setActiveSection] = useState<SettingsSection>('general');
+  // ?tab= URL param (read once, at mount) takes priority; then the stored section; then general.
+  const [selectedSection, setSelectedSection] = useState<SettingsSection | null>(() =>
+    parseSection(searchParams.get('tab')),
+  );
+  const storedSection = useSyncExternalStore(
+    subscribeStoredSection,
+    getStoredSectionSnapshot,
+    getStoredSectionServerSnapshot,
+  );
+  const activeSection: SettingsSection = selectedSection ?? storedSection ?? 'general';
   const [settings, setSettings] = useState<Record<string, SettingEntry>>({});
   const [encryptionAvailable, setEncryptionAvailable] = useState(true);
   const [authActive, setAuthActive] = useState(false);
@@ -66,7 +141,11 @@ export function SettingsPage() {
   const [importError, setImportError] = useState<string | null>(null);
 
   // Appearance mode — kept in sync with localStorage for instant theme switching
-  const [appearanceMode, setAppearanceMode] = useState<AppearanceMode>('automatic');
+  const appearanceMode = useSyncExternalStore(
+    subscribeAppearance,
+    getAppearanceSnapshot,
+    getAppearanceServerSnapshot,
+  );
 
   // IMAP test and poll state
   const [imapTestStatus, setImapTestStatus] = useState<'idle' | 'testing' | 'success' | 'error'>(
@@ -81,59 +160,41 @@ export function SettingsPage() {
   );
   const [imapPollResult, setImapPollResult] = useState<string | null>(null);
 
-  const fetchSettings = useCallback(async () => {
+  const fetchSettings = useCallback(async (isCancelled: () => boolean = () => false) => {
     const resp = await fetch('/api/settings');
     if (resp.ok) {
       const data: SettingsResponse = await resp.json();
+      if (isCancelled()) return;
       setSettings(data.settings);
       setEncryptionAvailable(data.encryptionAvailable);
       setAuthActive(data.authActive);
     }
-    setLoading(false);
+    if (!isCancelled()) setLoading(false);
   }, []);
 
-  const fetchAudit = useCallback(async () => {
+  const fetchAudit = useCallback(async (isCancelled: () => boolean = () => false) => {
     const resp = await fetch('/api/settings/audit?limit=50');
     if (resp.ok) {
       const data = await resp.json();
+      if (isCancelled()) return;
       setAuditEntries(data.entries);
     }
   }, []);
 
   useEffect(() => {
-    fetchSettings();
-    fetchAudit();
-    // Initialise appearance from localStorage on mount
-    const stored = localStorage.getItem('appearance_mode') as AppearanceMode | null;
-    if (stored === 'dark' || stored === 'light' || stored === 'automatic') {
-      setAppearanceMode(stored);
-    }
-    // ?tab= URL param takes priority; fall back to localStorage
-    const tabParam = searchParams.get('tab') as SettingsSection | null;
-    if (
-      tabParam === 'general' ||
-      tabParam === 'integrations' ||
-      tabParam === 'voice' ||
-      tabParam === 'usage'
-    ) {
-      setActiveSection(tabParam);
-    } else {
-      const storedSection = localStorage.getItem('settingsSection') as SettingsSection | null;
-      if (
-        storedSection === 'general' ||
-        storedSection === 'integrations' ||
-        storedSection === 'voice' ||
-        storedSection === 'usage'
-      ) {
-        setActiveSection(storedSection);
-      }
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+    let cancelled = false;
+    const isCancelled = () => cancelled;
+    (async () => {
+      await Promise.all([fetchSettings(isCancelled), fetchAudit(isCancelled)]);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [fetchSettings, fetchAudit]);
 
   function handleSectionChange(section: SettingsSection) {
-    setActiveSection(section);
-    localStorage.setItem('settingsSection', section);
+    setSelectedSection(section);
+    localStorage.setItem(SECTION_STORAGE_KEY, section);
   }
 
   // Debounced save for non-encrypted settings
@@ -175,8 +236,7 @@ export function SettingsPage() {
    * persists to localStorage for FOUC prevention on next load, and saves to API.
    */
   function handleAppearanceChange(mode: AppearanceMode) {
-    setAppearanceMode(mode);
-    localStorage.setItem('appearance_mode', mode);
+    setStoredAppearanceMode(mode);
     const root = document.documentElement;
     if (mode === 'dark') {
       root.classList.add('dark');

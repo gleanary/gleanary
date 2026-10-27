@@ -63,8 +63,7 @@
   "overrides": {
     "defuddle": {
       "jsdom": "$jsdom"
-    },
-    "eslint-plugin-react-hooks": "7.0.1"
+    }
   },
   "devDependencies": {
     "@playwright/test": "^1.64.0",

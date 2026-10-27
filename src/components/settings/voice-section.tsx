@@ -31,7 +31,7 @@ export function VoiceSection({ hasAnthropicKey }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [showAddForm, setShowAddForm] = useState(false);
 
-  const fetchData = useCallback(async () => {
+  const fetchData = useCallback(async (isCancelled: () => boolean = () => false) => {
     try {
       const [profRes, sampRes] = await Promise.all([
         fetch('/api/voice/profile'),
@@ -40,17 +40,24 @@ export function VoiceSection({ hasAnthropicKey }: Props) {
       if (!profRes.ok || !sampRes.ok) throw new Error('Failed to load voice data');
       const profData: ProfileResponse = await profRes.json();
       const sampData: SamplesResponse = await sampRes.json();
+      if (isCancelled()) return;
       setProfile(profData.profile);
       setSamples(sampData.samples);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load');
+      if (!isCancelled()) setError(err instanceof Error ? err.message : 'Failed to load');
     } finally {
-      setLoading(false);
+      if (!isCancelled()) setLoading(false);
     }
   }, []);
 
   useEffect(() => {
-    fetchData();
+    let cancelled = false;
+    (async () => {
+      await fetchData(() => cancelled);
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, [fetchData]);
 
   async function handleSaveProfile(text: string) {

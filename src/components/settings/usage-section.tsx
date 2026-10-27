@@ -130,7 +130,7 @@ export function UsageSection() {
   const [budgetInput, setBudgetInput] = useState('');
   const [budgetSaving, setBudgetSaving] = useState(false);
 
-  async function fetchAll(r: string) {
+  async function fetchAll(r: string, isCancelled: () => boolean = () => false) {
     const [sumRes, featRes, modelRes, topRes] = await Promise.all([
       fetch(`/api/usage/summary?range=${r}`),
       fetch(`/api/usage/breakdown?range=${r}&groupBy=feature`),
@@ -139,16 +139,36 @@ export function UsageSection() {
     ]);
     if (sumRes.ok) {
       const d: SummaryData = await sumRes.json();
+      if (isCancelled()) return;
       setSummary(d);
       setBudgetInput(d.budgetUsd !== null ? String(d.budgetUsd) : '');
     }
-    if (featRes.ok) setByFeature((await featRes.json()).breakdown);
-    if (modelRes.ok) setByModel((await modelRes.json()).breakdown);
-    if (topRes.ok) setTopCalls(groupByRunId((await topRes.json()).calls));
+    if (featRes.ok) {
+      const { breakdown } = await featRes.json();
+      if (isCancelled()) return;
+      setByFeature(breakdown);
+    }
+    if (modelRes.ok) {
+      const { breakdown } = await modelRes.json();
+      if (isCancelled()) return;
+      setByModel(breakdown);
+    }
+    if (topRes.ok) {
+      const { calls } = await topRes.json();
+      if (isCancelled()) return;
+      setTopCalls(groupByRunId(calls));
+    }
   }
 
   useEffect(() => {
-    fetchAll(range);
+    // Cancelled on unmount and on range change, so a slow response can't overwrite a newer range.
+    let cancelled = false;
+    (async () => {
+      await fetchAll(range, () => cancelled);
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, [range]);
 
   async function saveBudget() {
