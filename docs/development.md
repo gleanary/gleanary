@@ -2,7 +2,7 @@
 
 ## Prerequisites
 
-- Node.js 22+ (matches the Docker image and CI)
+- Node.js 26+ (matches the Docker image and CI)
 - npm
 
 ## Setup

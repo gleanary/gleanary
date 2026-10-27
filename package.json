@@ -12,7 +12,7 @@
     "url": "https://github.com/gleanary/gleanary/issues"
   },
   "engines": {
-    "node": ">=22"
+    "node": ">=26"
   },
   "private": true,
   "scripts": {

@@ -29,7 +29,7 @@ PR declares (direct) **and** the dependency versions that change with them (tran
 | author         | hard      | PR author is `dependabot[bot]`, and the head commit is authored by Dependabot and carries a valid signature (anyone with push access could otherwise add a commit) |
 | sources        | hard      | every lockfile entry whose `resolved` URL is new or changed points to `https://registry.npmjs.org/`: checked per entry, so a second copy of a version, or a URL swapped without a version change, cannot hide behind a clean first copy (bundled and linked entries excepted) |
 | scale          | hard      | the bump introduces at most 300 versions, the most the agent can check against the registry in one run. Above that, provenance, publisher and cooldown would pass on facts never collected |
-| ecosystem      | hard      | npm (GitHub Actions bumps edit workflows: always a human)                       |
+| ecosystem      | hard      | npm (GitHub Actions and Docker base-image bumps: always a human)                |
 | injection      | hard      | the assessment found no text addressed to an AI in PR, changelog or code        |
 | files          | hard      | only `package.json` / `package-lock.json` changed                               |
 | manifest       | hard      | `package.json` changed only in the declared dependencies' ranges                |

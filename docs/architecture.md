@@ -743,7 +743,7 @@ See `package.json` for the authoritative list. The CI-relevant ones: `lint` (ESL
 
 ### 9.5 Dependency Updates (deps-agent)
 
-Dependabot opens weekly npm and GitHub Actions PRs (7-day release cooldown, dev patch/minor bumps grouped, production bumps one per PR). `deps-agent.yml` merges the safe ones to `main`, and therefore to production, every 3 h. It is split by trust:
+Dependabot opens weekly npm, GitHub Actions and Docker base-image PRs (7-day release cooldown, dev patch/minor bumps grouped, production bumps one per PR). `deps-agent.yml` merges the safe ones to `main`, and therefore to production, every 3 h. It is split by trust:
 
 - **Read-only jobs** pick PRs and have Claude assess each changelog against our code. They check out `main`, never the PR head, and output a schema-validated `merge`/`escalate` verdict.
 - **Supply-chain checks** include the GitHub malware feed for every introduced version and Claude's review of the published code diff (`npm diff`, size-capped).

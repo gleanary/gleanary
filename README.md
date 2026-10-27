@@ -65,7 +65,7 @@ Generate the two required secrets and put them in `.env`:
 openssl rand -hex 32
 
 # SETTINGS_AUTH_HASH — bcrypt hash of your app password (no local Node.js needed)
-docker run --rm -w /tmp node:22-alpine sh -c "npm i -s bcryptjs >/dev/null 2>&1 && node -e \"require('bcryptjs').hash('your-password', 10).then(console.log)\""
+docker run --rm -w /tmp node:26-alpine sh -c "npm i -s bcryptjs >/dev/null 2>&1 && node -e \"require('bcryptjs').hash('your-password', 10).then(console.log)\""
 ```
 
 > **Note:** with Docker, wrap the bcrypt hash in single quotes in `.env`
@@ -166,7 +166,7 @@ After `npm install` you can also generate the hash locally:
 > `SETTINGS_AUTH_HASH=\$2b\$10\$...`. (This form does not work with Docker
 > Compose, which needs the single-quoted form shown in Quick Start.)
 
-Requires Node.js 22+. Common commands:
+Requires Node.js 26+. Common commands:
 
 ```bash
 npm run lint         # ESLint + Prettier check
