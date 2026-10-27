@@ -12,6 +12,8 @@ All notable changes to this project will be documented in this file.
 
 ### Changed
 
+- **Skipped majors live in `dependabot.yml`**: eslint 10 and TypeScript 7 are held back by `ignore` entries with their reasons (mirrored in TECH_DEBT.md), instead of only by comment-based ignores invisible in the repo.
+
 - **deps-agent: runs started by `/deps` commands can assess again**: the commands dispatch the workflow as the `gleanary-deps-agent` App, and `claude-code-action` rejected every assess job with "Workflow initiated by non-human actor"; the assess step now sets `allowed_bots: gleanary-deps-agent`.
 - **No CI skip markers in commit messages** (CLAUDE.md): a quoted marker in one squashed commit skipped CI, and so Deploy, on `main` when PR #45 merged.
 
