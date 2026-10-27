@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 
@@ -130,7 +130,13 @@ export function UsageSection() {
   const [budgetInput, setBudgetInput] = useState('');
   const [budgetSaving, setBudgetSaving] = useState(false);
 
+  // Bumped by every fetchAll: a response superseded by a newer request (range change or
+  // post-save refresh) is dropped, so a slow response can't overwrite newer data.
+  const latestFetchRef = useRef(0);
+
   async function fetchAll(r: string) {
+    const id = ++latestFetchRef.current;
+    const isCancelled = () => id !== latestFetchRef.current;
     const [sumRes, featRes, modelRes, topRes] = await Promise.all([
       fetch(`/api/usage/summary?range=${r}`),
       fetch(`/api/usage/breakdown?range=${r}&groupBy=feature`),
@@ -139,12 +145,25 @@ export function UsageSection() {
     ]);
     if (sumRes.ok) {
       const d: SummaryData = await sumRes.json();
+      if (isCancelled()) return;
       setSummary(d);
       setBudgetInput(d.budgetUsd !== null ? String(d.budgetUsd) : '');
     }
-    if (featRes.ok) setByFeature((await featRes.json()).breakdown);
-    if (modelRes.ok) setByModel((await modelRes.json()).breakdown);
-    if (topRes.ok) setTopCalls(groupByRunId((await topRes.json()).calls));
+    if (featRes.ok) {
+      const { breakdown } = await featRes.json();
+      if (isCancelled()) return;
+      setByFeature(breakdown);
+    }
+    if (modelRes.ok) {
+      const { breakdown } = await modelRes.json();
+      if (isCancelled()) return;
+      setByModel(breakdown);
+    }
+    if (topRes.ok) {
+      const { calls } = await topRes.json();
+      if (isCancelled()) return;
+      setTopCalls(groupByRunId(calls));
+    }
   }
 
   useEffect(() => {
