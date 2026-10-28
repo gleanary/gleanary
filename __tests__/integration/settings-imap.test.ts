@@ -9,16 +9,22 @@ vi.mock('@/db', () => dbMock.mock);
 const mockConnect = vi.fn();
 const mockList = vi.fn();
 const mockLogout = vi.fn();
-vi.mock('imapflow', () => ({
-  ImapFlow: vi.fn().mockImplementation(function () {
-    return {
-      on: vi.fn(),
-      connect: mockConnect,
-      list: mockList,
-      logout: mockLogout,
-    };
-  }),
-}));
+const mockDispose = vi.fn();
+vi.mock('imapflow', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('imapflow')>();
+  return {
+    ImapFlowErrorCode: actual.ImapFlowErrorCode,
+    ImapFlow: vi.fn().mockImplementation(function () {
+      return {
+        on: vi.fn(),
+        connect: mockConnect,
+        list: mockList,
+        logout: mockLogout,
+        [Symbol.asyncDispose]: mockDispose,
+      };
+    }),
+  };
+});
 
 // --- DNS mock (block SSRF) ---
 const mockResolve4 = vi.fn().mockResolvedValue(['93.184.216.34']); // public IP by default
@@ -100,6 +106,7 @@ describe('POST /api/settings/test-imap', () => {
     mockConnect.mockResolvedValue(undefined);
     mockList.mockResolvedValue([{ path: 'INBOX' }, { path: 'Sent' }]);
     mockLogout.mockResolvedValue(undefined);
+    mockDispose.mockResolvedValue(undefined);
 
     const { POST } = await import('@/app/api/settings/test-imap/route');
     const req = jsonReq('POST', 'http://localhost:3000/api/settings/test-imap');
@@ -108,6 +115,31 @@ describe('POST /api/settings/test-imap', () => {
 
     expect(body.success).toBe(true);
     expect(body.mailboxes).toContain('INBOX');
+    expect(mockDispose).toHaveBeenCalledTimes(1);
+  });
+
+  it('disposes the client when the connection times out', async () => {
+    setSetting('imap_host', 'imap.example.com', { encrypted: false });
+    setSetting('imap_user', 'user@example.com', { encrypted: false });
+    setSetting('imap_password', 'password123', { encrypted: false });
+    clearSettingsCache();
+
+    mockConnect.mockReturnValue(new Promise(() => {})); // never settles
+    mockDispose.mockResolvedValue(undefined);
+
+    vi.useFakeTimers({ toFake: ['setTimeout'] });
+    try {
+      const { POST } = await import('@/app/api/settings/test-imap/route');
+      const req = jsonReq('POST', 'http://localhost:3000/api/settings/test-imap');
+      const pending = POST(req as NextRequest);
+      await vi.advanceTimersByTimeAsync(10_000);
+      const body = await (await pending).json();
+
+      expect(body).toEqual({ success: false, error: 'Connection timed out after 10 seconds' });
+      expect(mockDispose).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('rejects private IP hosts (SSRF prevention)', async () => {
