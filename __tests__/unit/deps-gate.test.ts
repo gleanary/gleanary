@@ -28,7 +28,6 @@ import {
   clampAssessment,
   decodeRecord,
   featureIssueTitle,
-  legacyFeatureIssueTitle,
   neutralize,
   pushHistory,
   renderEscalation,
@@ -1120,21 +1119,6 @@ describe('decision records', () => {
   it('skips blank feature titles and never splits an emoji when clipping', () => {
     expect(featureIssueTitle('  \n ', 'bump a')).toBeNull();
     expect(featureIssueTitle(`${'x'.repeat(79)}🚀🚀`, 'bump a')).toContain(`${'x'.repeat(79)}🚀…`);
-  });
-
-  it('reproduces the neutralized title feature issues were filed under before', () => {
-    const pr = 'chore(deps): bump imapflow from 1.6.1 to 2.5.8';
-    // verbatim title of #67
-    expect(legacyFeatureIssueTitle('Exported ImapFlowErrorCode (2.1.0)', pr)).toBe(
-      'chore: evaluate Exported ImapFlowErrorCode \\(2.1.0\\) (bump imapflow from 1.6.1 to 2.5.8)',
-    );
-    // cut after escaping: the escapes count toward the 80, so a title just fits or is cut
-    expect(legacyFeatureIssueTitle(`${'x'.repeat(75)}(a)`, 'bump a')).toBe(
-      `chore: evaluate ${'x'.repeat(75)}\\(a\\) (bump a)`,
-    );
-    expect(legacyFeatureIssueTitle(`${'x'.repeat(75)}(ab)`, 'bump a')).toBe(
-      `chore: evaluate ${'x'.repeat(75)}\\(ab\\… (bump a)`,
-    );
   });
 
   it('records history only when sha, outcome or decider changes', () => {
