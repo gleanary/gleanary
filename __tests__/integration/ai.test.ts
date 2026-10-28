@@ -454,4 +454,45 @@ describe('AI Features API', () => {
       expect(body.summary).toBeTruthy();
     });
   });
+
+  describe('API key rotation', () => {
+    afterEach(() => {
+      deleteSetting('anthropic_api_key');
+      clearSettingsCache();
+    });
+
+    it('sends the new Settings key on the next call without a client reset', async () => {
+      const hlRes = await createHighlight(
+        jsonReq('POST', '/api/highlights', {
+          articleId,
+          text: 'Testing patterns are essential for maintainable code.',
+        }),
+      );
+      const { highlight } = await hlRes.json();
+      const sentAuth: (string | null)[] = [];
+      server.use(
+        http.post('https://api.anthropic.com/v1/messages', ({ request }) => {
+          sentAuth.push(request.headers.get('authorization'));
+          return HttpResponse.json({
+            id: 'msg_rotation',
+            type: 'message',
+            role: 'assistant',
+            content: [{ type: 'text', text: 'Explanation.' }],
+            model: 'claude-sonnet-4-6',
+            stop_reason: 'end_turn',
+            usage: { input_tokens: 100, output_tokens: 20 },
+          });
+        }),
+      );
+      const explainReq = () =>
+        explain(jsonReq('POST', '/api/ai/explain', { highlightId: highlight.id, mode: 'explain' }));
+
+      setSetting('anthropic_api_key', 'sk-ant-first-key');
+      expect((await explainReq()).status).toBe(200);
+      setSetting('anthropic_api_key', 'sk-ant-rotated-key');
+      expect((await explainReq()).status).toBe(200);
+
+      expect(sentAuth).toEqual(['Bearer sk-ant-first-key', 'Bearer sk-ant-rotated-key']);
+    });
+  });
 });
