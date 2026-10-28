@@ -13,6 +13,11 @@ const OVERRIDE = /<!-- deps-agent:override ([A-Za-z0-9+/=]+) -->/;
 // A `/deps recheck` request, also an append-only App comment: it survives even if the run
 // it dispatched is cancelled while queued.
 const RECHECK = '<!-- deps-agent:recheck -->';
+// On feature issues: the package versions they were filed for. Re-assessments word the same
+// features differently, so features are filed once per set of versions.
+export const featuresMarker = (versions) => `<!-- deps-agent:features ${versions} -->`;
+/** The featuresMarker()s in an issue body. */
+export const featuresMarkersIn = (body) => (body ?? '').match(/<!-- deps-agent:features \S+ -->/g) ?? [];
 // GitHub rejects comments over 65,536 characters; stay well below it.
 const MAX_COMMENT = 60_000;
 const HISTORY_LIMIT = 20;
