@@ -14,6 +14,8 @@ All notable changes to this project will be documented in this file.
 
 ### Changed
 
+- **One `pdfjs-dist` copy for the PDF viewer**: an npm override puts `react-pdf` (which pins an exact pdfjs-dist) on our `pdfjs-dist`, and Dependabot bumps the two together. The pdfjs-dist 6.4.299 bump (#72) had left react-pdf's API on 6.3.289 against a 6.4.299 worker, so no PDF page rendered.
+
 - **Dependabot groups `react`, `react-dom`, `@types/react` and `@types/react-dom`** into one PR (majors included): react-dom pins an exact react peer, so the react-dom-only bump in #60 could never install.
 
 - **Dependency updates escalate only what cannot be explained** (ADR-012): `/babysit-deps` hard-stops only on malware, non-npm sources, new or changed install scripts, an unknown human publisher or failing `npm audit signatures`; investigates and resolves the other supply-chain flags with recorded evidence; and migrates majors (including 0.x minors) itself, escalating only product decisions. deps-agent follows in the ADR-011 refactor phases.
