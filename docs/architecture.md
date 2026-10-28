@@ -1125,7 +1125,7 @@ test('save article and create highlight', async ({ page, request }) => {
 
 ### 11.6 External Service Mocking
 
-All external dependencies are mocked in tests — no real network calls. This is enforced, not conventional: a shared MSW server (`__tests__/mocks/server.ts`) runs for **every vitest file** via `setupFiles` (`__tests__/mocks/msw-setup.ts`) with `onUnhandledRequest: 'error'`, so any request without an explicit handler is rejected instead of silently hitting the real network. The server has **no default handlers** — a canned catch-all response would let a test that forgets its mock pass green on nonsense. A guard test (`__tests__/mocks/msw-tripwire.test.ts`) asserts the tripwire stays armed.
+All external dependencies are mocked in tests — no real network calls. This is enforced, not conventional: a shared MSW server (`__tests__/mocks/server.ts`) runs for **every vitest file** via `setupFiles` (`__tests__/mocks/msw-setup.ts`) with `onUnhandledFrame: 'error'`, so any request without an explicit handler is rejected instead of silently hitting the real network. The server has **no default handlers** — a canned catch-all response would let a test that forgets its mock pass green on nonsense. A guard test (`__tests__/mocks/msw-tripwire.test.ts`) asserts the tripwire stays armed.
 
 | Dependency                           | Mock approach                                |
 | ------------------------------------ | -------------------------------------------- |
@@ -1187,7 +1187,7 @@ __tests__/
 │   └── tags.test.ts
 ├── mocks/
 │   ├── server.ts                   — shared MSW server + setupHandlers() (no default handlers)
-│   ├── msw-setup.ts                — global MSW lifecycle (vitest setupFiles, onUnhandledRequest: 'error')
+│   ├── msw-setup.ts                — global MSW lifecycle (vitest setupFiles, onUnhandledFrame: 'error')
 │   ├── msw-tripwire.test.ts        — guard test for the tripwire
 │   └── fixtures/
 │       ├── article.html
