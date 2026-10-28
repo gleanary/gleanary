@@ -25,6 +25,12 @@ updates:
     cooldown:
       default-days: 7
     groups:
+      # react-dom pins an exact react peer (react-dom 19.3.1 needs react@^19.3.1), so a
+      # react-dom PR alone fails `npm ci` (PR #60). The four move together, majors
+      # included. Listed first: a dependency joins the first group that matches, and the
+      # dev-dependencies group would otherwise take @types/react*.
+      react:
+        patterns: ["react", "react-dom", "@types/react", "@types/react-dom"]
       # Dev-only patch/minor bumps ship together; production bumps stay one per PR
       # so a production regression maps to exactly one package.
       dev-dependencies:

@@ -302,7 +302,8 @@ never blocks the others.
   (`__tests__/integration/deps-agent-sim.test.ts`) checks it; why, in
   [ADR-011](../adrs/ADR-011-deps-agent-invariants.md).
 - **Dependabot settings:** [`.github/dependabot.yml`](../../.github/dependabot.yml): weekly,
-  7-day cooldown (none for security updates), dev patch/minor bumps grouped.
+  7-day cooldown (none for security updates), dev patch/minor bumps grouped, `react` +
+  `react-dom` + their `@types` grouped (react-dom pins an exact react peer).
 - **Hands-on triage:** the `/babysit-deps` Claude Code command uses the same policy.
 - **Architecture context:** [`architecture.md` §9.5](../architecture.md#95-dependency-updates-deps-agent).
 - **Cost:** one Claude assessment per set of package versions. A Dependabot rebase reuses

@@ -9,7 +9,8 @@ only when every gate below passes.
 
 1. **Dependabot** opens the PR after the release has aged (`cooldown` in `dependabot.yml`).
    Development patch/minor bumps arrive grouped; production bumps arrive one per PR, so a
-   production regression maps to exactly one package.
+   production regression maps to exactly one package. The exception is `react`, `react-dom`
+   and their `@types`, which arrive as one PR because react-dom pins an exact react peer.
 2. **CI** runs lint, type-check, unit + integration (with coverage floor) and E2E against a
    production build.
 3. **Assessment** (LLM, read-only token): changelog vs our actual usage → `merge` or `escalate`.
