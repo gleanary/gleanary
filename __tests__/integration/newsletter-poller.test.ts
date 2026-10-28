@@ -26,19 +26,26 @@ const mockMessageFlagsAdd = vi.fn();
 const mockMailboxOpen = vi.fn();
 const mockConnect = vi.fn();
 const mockLogout = vi.fn();
-vi.mock('imapflow', () => ({
-  ImapFlow: vi.fn().mockImplementation(function () {
-    return {
-      on: vi.fn(),
-      connect: mockConnect,
-      logout: mockLogout,
-      mailboxOpen: mockMailboxOpen,
-      search: vi.fn().mockResolvedValue([1]),
-      fetchOne: mockFetchOne,
-      messageFlagsAdd: mockMessageFlagsAdd,
-    };
-  }),
-}));
+const mockDispose = vi.fn();
+const mockSearch = vi.fn();
+vi.mock('imapflow', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('imapflow')>();
+  return {
+    ImapFlowErrorCode: actual.ImapFlowErrorCode,
+    ImapFlow: vi.fn().mockImplementation(function () {
+      return {
+        on: vi.fn(),
+        connect: mockConnect,
+        logout: mockLogout,
+        [Symbol.asyncDispose]: mockDispose,
+        mailboxOpen: mockMailboxOpen,
+        search: mockSearch,
+        fetchOne: mockFetchOne,
+        messageFlagsAdd: mockMessageFlagsAdd,
+      };
+    }),
+  };
+});
 
 // Mock mailparser
 const mockSimpleParser = vi.fn();
@@ -73,6 +80,8 @@ describe('newsletter-poller', () => {
     // Reset IMAP mocks to defaults (clearAllMocks doesn't reset implementations)
     mockConnect.mockResolvedValue(undefined);
     mockLogout.mockResolvedValue(undefined);
+    mockDispose.mockResolvedValue(undefined);
+    mockSearch.mockResolvedValue([1]);
     mockMailboxOpen.mockResolvedValue(undefined);
     mockMessageFlagsAdd.mockResolvedValue(undefined);
 
@@ -240,6 +249,37 @@ describe('newsletter-poller', () => {
     expect(result.errors).toHaveLength(1);
     expect(result.errors[0]).toContain('Connection refused');
   });
+
+  it('disposes the IMAP client when connect fails', async () => {
+    mockConnect.mockRejectedValue(new Error('Connection refused'));
+
+    const result = await pollNewsletters();
+
+    expect(mockDispose).toHaveBeenCalledTimes(1);
+    expect(result.errors).toEqual(['IMAP connection failed: Error: Connection refused']);
+  });
+
+  it('disposes the IMAP client when opening the mailbox fails', async () => {
+    mockMailboxOpen.mockRejectedValue(new Error('No such mailbox'));
+
+    const result = await pollNewsletters();
+
+    expect(mockDispose).toHaveBeenCalledTimes(1);
+    expect(result.errors).toEqual(['Newsletter poll failed: Error: No such mailbox']);
+  });
+
+  it.each(['EConnectionClosed', 'StateLogout', 'NoConnection'])(
+    'stops the batch when fetchOne rejects with %s',
+    async (code) => {
+      mockSearch.mockResolvedValue([1, 2, 3]);
+      mockFetchOne.mockRejectedValue(Object.assign(new Error('gone'), { code }));
+
+      const result = await pollNewsletters();
+
+      expect(mockFetchOne).toHaveBeenCalledTimes(1);
+      expect(result.errors).toEqual([]);
+    },
+  );
 
   // --- Content pipeline: preprocessing + storage ---
 

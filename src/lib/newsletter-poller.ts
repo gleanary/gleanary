@@ -1,5 +1,5 @@
 import 'server-only';
-import { ImapFlow } from 'imapflow';
+import { ImapFlow, ImapFlowErrorCode } from 'imapflow';
 import { simpleParser } from 'mailparser';
 import { eq } from 'drizzle-orm';
 import { db } from '@/db';
@@ -38,6 +38,14 @@ export async function getImapConfig(): Promise<ImapConfig | null> {
 
 /** Maximum email size to process (5 MB) */
 const MAX_EMAIL_SIZE_BYTES = 5 * 1024 * 1024;
+
+// Error codes meaning the IMAP connection is gone (or timed out): stop the batch instead of retrying per message
+const CONNECTION_LOST_CODES: ReadonlySet<string> = new Set([
+  ImapFlowErrorCode.NoConnection,
+  ImapFlowErrorCode.EConnectionClosed,
+  ImapFlowErrorCode.StateLogout,
+  ImapFlowErrorCode.ETIMEOUT,
+]);
 
 /**
  * Creates a configured ImapFlow client with standard timeout settings and
@@ -112,7 +120,7 @@ export async function pollNewsletters(): Promise<NewsletterPollResult> {
     return result;
   }
 
-  const client = createImapClient(imapConfig);
+  await using client = createImapClient(imapConfig);
 
   try {
     await client.connect();
@@ -320,7 +328,7 @@ export async function pollNewsletters(): Promise<NewsletterPollResult> {
         await client.messageFlagsAdd(String(message.uid), ['\\Seen'], { uid: true });
       } catch (error) {
         const code = (error as NodeJS.ErrnoException).code;
-        if (code === 'NoConnection' || code === 'ETIMEOUT') {
+        if (code && CONNECTION_LOST_CODES.has(code)) {
           logger.warn(
             { event: 'newsletter_fetch_interrupted', uid, newArticles: result.newArticles },
             'IMAP connection interrupted fetching message — stopping batch',
@@ -337,12 +345,6 @@ export async function pollNewsletters(): Promise<NewsletterPollResult> {
     const msg = `Newsletter poll failed: ${String(error)}`;
     result.errors.push(msg);
     logger.error({ err: error, event: 'newsletter_poll_failed' }, msg);
-  } finally {
-    try {
-      await client.logout();
-    } catch {
-      // Ignore logout errors
-    }
   }
 
   logger.info(
