@@ -190,3 +190,4 @@ jobs:
           PR: ${{ github.event.issue.number }}
           COMMENTER: ${{ github.event.comment.user.login }}
           COMMENT_BODY: ${{ github.event.comment.body }}
+          COMMENT_ID: ${{ github.event.comment.id }}

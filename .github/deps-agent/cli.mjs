@@ -497,6 +497,19 @@ function setLabel(number, name, on, labels) {
 
 const comment = (number, body) => apiWrite('POST', `repos/${REPO}/issues/${number}/comments`, { body });
 
+/**
+ * React to the owner's `/deps` comment: 👍 carried out, 😕 not (the App's reply says why).
+ * Cosmetic: a failure never stops the command.
+ */
+function react(content) {
+  if (!process.env.COMMENT_ID) return;
+  try {
+    apiWrite('POST', `repos/${REPO}/issues/comments/${process.env.COMMENT_ID}/reactions`, { content });
+  } catch (err) {
+    console.error(`could not react to the command: ${err.message}`);
+  }
+}
+
 function saveRecord(number, existing, record) {
   const body = renderRecord(record, { mode: mode(), runUrl: RUN_URL });
   if (existing) {
@@ -975,6 +988,7 @@ const commands = {
     if (by !== OWNER) return; // the workflow `if:` already checks; defense in depth
     const m = (process.env.COMMENT_BODY || '').trim().match(/^\/deps\s+(merge|hold|unhold|recheck)\b\s*([\s\S]*)$/);
     if (!m) {
+      react('confused');
       comment(number, 'Usage: `/deps merge` · `/deps hold <reason>` · `/deps unhold` · `/deps recheck`');
       return;
     }
@@ -997,6 +1011,7 @@ const commands = {
           `This PR changed since deps-agent last evaluated it (or it has not been evaluated yet), so \`/deps merge\` would approve something you have not seen. A run has been started: read the refreshed decision record, then reply \`/deps merge\` again.`,
         );
         dispatch();
+        react('confused'); // refused: the reply says why
         return;
       }
       // Only rules that FAIL now, each with the reason it fails: a pending rule (the review
@@ -1017,6 +1032,7 @@ const commands = {
               ? `Nothing is failing yet: still waiting on ${pending.join(', ')}. Reply \`/deps merge\` once the decision record shows what fails.`
               : 'Nothing for `/deps merge` to waive: no soft gate is failing on this PR.',
         );
+        react('confused');
         return;
       }
       comment(number, renderOverride({ versions: record.versions, lock: record.lockFingerprint, waive, by }, reason));
@@ -1031,6 +1047,8 @@ const commands = {
       comment(number, verb === 'hold' ? `On hold by ${by}${note}. deps-agent will leave this PR alone.` : `Hold lifted by ${by}.`);
       dispatch();
     }
+    // Carried out (refusals returned above with 😕), as Dependabot acknowledges its commands.
+    react('+1');
   },
 };
 

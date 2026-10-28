@@ -192,7 +192,9 @@ cases:
 
 ### Commands
 
-Comment on the Dependabot PR. Only the login in `DEPS_AGENT_OWNER` is obeyed.
+Comment on the Dependabot PR. Only the login in `DEPS_AGENT_OWNER` is obeyed. The App
+reacts to your comment within a minute: 👍 when it carried the command out, 😕 when it
+did not (it could not parse it, or refused it; its reply says why). No reaction means the comment was not a command it acts on.
 
 | Command               | Effect                                                                                                                                                                                                                                                                                                                                                                                     |
 | --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
