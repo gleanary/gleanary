@@ -14,6 +14,8 @@ All notable changes to this project will be documented in this file.
 
 ### Changed
 
+- **`@anthropic-ai/sdk` 1.0.0** (0.135.0 → 1.0.0): every Claude call now uses API version `2026-10-21` and sends the API key as `Authorization: Bearer`; we send no sampling params, assistant `document` blocks or user-side `citations`, so requests are unchanged. The Settings key test (`/api/settings/test`) now calls `models.list()` through the SDK instead of a hand-written fetch, so it checks the key with the same auth header and API version as real calls, and `callClaudeBase` takes the new `MessageContentParam` type.
+
 - **msw 3** (dev dependency, 2.15.0 → 3.0.3): the global network tripwire now passes `onUnhandledFrame: 'error'` (msw 3 renamed `onUnhandledRequest`; the old key was silently ignored, letting unmocked requests reach the real network).
 
 - **One `pdfjs-dist` copy for the PDF viewer**: an npm override puts `react-pdf` (which pins an exact pdfjs-dist) on our `pdfjs-dist`, and Dependabot bumps the two together. The pdfjs-dist 6.4.299 bump (#72) had left react-pdf's API on 6.3.289 against a 6.4.299 worker, so no PDF page rendered.
