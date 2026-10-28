@@ -12,6 +12,8 @@ All notable changes to this project will be documented in this file.
 
 ### Changed
 
+- **Dependabot groups `react`, `react-dom`, `@types/react` and `@types/react-dom`** into one PR (majors included): react-dom pins an exact react peer, so the react-dom-only bump in #60 could never install.
+
 - **React 19.3.1** (`react` + `react-dom`, `@types/react`/`@types/react-dom` 19.3.0, `scheduler` 0.28): Dependabot bumped `react-dom` alone, which fails `npm ci` on its `react@^19.3.1` peer, so `react` moves with it. No `require-trusted-types-for` CSP is set, so the Trusted Types integration doesn't change how our sanitized HTML is injected; independently rendered transitions affect the `useTransition` call sites in the reader toolbar, article list, article status and highlight library, covered by the E2E suite.
 
 - **jsdom 30.1.3** (`@types/jsdom` 30): now that the parser runs on linkedom (#95), jsdom only serves highlight re-anchoring, DOMPurify and the jsdom test environment, none of which hit jsdom 30's 2048-character selector limit. One jsdom copy is installed again (isomorphic-dompurify no longer nests its own), and Dependabot no longer ignores jsdom 30.
