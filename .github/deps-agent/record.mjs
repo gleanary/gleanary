@@ -65,28 +65,8 @@ export function neutralize(text, max = 1500) {
 export function featureIssueTitle(feature, prTitle) {
   const name = defuseMentions(clip(String(feature ?? '').replace(/\s+/g, ' ').trim(), 80));
   if (!name) return null;
-  return `chore: evaluate ${name} (${bumpOf(prTitle)})`;
+  return `chore: evaluate ${name} (${prTitle.replace(/^chore\(deps(-dev)?\): /, '')})`;
 }
-
-/**
- * The title featureIssueTitle() replaced, so the duplicate check still recognizes issues
- * filed in that form (e.g. #66, #67). A frozen copy of the neutralize() of that time, cut
- * after escaping: it must not follow later changes to neutralize().
- * @param {unknown} feature - untrusted feature title from the assessment
- * @param {string} prTitle - Dependabot PR title
- * @returns {string} legacy issue title
- */
-export function legacyFeatureIssueTitle(feature, prTitle) {
-  const s = String(feature ?? '')
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/@/g, '@\u200b')
-    .replace(/[[\]()]/g, '\\$&');
-  return `chore: evaluate ${s.length > 80 ? `${s.slice(0, 80)}…` : s} (${bumpOf(prTitle)})`;
-}
-
-const bumpOf = (prTitle) => prTitle.replace(/^chore\(deps(-dev)?\): /, '');
 
 /** neutralize() for a markdown table cell: also keeps `|` and newlines from breaking the row. */
 const cell = (text, max) => neutralize(text, max).replace(/\|/g, '\\|').replace(/\n/g, ' ');

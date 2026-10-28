@@ -52,7 +52,6 @@ import {
   featureIssueTitle,
   fromApp,
   latestRecheckAt,
-  legacyFeatureIssueTitle,
   neutralize,
   pushHistory,
   renderDashboard,
@@ -691,8 +690,6 @@ function openFeatureIssues(record, meta) {
   for (const f of features) {
     const title = featureIssueTitle(f.title, meta.title);
     if (!title || enhancementTitles.has(title)) continue;
-    // Issues filed before featureIssueTitle() carry the old, escaped title.
-    if (enhancementTitles.has(legacyFeatureIssueTitle(f.title, meta.title))) continue;
     enhancementTitles.add(title);
     apiWrite('POST', `repos/${REPO}/issues`, {
       title,

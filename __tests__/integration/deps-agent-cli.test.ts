@@ -485,17 +485,6 @@ describe('openFeatureIssues', () => {
     expect(filed()).toEqual(['chore: evaluate z.iban() (4.6.0) (bump zod from 4.4.3 to 4.6.7)']);
   });
 
-  it('recognizes features filed under the old neutralized title', () => {
-    state.issues = [
-      {
-        number: 66,
-        title: 'chore: evaluate z.iban\\(\\) \\(4.6.0\\) (bump zod from 4.4.3 to 4.6.7)',
-      },
-    ];
-    open('z.iban() (4.6.0)');
-    expect(filed()).toEqual([]);
-  });
-
   it('recognizes plain-text titles that look like escapes', () => {
     state.issues = [
       {
