@@ -13,3 +13,6 @@ next-env.d.ts
 .aider*
 .env*
 .claude/settings.local.json
+# Parser parity corpus: deliberately malformed raw HTML (uppercase tags, unclosed
+# <p>/<td>, missing <tbody>); formatting it would invalidate the jsdom 29 baselines.
+__tests__/mocks/fixtures/html-corpus/*.html

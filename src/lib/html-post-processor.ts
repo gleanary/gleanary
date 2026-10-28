@@ -1,6 +1,4 @@
-import { JSDOM, VirtualConsole } from 'jsdom';
-
-const virtualConsole = new VirtualConsole();
+import { parseHtmlDocument } from '@/lib/linkedom-document';
 
 /**
  * Hostname substrings that identify known tracking/pixel-serving domains.
@@ -68,8 +66,7 @@ export const MIN_TEXT_BETWEEN_IMAGES = 20;
 export function postProcessHtml(html: string, options?: { isPdfContext?: boolean }): string {
   if (!html || !html.trim()) return html;
 
-  const dom = new JSDOM(html, { virtualConsole });
-  const { document } = dom.window;
+  const document = parseHtmlDocument(html);
 
   postProcessDocument(document);
 
@@ -83,7 +80,7 @@ export function postProcessHtml(html: string, options?: { isPdfContext?: boolean
 
 /**
  * Runs all post-processing transforms on an already-parsed Document.
- * Use this when you already have a JSDOM instance to avoid a redundant parse.
+ * Use this when you already have a parsed Document to avoid a redundant parse.
  * @param document - The DOM document to process in place
  * @returns void — mutates the document in place
  */

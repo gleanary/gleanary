@@ -1,7 +1,4 @@
-import { JSDOM, VirtualConsole } from 'jsdom';
-
-/** Suppress JSDOM noise when parsing article fragments */
-const virtualConsole = new VirtualConsole();
+import { parseHtmlFragment } from '@/lib/linkedom-document';
 
 export const CHUNK_TARGET_SIZE = 25_000;
 
@@ -62,8 +59,7 @@ function packElements(
 export function chunkHtml(html: string, targetSize: number = CHUNK_TARGET_SIZE): Chunk[] {
   if (!html || !html.trim()) return [];
 
-  const dom = new JSDOM(`<body>${html}</body>`, { virtualConsole });
-  const root = dom.window.document.body;
+  const root = parseHtmlFragment(html).body;
   const topLevel = Array.from(root.children);
 
   if (topLevel.length === 0) return [];
@@ -78,9 +74,7 @@ export function chunkHtml(html: string, targetSize: number = CHUNK_TARGET_SIZE):
       continue;
     }
 
-    const innerDom = new JSDOM(`<body>${raw.html}</body>`, { virtualConsole });
-    const innerRoot = innerDom.window.document.body;
-    const wrapper = innerRoot.children[0];
+    const wrapper = parseHtmlFragment(raw.html).body.children[0];
 
     if (!wrapper || wrapper.children.length === 0) {
       expanded.push(raw);
