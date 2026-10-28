@@ -1,5 +1,5 @@
 ---
-description: Triage, verify, and (safely) merge open Dependabot PRs — fan out read-only dossier workers per PR, then decide serially: auto-merge patch/minor when clean, auto-fix mechanical CI failures, escalate real judgment calls, and open tracking issues for adoptable new features.
+description: Triage, verify, and merge open Dependabot PRs — fan out read-only dossier workers per PR, then decide serially: hard-stop only on real supply-chain red flags, investigate and resolve the rest, migrate majors yourself (map breaking changes to our code, apply, run the full suite), escalate only product decisions, and open tracking issues for adoptable new features.
 argument-hint: '[PR number, or blank for all open dependabot PRs]'
 allowed-tools: Bash, Read, Grep, Glob, WebFetch, AskUserQuestion, Edit, Write, Workflow
 ---
@@ -10,7 +10,8 @@ allowed-tools: Bash, Read, Grep, Glob, WebFetch, AskUserQuestion, Edit, Write, W
 > with the shared policy in `.github/deps-agent/policy.md` (deterministic gate, one merge per
 > run, decision records on each PR). Use this command for hands-on triage. Before merging
 > by hand, read the PR's deps-agent decision record, and never merge a PR labeled
-> `deps:hold`. Majors and 0.x minors follow the same escalation rules as the agent.
+> `deps:hold`. This command goes further than the agent: it resolves the agent's soft
+> escalations itself when it can explain them, and it migrates majors (policy below).
 
 You are triaging Dependabot dependency-bump PRs for Gleanary. Three phases: preflight →
 dossiers (fanned out, read-only) → decide (inline, serial). Workers gather evidence; **you**
@@ -63,26 +64,62 @@ candidates, then escalations. **Never act on two PRs concurrently** — every np
   **non-attributable** to the PR — it neither blocks nor validates that PR. If main is red,
   ask the user ONCE (batched, AskUserQuestion) whether to merge the clean PRs over the
   known-pre-existing red; never treat either answer as standing policy for future runs.
-- ✅ **Auto-merge** when ALL hold: `packageRisk: clean`, CI is green (or set to pass, or
-  red only with baseline-matching failures the user approved merging over), and the
-  supply-chain checks of the local-execution fence (step 2) pass: a 7-day-old release, no
-  malware advisory, no new install script. The same checks gate deps-agent's merges.
-  → `gh pr merge <n> --squash --auto`. Prefer `--auto` so branch protection is respected.
-  Green CI is the verification signal — it runs the same gates as a local checkout; do not
-  check out green PRs locally.
-- ⚠️ **Escalate (AskUserQuestion)** when ANY hold: **major** bump; breaking/deprecation note
-  touching a path we use; any breaking change marked `securitySensitive` (always an
-  escalation, regardless of semver); `diffAnomalies` non-empty; or a non-baseline CI failure
-  that is a real code change (see step 2). Give the user a crisp recommendation + the
-  evidence from the dossier.
-- 🔧 **Auto-fix then merge** for **mechanical** non-baseline CI failures only (see step 2).
 
-### 2. CI failures — POLICY: auto-fix mechanical, escalate real
+**Supply-chain checks: a failure is a question to investigate, not an automatic stop**,
+except for the hard stops.
+
+- 🛑 **Hard stop (escalate, never resolve yourself)** when ANY holds for a version the PR
+  introduces (direct or transitive):
+  - a malware advisory:
+    `gh api -X GET /advisories -f type=malware -f ecosystem=npm -f affects=<pkg>@<version>`
+    is not `[]`;
+  - a package source other than `registry.npmjs.org` (any added or changed lockfile entry
+    whose `resolved` URL points elsewhere);
+  - a new or changed install script: a package gains `hasInstallScript`, or its install
+    command differs from the previous version's (`npm view <pkg>@<v> scripts`);
+  - a publisher change to an unknown human account: the new version's `_npmUser` is a
+    person who is not among the previous version's `maintainers`
+    (`npm view <pkg>@<old> maintainers`);
+  - `npm audit signatures` failing. Run it in a scratch directory outside the repo, never
+    in the checkout: copy the PR's `package.json` and `package-lock.json` there, then run
+    `npm ci --ignore-scripts` (downloads only, runs no package code) and
+    `npm audit signatures`.
+- 🔎 **Investigate and resolve yourself**: provenance or source-repo changes, publisher
+  changes between bot accounts (e.g. a move to npm trusted publishing from GitHub Actions),
+  cooldown edge cases, and every flag from deps-agent's soft rules (its decision record,
+  including `codeReview` findings and an `escalate` verdict). Find the root cause: a repo
+  redirect (`gh api repos/<old-owner>/<old-repo> --jq .full_name` names the new repo), an
+  attestation (`npm view <pkg>@<v> dist.attestations`), registry signatures (the
+  `npm audit signatures` check above), the release notes. If it is benign, record the evidence in the final
+  report and continue. If you cannot explain it, escalate with what you found.
+
+**Major bumps (including 0.x minors) are never a reason to stop on their own.**
+
+- 🔧 **Migrate**: read the migration guide and the changelog for every version in between,
+  map every breaking change to our usage (`file:line`; the dossier's `breakingChanges`
+  is the starting point, verify it with Grep), apply the changes on the PR branch (local
+  checkout, after the local-execution fence in step 2), and run the full suite including
+  E2E (`npm run lint && npm run typecheck && npm run test && npx playwright test`). Commit
+  (`fix(deps): migrate to <pkg> <B>`) and push. **Merge** when every affected usage is
+  covered and CI is green.
+- ⚠️ **Escalate (AskUserQuestion) only for a product decision**: a change users would see,
+  a data migration, or security-relevant semantics (auth, sanitization, URL validation,
+  crypto) that no test covers. Give a crisp recommendation and the evidence.
+
+- ✅ **Merge** (`gh pr merge <n> --squash --auto`, so branch protection is respected) when no
+  hard stop applies, every investigated flag is resolved with recorded evidence, any
+  migration is applied, and CI is green (or red only with baseline-matching failures the
+  user approved merging over). Green CI is the verification signal for PRs that need no
+  code change — do not check those out locally. A `deps:needs-human` label is no blocker
+  once you have resolved its causes; remove it after the merge
+  (`gh pr edit <n> --remove-label deps:needs-human`).
+
+### 2. CI failures — POLICY: fix mechanical failures and migrations, escalate product decisions
 
 Start from the dossier's `ci.logExcerpt` and `failureReadGuess`, but read the logs yourself
 before acting (`gh pr checks <n>` / `gh run view <id> --log-failed`).
 
-- **Mechanical** (fix, push, re-wait for green): lockfile drift / peer-dep resolution,
+- **Mechanical or migration** (fix, push, re-wait for green): lockfile drift / peer-dep resolution,
   test snapshot updates, a type signature that shifted, an ESLint/Prettier auto-fixable nit,
   a renamed export with a 1:1 replacement. This is the ONE case for local checkout, and it
   must pass the **local-execution fence** first (below): `gh pr checkout <n>`, install with
@@ -92,18 +129,22 @@ before acting (`gh pr checks <n>` / `gh run view <id> --log-failed`).
   (`npm run lint && npm run typecheck && npm run test`), commit
   (`fix(deps): adapt to <pkg> <B>`), push, restore with `git checkout <original-branch>`,
   and re-monitor. Sequential only — never while another PR is mid-checkout or mid-merge.
-- **Real** (STOP, escalate): behavior/logic changes, removed APIs with no drop-in, failing
-  assertions that reflect changed semantics, anything security-relevant. Ask the user with
-  the log excerpt and your read of it.
+  Breaking changes from a major bump follow the same path (step 1, Migrate).
+- **Product decision** (STOP, escalate): a failure that reflects a change users would see,
+  a data migration, or security-relevant semantics no test covers. Ask the user with the
+  log excerpt and your read of it. A removed API or changed semantics with a clear
+  replacement in the migration guide is a migration, not a stop.
 
 **Local-execution fence.** Checking out a PR and running npm or the tests executes the new
 package code on this laptop, which holds real credentials (`.env`, SSH keys, the `gh`
 token). A compromised release would run here before any gate sees it. Check out and run a
 PR locally ONLY when all of these hold for its current head commit:
 
-1. The PR's deps-agent decision record (the comment by the deps-agent App) shows
-   `cooldown`, `malware`, `installScripts`, `provenance`, `publisher` and `codeReview` all
-   passing for this head SHA. Without a current record, check it yourself:
+1. No hard stop applies (step 1), and the PR's deps-agent decision record (the comment by
+   the deps-agent App) shows `cooldown`, `malware`, `installScripts`, `provenance`,
+   `publisher` and `codeReview` passing for this head SHA, or each one failing has been
+   investigated and resolved with recorded evidence (step 1). Without a current record,
+   check it yourself:
    - every updated version is at least 7 days old (`npm view <pkg> time --json`);
    - no malware advisory: `gh api -X GET /advisories -f type=malware -f ecosystem=npm -f affects=<pkg>@<version>`
      returns `[]` for each updated version;
@@ -117,13 +158,17 @@ in your message, and let CI (which has no secrets) be the only place the new cod
 
 ### 3. After every merge — overlap the rebases, refresh before acting
 
-Immediately after each merge, comment `@dependabot rebase` on **all** remaining queue PRs so
+Immediately after each merge, comment `@dependabot rebase` on **all** remaining queue PRs
+that only carry Dependabot's commits, so
 their rebases run while you wait on the next one. The dossiers' changelog/usage analysis
 stays valid, but `mergeable`/`mergeStateStatus` and CI go stale the moment a sibling merges.
 Before acting on the next PR: `gh pr view <n> --json state,mergeable,mergeStateStatus` and
 `gh pr checks <n>`; wait for the rebase + re-run rather than forcing. If Dependabot closes a
 queued PR mid-train as **superseded by a newer version**, that's benign — count it as
 handled and triage the successor PR next cycle, don't chase it now.
+Dependabot stops rebasing a PR once it carries someone else's commits (and
+`@dependabot recreate` would drop them): for a PR you pushed to, merge `main` into it
+yourself instead.
 
 ### 4. Adoptable new features — POLICY: open a tracking issue/todo
 
@@ -145,7 +190,11 @@ Then list: merged, escalated (with the open questions), and tracking issues open
   enforces this too — but if a dossier reports it changed something, stop and tell the user.)
 - Never run a PR's dependency code on this machine unless it passed the local-execution
   fence (step 2).
-- Never merge a **major** bump without explicit user confirmation.
+- **Pre-authorized** (no need to ask): pushing non-Dependabot commits to a PR branch
+  (merging `main` in, aligning peer packages, migration changes); merging over a
+  `deps:needs-human` label once you have resolved its causes; removing that label after
+  the merge; closing duplicate feature issues.
+- Never merge a PR labeled `deps:hold`, and never resolve a hard stop yourself.
 - Never merge while required checks are pending/failing (use `--auto`, don't force).
 - Never edit `.github/workflows/`, `.env`, `infra/`, or `docs/architecture.md` to make a bump
   pass — those are protected; escalate instead.
