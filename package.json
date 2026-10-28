@@ -32,7 +32,7 @@
     "db:studio": "drizzle-kit studio"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.135.0",
+    "@anthropic-ai/sdk": "^0.137.0",
     "approx-string-match": "^2.0.1",
     "bcryptjs": "^3.0.3",
     "better-sqlite3": "^12.11.1",
