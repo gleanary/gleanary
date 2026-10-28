@@ -13,11 +13,15 @@ export interface Chunk {
   isOversized: boolean;
 }
 
-function packElements(
-  elements: Element[],
-  targetSize: number,
-): Array<{ html: string; isOversized: boolean }> {
-  const result: Array<{ html: string; isOversized: boolean }> = [];
+interface PackedChunk {
+  html: string;
+  isOversized: boolean;
+  /** The single element behind an oversized chunk, kept so it can be split without a re-parse. */
+  element?: Element;
+}
+
+function packElements(elements: Element[], targetSize: number): PackedChunk[] {
+  const result: PackedChunk[] = [];
   let currentParts: string[] = [];
   let currentLen = 0;
 
@@ -31,7 +35,7 @@ function packElements(
         currentParts = [];
         currentLen = 0;
       }
-      result.push({ html: fragment, isOversized: true });
+      result.push({ html: fragment, isOversized: true, element: el });
     } else if (currentLen + fragLen > targetSize && currentParts.length > 0) {
       result.push({ html: currentParts.join(''), isOversized: false });
       currentParts = [fragment];
@@ -74,7 +78,7 @@ export function chunkHtml(html: string, targetSize: number = CHUNK_TARGET_SIZE):
       continue;
     }
 
-    const wrapper = parseHtmlFragment(raw.html).body.children[0];
+    const wrapper = raw.element;
 
     if (!wrapper || wrapper.children.length === 0) {
       expanded.push(raw);

@@ -3,6 +3,9 @@ import { parseHTML } from 'linkedom';
 /** Matches a `<head>` or `<body>` start tag, which a document without `<html>` may still carry. */
 const HEAD_OR_BODY_TAG_RE = /<(head|body)[\s>]/i;
 
+/** Matches an `<html>` start tag. */
+const HTML_TAG_RE = /<html[\s>]/i;
+
 const HTML_NAMESPACE = 'http://www.w3.org/1999/xhtml';
 
 /**
@@ -87,11 +90,11 @@ function wrapFragment(html: string): string {
  * @returns The parsed document, with a populated `body`
  */
 export function parseHtmlDocument(html: string, url?: string): Document {
-  let { document } = parseHTML(html);
-  if (document.documentElement?.tagName !== 'HTML') {
-    const wrapped = HEAD_OR_BODY_TAG_RE.test(html) ? `<html>${html}</html>` : wrapFragment(html);
-    document = parseHTML(wrapped).document;
-  }
+  const wrapped = HEAD_OR_BODY_TAG_RE.test(html) ? `<html>${html}</html>` : wrapFragment(html);
+  // Wrap up front when there is no `<html>` tag, so fragments parse once; the
+  // root check still catches an `<html>` that only appears in a comment or string.
+  let { document } = parseHTML(HTML_TAG_RE.test(html) ? html : wrapped);
+  if (document.documentElement?.tagName !== 'HTML') document = parseHTML(wrapped).document;
   ensureBody(document);
   normalizeParsedDocument(document);
 
