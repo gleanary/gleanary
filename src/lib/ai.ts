@@ -451,7 +451,7 @@ export interface ClaudeCallResult {
 /** Shared implementation for callClaudeWithMeta and related callers. */
 async function callClaudeBase(
   systemPrompt: string,
-  userContent: Anthropic.MessageParam['content'],
+  userContent: Anthropic.MessageContentParam,
   ctx: TrackingContext,
   model: string,
   maxTokens: number,

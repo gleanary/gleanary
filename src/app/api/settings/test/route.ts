@@ -1,3 +1,5 @@
+import { STATUS_CODES } from 'node:http';
+import Anthropic from '@anthropic-ai/sdk';
 import { NextRequest, NextResponse } from 'next/server';
 import { withRoute } from '@/lib/api-error-handler';
 import { logger } from '@/lib/logger';
@@ -8,7 +10,6 @@ import { getClientIp } from '@/lib/auth';
 import { testReadwiseToken } from '@/lib/readwise-import';
 
 const INWORLD_VOICES_URL = 'https://api.inworld.ai/tts/v1/voices';
-const ANTHROPIC_MODELS_URL = 'https://api.anthropic.com/v1/models';
 const MISTRAL_MODELS_URL = 'https://api.mistral.ai/v1/models';
 
 /**
@@ -38,18 +39,15 @@ export const POST = withRoute('POST /api/settings/test', async (req: NextRequest
       message = `Inworld API returned ${resp.status}: ${resp.statusText}`;
     }
   } else if (data.service === 'anthropic') {
-    const resp = await fetch(ANTHROPIC_MODELS_URL, {
-      headers: {
-        'x-api-key': data.api_key,
-        'anthropic-version': '2023-06-01',
-      },
-      signal: AbortSignal.timeout(10_000),
-    });
-    if (resp.ok) {
+    // Use the SDK so the key is tested with the same auth header and API version as real calls.
+    const client = new Anthropic({ apiKey: data.api_key, timeout: 10_000, maxRetries: 0 });
+    try {
+      await client.models.list({ limit: 1 });
       success = true;
       message = 'Anthropic API key is valid.';
-    } else {
-      message = `Anthropic API returned ${resp.status}: ${resp.statusText}`;
+    } catch (err) {
+      if (!(err instanceof Anthropic.APIError) || err.status === undefined) throw err;
+      message = `Anthropic API returned ${err.status}: ${STATUS_CODES[err.status] ?? ''}`;
     }
   } else if (data.service === 'readwise') {
     ({ success, message } = await testReadwiseToken(data.api_key));

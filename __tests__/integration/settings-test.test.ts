@@ -81,6 +81,27 @@ describe('POST /api/settings/test', () => {
     });
   }
 
+  it('tests the Anthropic key through the SDK, with the auth real calls use', async () => {
+    let sent: Headers | undefined;
+    server.use(
+      http.get(ANTHROPIC_MODELS_URL, ({ request }) => {
+        sent = request.headers;
+        return HttpResponse.json({ data: [] });
+      }),
+    );
+
+    await testSettings(
+      jsonReq('POST', '/api/settings/test', {
+        service: 'anthropic',
+        api_key: 'test-key',
+        confirm_password: TEST_PASSWORD,
+      }),
+    );
+
+    expect(sent?.get('authorization')).toBe('Bearer test-key');
+    expect(sent?.get('anthropic-version')).toBeTruthy();
+  });
+
   it('returns 403 for a wrong confirm_password', async () => {
     const res = await testSettings(
       jsonReq('POST', '/api/settings/test', {

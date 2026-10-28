@@ -203,8 +203,9 @@ pricing or feature change), say so in one line per axis and stop — don't manuf
 
 These recur on every check; decide once and record here rather than re-litigating.
 
-**SDK version pinning.** Caret (currently `^0.112.4`). Because the SDK is pre-1.0, a minor
-can break the `Usage` shape or method signatures Gleanary depends on.
+**SDK version pinning.** Caret (currently `^1.0.0`). The 1.0.0 major moved every request to
+API version `2026-10-21` and sends the API key as `Authorization: Bearer`. Every Claude call,
+including the Settings key test, goes through the SDK, so a major bump moves them together.
 
 - **Decision (2026-07-21):** keep the caret; minors arrive via Dependabot PRs, which get
   triaged through `/babysit-deps` (changelog read, CI, adoptable features filed as issues —
