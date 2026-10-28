@@ -12,6 +12,8 @@ All notable changes to this project will be documented in this file.
 
 ### Changed
 
+- **React 19.3.1** (`react` + `react-dom`, `@types/react`/`@types/react-dom` 19.3.0, `scheduler` 0.28): Dependabot bumped `react-dom` alone, which fails `npm ci` on its `react@^19.3.1` peer, so `react` moves with it. No `require-trusted-types-for` CSP is set, so the Trusted Types integration doesn't change how our sanitized HTML is injected; independently rendered transitions affect the `useTransition` call sites in the reader toolbar, article list, article status and highlight library, covered by the E2E suite.
+
 - **jsdom 30.1.3** (`@types/jsdom` 30): now that the parser runs on linkedom (#95), jsdom only serves highlight re-anchoring, DOMPurify and the jsdom test environment, none of which hit jsdom 30's 2048-character selector limit. One jsdom copy is installed again (isomorphic-dompurify no longer nests its own), and Dependabot no longer ignores jsdom 30.
 
 - **Server-side HTML parsing moves from jsdom to linkedom** (article-parser, html-post-processor, email-preprocessor, reformat-chunker): a new `parseHtmlDocument()`/`parseHtmlFragment()` helper (`src/lib/linkedom-document.ts`) wraps fragments, lowercases attribute names and merges text nodes like an HTML5 parser, and adds Defuddle's `styleSheets`/`getComputedStyle` polyfills and base URL. Output is held to jsdom 29 baselines over a new raw-HTML corpus (`__tests__/mocks/fixtures/html-corpus/`, `linkedom-parity.test.ts`). Defuddle's swallowed extraction errors are now logged as `defuddle_parse_errors` (warn). jsdom stays for `reanchor-highlights` and DOMPurify; `linkedom` is a direct dependency and the `overrides.defuddle.jsdom` entry is gone.
