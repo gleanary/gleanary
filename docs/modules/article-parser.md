@@ -20,7 +20,7 @@ Given a URL (or raw HTML + URL), fetch the page, extract clean readable content,
 - `src/lib/html-to-markdown.ts` — `convertHtmlToMarkdown()` turndown wrapper (exists)
 - `src/app/api/articles/route.ts` — Article creation API (exists)
 - `defuddle` — Article content extraction (both paths)
-- `jsdom` — Server-side DOM implementation (both paths)
+- `linkedom` — Server-side DOM implementation (both paths), via `parseHtmlDocument()` in `src/lib/linkedom-document.ts`. The parser paths moved off jsdom in 2026-10 (jsdom 30's selector engine rejects Defuddle's 3136-char selector); jsdom remains only for `reanchor-highlights` (Range/TreeWalker) and DOMPurify
 - `turndown` — HTML-to-markdown conversion for AI context (`content_markdown` column)
 
 ## Architecture
@@ -61,8 +61,8 @@ interface ParsedArticle {
 
 **Shared pipeline (`runContentPipeline`):**
 
-1. Parse HTML with `jsdom` to create a DOM
-2. Run Defuddle to extract article content and metadata (title, author, published, site, image)
+1. Parse HTML with linkedom via `parseHtmlDocument(html, url)` (`src/lib/linkedom-document.ts`). The helper wraps fragments in an html/body tree, lowercases attribute names and merges adjacent text nodes (as an HTML5 parser would), polyfills `styleSheets`/`getComputedStyle` for Defuddle, and sets `document.URL` so Defuddle resolves relative links and images
+2. Run Defuddle to extract article content and metadata (title, author, published, site, image). Defuddle catches extraction errors itself and falls back to the whole `<body>`; any errors it recorded are logged as `logger.warn({ event: 'defuddle_parse_errors', url, errors })`. They are read from Defuddle's private `_parseErrors` via `getDefuddleParseErrors()`, because `debug: true` (the only public way to get them) changes the extracted output
 3. Sanitize HTML via `sanitizeArticleHtml()` (Defuddle resolves relative URLs internally)
 4. Extract plain text for FTS and word count
 5. Convert sanitized HTML to markdown via `convertHtmlToMarkdown()` for `content_markdown`
@@ -130,13 +130,13 @@ Parse a URL and save it as an article. If the article URL already exists, return
 ## Edge Cases
 
 1. **URL already saved**: Return `409` with existing article ID — don't re-parse
-2. **Defuddle fails to extract** (HTML path): Fall back to page `<title>` for title, full body HTML for content
+2. **Defuddle fails to extract** (HTML path): Fall back to page `<title>` for title, full body HTML for content; Defuddle's recorded errors are logged as `defuddle_parse_errors` (warn) with the url
 3. **Empty content**: If extraction yields no content, store with empty `contentHtml`/`contentText` and log warning
 4. **Jina returns bot challenge page**: Detected and logged as warning; article saved with whatever content was returned
 5. **Timeout/DNS failure**: Return `502` with "Failed to fetch URL" message
 6. **Very large pages**: `safeFetchText` enforces size limits
 7. **Relative URLs in content** (HTML path only): Defuddle resolves relative URLs internally
-8. **Character encoding**: jsdom handles encoding detection (HTML path); Jina handles encoding (URL path)
+8. **Character encoding**: the HTML path parses an already-decoded string (prefetched buffers are decoded as UTF-8); Jina handles encoding (URL path)
 9. **Paywalled content with provided HTML**: When `html` is provided, skip Jina, parse directly with Defuddle — this supports the browser extension use case where the user has access
 
 ## Security

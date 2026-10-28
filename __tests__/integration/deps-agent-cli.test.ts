@@ -59,7 +59,7 @@ interface FakeState {
   fresh: boolean;
   labels: string[];
   comments: Comment[];
-  issues: { number: number; title: string; pull_request?: unknown }[];
+  issues: { number: number; title: string; body?: string; pull_request?: unknown }[];
   writes: { method: string; path: string; body: Record<string, unknown> }[];
   git: string[][];
   dispatches: string[][];
@@ -155,6 +155,7 @@ function get(path: string): unknown {
     [/^advisories\?/, () => []],
     [new RegExp(`issues/${PR}/comments`), () => state.comments],
     [/issues\?state=open&labels=deps:needs-human/, () => state.issues],
+    [/issues\?state=all&labels=enhancement/, () => state.issues],
     [/^users\//, () => ({ id: 99 })],
     // what a full `act` run reads besides the PR itself
     [
@@ -260,6 +261,8 @@ const healthy: MainState = { sha: 'main1', state: 'healthy', detail: 'ok' };
 
 const pings = () => state.comments.filter((c) => c.body.startsWith('@owner'));
 const merges = () => state.writes.filter((w) => w.method === 'PUT' && w.path.endsWith('/merge'));
+const issuesFiled = () =>
+  state.writes.filter((w) => w.method === 'POST' && w.path.endsWith('/issues'));
 const record = () =>
   decodeRecord(state.comments.find((c) => c.body.includes('deps-agent:record'))?.body ?? '') as {
     outcome?: string;
@@ -466,6 +469,73 @@ describe('evaluatePr', () => {
     expect(outcome).toBe('escalate');
     expect(rebaseRequests()).toHaveLength(1);
     expect(pings()[0]?.body).toContain('has not rebased');
+  });
+});
+
+describe('openFeatureIssues', () => {
+  const open = (...titles: string[]) => openFor({ versions: 'zod@4.6.7' }, ...titles);
+  const openFor = (r: { versions: string; assessmentStale?: boolean }, ...titles: string[]) =>
+    cli.openFeatureIssues(
+      {
+        ...r,
+        assessment: { adoptableFeatures: titles.map((title) => ({ title, detail: 'd' })) },
+      },
+      { title: fakePr().title, url: fakePr().html_url },
+    );
+  const filed = () => issuesFiled().map((w) => w.body.title);
+
+  it('files each feature under a plain-text title, once', () => {
+    open('z.iban() (4.6.0)', 'z.iban() (4.6.0)');
+    expect(filed()).toEqual(['chore: evaluate z.iban() (4.6.0) (bump zod from 4.4.3 to 4.6.7)']);
+  });
+
+  it('files features once per set of package versions, however a re-assessment words them', () => {
+    open('z.iban() (4.6.0)');
+    expect(String(issuesFiled()[0]?.body.body)).toContain('<!-- deps-agent:features zod@4.6.7 -->');
+    open('z.iban() validator (4.6.0)'); // same run, reworded
+    cli.clearRunCaches(); // a later run sees the issue filed above
+    state.issues = [
+      {
+        number: 70,
+        title: String(issuesFiled()[0]?.body.title),
+        body: String(issuesFiled()[0]?.body.body),
+      },
+    ];
+    open('IBAN validation via z.iban()');
+    expect(filed()).toHaveLength(1);
+  });
+
+  it('still files features for other package versions', () => {
+    state.issues = [
+      { number: 70, title: 'chore: evaluate x', body: '<!-- deps-agent:features zod@4.6.6 -->' },
+    ];
+    open('z.iban() (4.6.0)');
+    expect(filed()).toHaveLength(1);
+  });
+
+  it('reads back markers for scoped and multi-package version sets', () => {
+    const versions = '@types/react-dom@19.3.0,react-dom@19.3.1-rc.1';
+    openFor({ versions }, 'browser()');
+    cli.clearRunCaches();
+    state.issues = [{ number: 70, title: 'x', body: String(issuesFiled()[0]?.body.body) }];
+    openFor({ versions }, 'browser() for browser-only subtrees');
+    expect(filed()).toHaveLength(1);
+  });
+
+  it('files nothing from a stale assessment', () => {
+    openFor({ versions: 'zod@4.6.8', assessmentStale: true }, 'z.iban() (4.6.0)');
+    expect(filed()).toEqual([]);
+  });
+
+  it('recognizes plain-text titles that look like escapes', () => {
+    state.issues = [
+      {
+        number: 68,
+        title: 'chore: evaluate &lt;Foo&gt; and \\(x\\) (bump zod from 4.4.3 to 4.6.7)',
+      },
+    ];
+    open('&lt;Foo&gt; and \\(x\\)');
+    expect(filed()).toEqual([]);
   });
 });
 

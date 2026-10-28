@@ -111,12 +111,6 @@ export function DraftEditorPage({
   }, []);
 
   useEffect(() => {
-    if (gen.error?.kind === 'needs-force') {
-      setForceConfirmOpen(true);
-    }
-  }, [gen.error]);
-
-  useEffect(() => {
     if (
       !shouldAutoSave({
         isStreaming: gen.isStreaming,
@@ -210,6 +204,8 @@ export function DraftEditorPage({
 
   const indicator = saveIndicatorText(mergedSaveState(titleSaveState, contentSaveState));
   const showOtherError = gen.error?.kind === 'other';
+  // A server-side 409 (needs-force) opens the dialog too; cancel/confirm clear that error.
+  const isForceConfirmOpen = forceConfirmOpen || gen.error?.kind === 'needs-force';
 
   return (
     <div className="px-4 pt-3 pb-6">
@@ -269,7 +265,7 @@ export function DraftEditorPage({
         />
       </div>
 
-      <Dialog open={forceConfirmOpen} onOpenChange={(open) => !open && handleForceCancel()}>
+      <Dialog open={isForceConfirmOpen} onOpenChange={(open) => !open && handleForceCancel()}>
         <DialogContent>
           <DialogHeader>
             <DialogTitle>Regenerate draft?</DialogTitle>

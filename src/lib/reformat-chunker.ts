@@ -1,7 +1,4 @@
-import { JSDOM, VirtualConsole } from 'jsdom';
-
-/** Suppress JSDOM noise when parsing article fragments */
-const virtualConsole = new VirtualConsole();
+import { parseHtmlFragment } from '@/lib/linkedom-document';
 
 export const CHUNK_TARGET_SIZE = 25_000;
 
@@ -16,11 +13,15 @@ export interface Chunk {
   isOversized: boolean;
 }
 
-function packElements(
-  elements: Element[],
-  targetSize: number,
-): Array<{ html: string; isOversized: boolean }> {
-  const result: Array<{ html: string; isOversized: boolean }> = [];
+interface PackedChunk {
+  html: string;
+  isOversized: boolean;
+  /** The single element behind an oversized chunk, kept so it can be split without a re-parse. */
+  element?: Element;
+}
+
+function packElements(elements: Element[], targetSize: number): PackedChunk[] {
+  const result: PackedChunk[] = [];
   let currentParts: string[] = [];
   let currentLen = 0;
 
@@ -34,7 +35,7 @@ function packElements(
         currentParts = [];
         currentLen = 0;
       }
-      result.push({ html: fragment, isOversized: true });
+      result.push({ html: fragment, isOversized: true, element: el });
     } else if (currentLen + fragLen > targetSize && currentParts.length > 0) {
       result.push({ html: currentParts.join(''), isOversized: false });
       currentParts = [fragment];
@@ -62,8 +63,7 @@ function packElements(
 export function chunkHtml(html: string, targetSize: number = CHUNK_TARGET_SIZE): Chunk[] {
   if (!html || !html.trim()) return [];
 
-  const dom = new JSDOM(`<body>${html}</body>`, { virtualConsole });
-  const root = dom.window.document.body;
+  const root = parseHtmlFragment(html).body;
   const topLevel = Array.from(root.children);
 
   if (topLevel.length === 0) return [];
@@ -78,9 +78,7 @@ export function chunkHtml(html: string, targetSize: number = CHUNK_TARGET_SIZE):
       continue;
     }
 
-    const innerDom = new JSDOM(`<body>${raw.html}</body>`, { virtualConsole });
-    const innerRoot = innerDom.window.document.body;
-    const wrapper = innerRoot.children[0];
+    const wrapper = raw.element;
 
     if (!wrapper || wrapper.children.length === 0) {
       expanded.push(raw);

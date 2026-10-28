@@ -25,14 +25,14 @@ export async function POST(req: NextRequest) {
 
     await validateHostname(imapConfig.host);
 
-    const client = createImapClient(imapConfig);
-
     const connectWithTimeout = new Promise<void>((_resolve, reject) =>
       setTimeout(() => reject(new Error('Connection timed out after 10 seconds')), 10_000),
     );
 
     const mailboxes: string[] = [];
-    try {
+    {
+      // Always clean up — disposal runs even when connectWithTimeout wins the race
+      await using client = createImapClient(imapConfig);
       await Promise.race([
         (async () => {
           await client.connect();
@@ -43,9 +43,6 @@ export async function POST(req: NextRequest) {
         })(),
         connectWithTimeout,
       ]);
-    } finally {
-      // Always clean up — runs even when connectWithTimeout wins the race
-      await client.logout().catch(() => undefined);
     }
 
     const ipAddress = getClientIp(req);

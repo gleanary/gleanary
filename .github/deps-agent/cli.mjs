@@ -49,6 +49,9 @@ import {
   MARKER,
   clampAssessment,
   decodeRecord,
+  featureIssueTitle,
+  featuresMarker,
+  featuresMarkersIn,
   fromApp,
   latestRecheckAt,
   neutralize,
@@ -679,21 +682,29 @@ async function evaluatePr(number, { main, now, assessment, slot, by = 'agent', n
   return { outcome, record, meta };
 }
 
-let enhancementTitles = null; // fetched once per run, on first use
+let filedFeatures = null; // titles and featuresMarker()s of enhancement issues, fetched once per run
 function openFeatureIssues(record, meta) {
+  // A stale assessment was made for other versions: filing it would claim this marker.
+  if (record.assessmentStale || !record.versions) return;
   const features = (record.assessment?.adoptableFeatures ?? []).slice(0, MAX_FEATURE_ISSUES);
   if (!features.length) return;
-  enhancementTitles ??= new Set(
-    apiPaged(`repos/${REPO}/issues?state=all&labels=enhancement&per_page=100`).map((i) => i.title),
+  filedFeatures ??= new Set(
+    apiPaged(`repos/${REPO}/issues?state=all&labels=enhancement&per_page=100`).flatMap((i) => [
+      i.title,
+      ...featuresMarkersIn(i.body),
+    ]),
   );
+  const marker = featuresMarker(record.versions);
+  if (filedFeatures.has(marker)) return;
+  filedFeatures.add(marker);
   for (const f of features) {
-    const title = `chore: evaluate ${neutralize(f.title, 80)} (${meta.title.replace(/^chore\(deps(-dev)?\): /, '')})`;
-    if (enhancementTitles.has(title)) continue;
-    enhancementTitles.add(title);
+    const title = featureIssueTitle(f.title, meta.title);
+    if (!title || filedFeatures.has(title)) continue;
+    filedFeatures.add(title);
     apiWrite('POST', `repos/${REPO}/issues`, {
       title,
       labels: ['enhancement'],
-      body: `Spotted by deps-agent on ${meta.url}.\n\n${neutralize(f.detail)}\n\n${neutralize(f.link ?? '', 300)}`,
+      body: `Spotted by deps-agent on ${meta.url}.\n\n${neutralize(f.detail)}\n\n${neutralize(f.link ?? '', 300)}\n\n${marker}`,
     });
   }
 }
@@ -1031,9 +1042,19 @@ function clearRunCaches() {
   packuments.clear();
   baseCache.clear();
   lockCache.clear();
+  filedFeatures = null;
 }
 
-export { POLICY_HASH, clearRunCaches, commands, evaluatePr, handleMain, mainState, schemaArg };
+export {
+  POLICY_HASH,
+  clearRunCaches,
+  commands,
+  evaluatePr,
+  handleMain,
+  mainState,
+  openFeatureIssues,
+  schemaArg,
+};
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const { positionals, values } = parseArgs({

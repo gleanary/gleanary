@@ -188,14 +188,14 @@ Eager, one-time backfill with a lazy safety net.
 - `.katex-display` — the display-block wrapper; `.closest('.katex-display')` selects `$$…$$` vs inline `$…$` delimiters.
 - `annotation[encoding="application/x-tex"]` — the raw LaTeX source, the preferred reconstruction path.
 
-These same names are used in `src/components/reader/article-content.tsx` (the `.katex` readiness check) and `src/app/globals.css` (`.katex-error`, `.katex-display` styling). They were **unchanged by KaTeX 0.18** — that release prefixed only the previously-unprefixed _internal_ classes (`base`→`katex-base`, `strut`→`katex-strut`, `sizing`→`katex-sizing`, …), none of which this code touches. `__tests__/unit/highlight-anchoring.test.ts` pins this contract against real `katex.renderToString()` output; **re-run those tests and re-verify this list on every KaTeX major/minor bump.**
+These same names are used in `src/components/reader/article-content.tsx` (the `.katex` readiness check) and `src/app/globals.css` (`.katex-error`, `.katex-display` styling). They were **unchanged by KaTeX 0.18** — that release prefixed only the previously-unprefixed _internal_ classes (`base`→`katex-base`, `strut`→`katex-strut`, `sizing`→`katex-sizing`, …), none of which this code touches. KaTeX 0.19 left them unchanged too (its only breaking change is to the `strict` option, which this code does not set). `__tests__/unit/highlight-anchoring.test.ts` pins this contract against real `katex.renderToString()` output; **re-run those tests and re-verify this list on every KaTeX major/minor bump.**
 
 ---
 
 ## 13. Dependencies
 
 - **`approx-string-match`** — small, focused, MIT, returns matches within k edits; the matcher Hypothesis uses for the same purpose. Add to `package.json`; no setup-step change, so no `README.md` update expected.
-- **`katex`** — renders LaTeX math in the reader. Pinned to `^0.18.1`. See §12.1 for the class-name contract this module depends on; bumps must re-run the KaTeX unit tests and `e2e/math-article.spec.ts`.
+- **`katex`** — renders LaTeX math in the reader. Pinned to `^0.19.0`. See §12.1 for the class-name contract this module depends on; bumps must re-run the KaTeX unit tests and `e2e/math-article.spec.ts`.
 
 ---
 

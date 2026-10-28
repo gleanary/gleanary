@@ -92,6 +92,8 @@ export function HighlightLayer({
   highlightIdToScroll,
 }: HighlightLayerProps) {
   const contentRef = useRef<HTMLDivElement>(null);
+  // State mirror of contentRef for render-time consumers (refs must not be read during render).
+  const [contentRoot, setContentRoot] = useState<HTMLDivElement | null>(null);
   const [highlights, setHighlights] = useState<Highlight[]>(initialHighlights);
   // Consumed once — prevents re-scroll when the highlights array mutates mid-session
   const hasScrolledToDeepLinkRef = useRef(false);
@@ -99,7 +101,9 @@ export function HighlightLayer({
   const [editingMarkEl, setEditingMarkEl] = useState<HTMLElement | null>(null);
   const [mergeUndo, setMergeUndo] = useState<MergeUndoData | null>(null);
   const [hoveredHighlightId, setHoveredHighlightId] = useState<number | null>(null);
-  const [hasPendingSelection, setHasPendingSelection] = useState(false);
+  // Hidden anchor span positioned over a pending mobile selection; non-null while one is pending.
+  const [pendingAnchorEl, setPendingAnchorEl] = useState<HTMLSpanElement | null>(null);
+  const hasPendingSelection = pendingAnchorEl !== null;
   const pendingAnchorRef = useRef<HTMLSpanElement | null>(null);
   const highlightsRef = useRef<Highlight[]>(initialHighlights);
   const editingRef = useRef<Highlight | null>(null);
@@ -120,13 +124,32 @@ export function HighlightLayer({
     drifted: Array<{ id: number; anchor: TextQuoteAnchor }>;
   } | null>(null);
 
+  /** Attaches the content root to both the ref (event handlers) and state (render). */
+  const attachContentRoot = useCallback((el: HTMLDivElement | null) => {
+    contentRef.current = el;
+    setContentRoot(el);
+  }, []);
+
   /** Clears pending selection state: range ref, anchor span, and UI flag. */
   const clearPendingSelection = useCallback(() => {
     pendingRangeRef.current = null;
-    setHasPendingSelection(false);
+    setPendingAnchorEl(null);
     pendingAnchorRef.current?.remove();
     pendingAnchorRef.current = null;
   }, []);
+
+  /**
+   * Enters edit mode for a highlight. Clears hover (avoids duplicate handles) and any
+   * pending mobile selection (prevents dual popover flicker) in the same batch.
+   */
+  const enterEditMode = useCallback(
+    (highlight: Highlight) => {
+      setEditingHighlight(highlight);
+      setHoveredHighlightId(null);
+      clearPendingSelection();
+    },
+    [clearPendingSelection],
+  );
 
   // Clean up pending anchor span on unmount to prevent DOM leak
   useEffect(() => {
@@ -141,13 +164,7 @@ export function HighlightLayer({
   }, [highlights]);
   useEffect(() => {
     editingRef.current = editingHighlight;
-    if (editingHighlight) {
-      // Clear hover when entering edit mode to avoid duplicate handles
-      setHoveredHighlightId(null);
-      // Clear pending mobile selection to prevent dual popover flicker
-      clearPendingSelection();
-    }
-  }, [editingHighlight, clearPendingSelection]);
+  }, [editingHighlight]);
 
   // Apply existing highlights to the DOM on mount and when highlights or content change.
   // contentVersion is bumped after async DOM transforms (KaTeX) so paths resolve correctly.
@@ -526,7 +543,7 @@ export function HighlightLayer({
         const highlightId = parseInt(mark.getAttribute('data-highlight-id')!, 10);
         if (!highlightId) return;
         const highlight = highlightsRef.current.find((h) => h.id === highlightId);
-        if (highlight) setEditingHighlight(highlight);
+        if (highlight) enterEditMode(highlight);
         return;
       }
 
@@ -546,7 +563,7 @@ export function HighlightLayer({
           e.clientY >= box.top &&
           e.clientY <= box.bottom
         ) {
-          setEditingHighlight(h);
+          enterEditMode(h);
           return;
         }
       }
@@ -554,7 +571,7 @@ export function HighlightLayer({
 
     document.addEventListener('click', handleClick);
     return () => document.removeEventListener('click', handleClick);
-  }, []);
+  }, [enterEditMode]);
 
   // Show handles on hover over highlighted marks (desktop only)
   useEffect(() => {
@@ -689,7 +706,7 @@ export function HighlightLayer({
               .filter((h) => !deleteIds.has(h.id))
               .map((h) => (h.id === survivor.id ? merged : h)),
           );
-          setEditingHighlight(merged);
+          enterEditMode(merged);
           window.getSelection()?.removeAllRanges();
           return;
         }
@@ -710,14 +727,14 @@ export function HighlightLayer({
         if (skipEditModeRef.current) {
           skipEditModeRef.current = false;
         } else {
-          setEditingHighlight(highlight);
+          enterEditMode(highlight);
         }
         window.getSelection()?.removeAllRanges();
       } catch {
         // Silently fail — user can retry
       }
     },
-    [articleId, findOverlappingHighlights],
+    [articleId, findOverlappingHighlights, enterEditMode],
   );
 
   const handleDelete = useCallback(async (highlightId: number) => {
@@ -876,7 +893,7 @@ export function HighlightLayer({
               pendingAnchorRef.current.style.top = `${rect.top + window.scrollY}px`;
               pendingAnchorRef.current.style.width = `${rect.width}px`;
               pendingAnchorRef.current.style.height = `${rect.height}px`;
-              setHasPendingSelection(true);
+              setPendingAnchorEl(pendingAnchorRef.current);
             }
           }
         });
@@ -942,9 +959,9 @@ export function HighlightLayer({
 
     const highlight = highlightsRef.current.find((h) => h.id === hoveredHighlightId);
     if (highlight) {
-      setEditingHighlight(highlight);
+      enterEditMode(highlight);
     }
-  }, [editingHighlight, hoveredHighlightId]);
+  }, [editingHighlight, hoveredHighlightId, enterEditMode]);
 
   // Confirm pending mobile selection: create highlight from saved range
   const confirmPendingSelection = useCallback(() => {
@@ -969,7 +986,7 @@ export function HighlightLayer({
 
   return (
     <>
-      <div ref={contentRef} data-testid="highlight-layer">
+      <div ref={attachContentRoot} data-testid="highlight-layer">
         {children}
       </div>
 
@@ -977,7 +994,7 @@ export function HighlightLayer({
       {/* Custom selection handles: desktop hover+edit, mobile edit only */}
       {handlesHighlightId && (
         <SelectionHandles
-          contentRoot={contentRef.current}
+          contentRoot={contentRoot}
           highlightId={handlesHighlightId}
           setSelection={editingHighlight !== null}
           onDragStart={handleHandleDragStart}
@@ -996,11 +1013,11 @@ export function HighlightLayer({
         />
       )}
       {/* Mobile: popover while user has an active selection (before highlight creation) */}
-      {isMobileDevice && hasPendingSelection && pendingAnchorRef.current && (
+      {isMobileDevice && pendingAnchorEl && (
         <HighlightPopover
           highlightId={0}
           note={null}
-          markElement={pendingAnchorRef.current}
+          markElement={pendingAnchorEl}
           onUpdateNote={() => {}}
           onDelete={dismissPendingSelection}
           onConfirm={confirmPendingSelection}

@@ -13,6 +13,11 @@ const OVERRIDE = /<!-- deps-agent:override ([A-Za-z0-9+/=]+) -->/;
 // A `/deps recheck` request, also an append-only App comment: it survives even if the run
 // it dispatched is cancelled while queued.
 const RECHECK = '<!-- deps-agent:recheck -->';
+// On feature issues: the package versions they were filed for. Re-assessments word the same
+// features differently, so features are filed once per set of versions.
+export const featuresMarker = (versions) => `<!-- deps-agent:features ${versions} -->`;
+/** The featuresMarker()s in an issue body. */
+export const featuresMarkersIn = (body) => (body ?? '').match(/<!-- deps-agent:features \S+ -->/g) ?? [];
 // GitHub rejects comments over 65,536 characters; stay well below it.
 const MAX_COMMENT = 60_000;
 const HISTORY_LIMIT = 20;
@@ -27,6 +32,16 @@ const OUTCOME_LABEL = {
   held: '⏸️ on hold',
 };
 
+/** Untrusted text never pings anyone: a zero-width space after every `@`. */
+const defuseMentions = (s) => s.replace(/@/g, '@\u200b');
+
+/** Cap untrusted text at `max` characters, marking the cut. */
+const clip = (s, max) => {
+  // By code point, so the cut never splits an emoji's surrogate pair.
+  const chars = Array.from(s);
+  return chars.length > max ? `${chars.slice(0, max).join('')}…` : s;
+};
+
 /**
  * Neutralize untrusted text (LLM output derived from changelogs) before it lands
  * in a comment: HTML escaped, no @-mentions, no markdown links or images, bounded length.
@@ -39,10 +54,23 @@ export function neutralize(text, max = 1500) {
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
-    .replace(/@/g, '@\u200b')
     // No live links or images (tracking pixels) from changelog text in the App's comments.
     .replace(/[[\]()]/g, '\\$&');
-  return s.length > max ? `${s.slice(0, max)}…` : s;
+  return clip(defuseMentions(s), max);
+}
+
+/**
+ * Title for an "evaluate this feature" issue. GitHub renders titles as plain text, so
+ * neutralize()'s markdown escapes would show up literally; only mentions, newlines and
+ * length are neutralized here.
+ * @param {unknown} feature - untrusted feature title from the assessment
+ * @param {string} prTitle - Dependabot PR title
+ * @returns {string | null} issue title, or null when the feature title is blank
+ */
+export function featureIssueTitle(feature, prTitle) {
+  const name = defuseMentions(clip(String(feature ?? '').replace(/\s+/g, ' ').trim(), 80));
+  if (!name) return null;
+  return `chore: evaluate ${name} (${prTitle.replace(/^chore\(deps(-dev)?\): /, '')})`;
 }
 
 /** neutralize() for a markdown table cell: also keeps `|` and newlines from breaking the row. */

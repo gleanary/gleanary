@@ -33,13 +33,13 @@ about everything else.
 
 What you will see day to day:
 
-| Where                          | What                                                             |
-| ------------------------------ | ---------------------------------------------------------------- |
-| Your GitHub notifications      | Only escalations and "main is broken" issues                     |
-| **Dependency dashboard** issue | One row per open Dependabot PR and its current state             |
-| Each Dependabot PR             | A **decision record** comment: gate results, assessment, history |
-| `main` history                 | Squash merges with a `Merged-by: deps-agent` trailer             |
-| Issues labeled `enhancement`   | New dependency features worth adopting (at most two per PR)      |
+| Where                          | What                                                                             |
+| ------------------------------ | -------------------------------------------------------------------------------- |
+| Your GitHub notifications      | Only escalations and "main is broken" issues                                     |
+| **Dependency dashboard** issue | One row per open Dependabot PR and its current state                             |
+| Each Dependabot PR             | A **decision record** comment: gate results, assessment, history                 |
+| `main` history                 | Squash merges with a `Merged-by: deps-agent` trailer                             |
+| Issues labeled `enhancement`   | New dependency features worth adopting (at most two per set of package versions) |
 
 ## How a PR travels
 

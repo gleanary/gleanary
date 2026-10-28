@@ -1,7 +1,5 @@
-import { JSDOM, VirtualConsole } from 'jsdom';
 import { postProcessDocument, isEmptyElement } from './html-post-processor';
-
-const virtualConsole = new VirtualConsole();
+import { parseHtmlDocument } from '@/lib/linkedom-document';
 
 /** MSO conditional comment pattern (downlevel-hidden: content inside comment block). */
 const MSO_CONDITIONAL_RE = /<!--\[if[^\]]*\]>[\s\S]*?<!\[endif\]-->/gi;
@@ -25,11 +23,10 @@ const MSO_CONDITIONAL_RE = /<!--\[if[^\]]*\]>[\s\S]*?<!\[endif\]-->/gi;
 export function preprocessEmailHtml(html: string): string {
   if (!html) return html;
 
-  // Strip MSO conditionals before JSDOM parse (comment nodes)
+  // Strip MSO conditionals before parsing (comment nodes)
   const stripped = html.replace(MSO_CONDITIONAL_RE, '');
 
-  const dom = new JSDOM(stripped, { virtualConsole });
-  const { document } = dom.window;
+  const document = parseHtmlDocument(stripped);
 
   // Email-specific: remove spacer td/tr elements
   removeSpacerElements(document);

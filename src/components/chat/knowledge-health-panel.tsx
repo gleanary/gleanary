@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
+import { createLocalStorageStore, useLocalStorageStore } from '@/lib/local-storage-store';
 import {
   Activity,
   ChevronDown,
@@ -54,12 +55,14 @@ const CHECKS: CheckMeta[] = [
 
 const STORAGE_KEY = 'lint-panel-open';
 
+const panelOpenStore = createLocalStorageStore(STORAGE_KEY, (raw) => raw === 'true', false);
+
 /**
  * Knowledge Health panel — runs lint checks and renders streamed suggestions.
  * Collapsible, client-only, mounted above the chat session list.
  */
 export function KnowledgeHealthPanel() {
-  const [isOpen, setIsOpen] = useState(false);
+  const isOpen = useLocalStorageStore(panelOpenStore);
   const [activeCheck, setActiveCheck] = useState<LintCheck | null>(null);
   const [lastCheck, setLastCheck] = useState<LintCheck | null>(null);
   const [suggestions, setSuggestions] = useState<LintSuggestion[]>([]);
@@ -67,16 +70,6 @@ export function KnowledgeHealthPanel() {
   const [emptyReason, setEmptyReason] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
-
-  // Hydrate isOpen from localStorage after mount to avoid SSR mismatch.
-  useEffect(() => {
-    try {
-      const stored = window.localStorage.getItem(STORAGE_KEY);
-      if (stored === 'true') setIsOpen(true);
-    } catch {
-      // localStorage unavailable — ignore
-    }
-  }, []);
 
   // Cancel any in-flight lint request on unmount so we don't leak the
   // connection or try to setState after the component is gone.
@@ -86,17 +79,7 @@ export function KnowledgeHealthPanel() {
     };
   }, []);
 
-  const toggleOpen = useCallback(() => {
-    setIsOpen((prev) => {
-      const next = !prev;
-      try {
-        window.localStorage.setItem(STORAGE_KEY, String(next));
-      } catch {
-        // ignore
-      }
-      return next;
-    });
-  }, []);
+  const toggleOpen = useCallback(() => panelOpenStore.set(!panelOpenStore.getSnapshot()), []);
 
   async function runCheck(check: LintCheck) {
     if (activeCheck) return;
