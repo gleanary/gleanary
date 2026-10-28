@@ -4,7 +4,7 @@ import { setupServer } from 'msw/node';
 
 /**
  * Shared MSW server for all vitest files, wired into vitest `setupFiles` via
- * `msw-setup.ts` with `onUnhandledRequest: 'error'` — any request without an
+ * `msw-setup.ts` with `onUnhandledFrame: 'error'` — any request without an
  * explicit handler fails the test instead of hitting the real network.
  *
  * It starts with no default handlers on purpose: a canned catch-all response

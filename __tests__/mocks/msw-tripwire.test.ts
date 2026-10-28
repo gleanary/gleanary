@@ -11,7 +11,7 @@ import { DEFAULT_CHAT_MODEL } from '@/lib/models';
 
 /**
  * Guards the global MSW tripwire wired into vitest setupFiles: every test file
- * runs under the shared server with `onUnhandledRequest: 'error'`, so a test
+ * runs under the shared server with `onUnhandledFrame: 'error'`, so a test
  * that forgets a mock can never silently hit the real network.
  */
 describe('global MSW tripwire', () => {

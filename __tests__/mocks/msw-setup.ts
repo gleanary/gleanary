@@ -6,7 +6,7 @@ import {
 } from './anthropic-model-tripwire';
 
 // Global network tripwire (vitest setupFiles): see server.ts for the contract.
-beforeAll(() => server.listen({ onUnhandledRequest: 'error' }));
+beforeAll(() => server.listen({ onUnhandledFrame: 'error' }));
 
 // Global model tripwire: any POST https://api.anthropic.com/v1/messages whose
 // `model` is not in ACTIVE_MODEL_IDS fails the test that sent it. Most handlers

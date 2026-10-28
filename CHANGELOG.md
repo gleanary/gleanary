@@ -14,6 +14,8 @@ All notable changes to this project will be documented in this file.
 
 ### Changed
 
+- **msw 3** (dev dependency, 2.15.0 → 3.0.3): the global network tripwire now passes `onUnhandledFrame: 'error'` (msw 3 renamed `onUnhandledRequest`; the old key was silently ignored, letting unmocked requests reach the real network).
+
 - **One `pdfjs-dist` copy for the PDF viewer**: an npm override puts `react-pdf` (which pins an exact pdfjs-dist) on our `pdfjs-dist`, and Dependabot bumps the two together. The pdfjs-dist 6.4.299 bump (#72) had left react-pdf's API on 6.3.289 against a 6.4.299 worker, so no PDF page rendered.
 
 - **Dependabot groups `react`, `react-dom`, `@types/react` and `@types/react-dom`** into one PR (majors included): react-dom pins an exact react peer, so the react-dom-only bump in #60 could never install.
