@@ -175,6 +175,51 @@ describe('POST /api/articles/parse', () => {
     expect(body.article.author).toBe('Jane Smith');
   });
 
+  it('extracts the article body without nav, sidebar or footer clutter', async () => {
+    const paragraphs = Array.from(
+      { length: 12 },
+      (_, i) =>
+        `<p>Paragraph ${i + 1} of the main story explains in considerable detail how distributed systems ` +
+        `balance consistency, availability and partition tolerance when real networks misbehave, ` +
+        `and why careful engineers measure before they optimize anything at all.</p>`,
+    ).join('\n');
+    const clutteredHtml = `<!DOCTYPE html>
+<html><head><title>Distributed Systems Deep Dive</title></head>
+<body>
+  <nav class="site-nav"><a href="/">Home</a> <a href="/about">About</a></nav>
+  <aside class="sidebar"><h3>Related</h3><a href="/other">Another sidebar post</a></aside>
+  <main><article>
+    <h1>Distributed Systems Deep Dive</h1>
+    ${paragraphs}
+  </article></main>
+  <footer class="site-footer"><p>Copyright footer text subscribe newsletter</p></footer>
+</body></html>`;
+
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const res = await parseArticle(
+        jsonReq('POST', '/api/articles/parse', {
+          url: 'https://example.com/cluttered-layout-test',
+          html: clutteredHtml,
+        }),
+      );
+      expect(res.status).toBe(201);
+
+      const { contentHtml } = (await res.json()).article;
+      expect(contentHtml).toContain('Paragraph 1 of the main story');
+      expect(contentHtml).toContain('Paragraph 12 of the main story');
+      expect(contentHtml).not.toContain('About');
+      expect(contentHtml).not.toContain('Related');
+      expect(contentHtml).not.toContain('Another sidebar post');
+      expect(contentHtml).not.toContain('Copyright footer text subscribe newsletter');
+
+      const defuddleErrors = errorSpy.mock.calls.filter(([first]) => first === 'Defuddle');
+      expect(defuddleErrors).toEqual([]);
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
   it('returns 409 when URL already exists', async () => {
     await parseArticle(
       jsonReq('POST', '/api/articles/parse', {

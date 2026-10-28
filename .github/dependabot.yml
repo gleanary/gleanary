@@ -19,6 +19,12 @@ updates:
       # aborts). Revisit when both declare TS7 support. 6.x bumps keep flowing. (2026-07)
       - dependency-name: "typescript"
         versions: [">=7"]
+      # jsdom 30's selector engine (@asamuzakjp/dom-selector 10) rejects selectors over
+      # 2048 chars; Defuddle queries a 3136-char one, so extraction falls back to the whole
+      # <body> on every page. Revisit when Defuddle chunks EXACT_SELECTORS_JOINED or the
+      # parser moves off jsdom (linkedom). 29.x bumps keep flowing. (2026-10)
+      - dependency-name: "jsdom"
+        versions: [">=30"]
     # Supply-chain buffer: most hijacked releases are caught and pulled within days, and a
     # week also gives malware feeds time to list them. Security updates ignore cooldown.
     # deps-agent re-checks release age and the malware feed (policy.md).
