@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Writing a Tiny Expression Parser in TypeScript - Tidy Bytes</title>
+<meta name="description" content="A step-by-step walk through a recursive-descent parser for arithmetic expressions, with operator precedence and error recovery.">
+<meta name="author" content="Marco Bellini">
+<meta property="og:site_name" content="Tidy Bytes">
+<meta property="article:published_time" content="2024-02-02">
+</head>
+<body>
+<div class="topbar"><a href="/">Tidy Bytes</a> | <a href="/archive">Archive</a> | <a href="/rss.xml">RSS</a></div>
+<div class="container">
+<div class="content">
+<article>
+<h1>Writing a Tiny Expression Parser in TypeScript</h1>
+<p class="meta">Marco Bellini, February 2, 2024</p>
+<p>Recursive-descent parsers are one of those techniques that look intimidating until you write one. In this post we will build a parser for arithmetic expressions like <code>1 + 2 * (3 - 4)</code> in under a hundred lines, and handle operator precedence without a single table.</p>
+<h2>Tokens first</h2>
+<p>The tokenizer turns a string into a flat list of tokens. Note the comparison operators: they are why HTML escaping matters when you publish code on the web.</p>
+<pre><code class="language-typescript">type Token =
+  | { kind: 'num'; value: number }
+  | { kind: 'op'; value: '+' | '-' | '*' | '/' | '&lt;' | '&gt;' }
+  | { kind: 'paren'; value: '(' | ')' };
+
+function tokenize(src: string): Token[] {
+  const out: Token[] = [];
+  let i = 0;
+  while (i &lt; src.length) {
+    const ch = src[i];
+    if (/\s/.test(ch)) { i++; continue; }
+    if (/\d/.test(ch)) {
+      let j = i;
+      while (j &lt; src.length &amp;&amp; /[\d.]/.test(src[j])) j++;
+      out.push({ kind: 'num', value: Number(src.slice(i, j)) });
+      i = j;
+      continue;
+    }
+    if ('+-*/&lt;&gt;'.includes(ch)) { out.push({ kind: 'op', value: ch as never }); i++; continue; }
+    if (ch === '(' || ch === ')') { out.push({ kind: 'paren', value: ch }); i++; continue; }
+    throw new SyntaxError(`Unexpected "${ch}" at ${i}`);
+  }
+  return out;
+}
+</code></pre>
+<h2>Precedence by recursion</h2>
+<p>Each precedence level gets its own function. Lower-precedence functions call higher-precedence ones, so multiplication binds tighter than addition for free.</p>
+<pre><code class="language-typescript">function parseExpr(): number {
+  let left = parseTerm();
+  while (peek()?.value === '+' || peek()?.value === '-') {
+    const op = next().value;
+    const right = parseTerm();
+    left = op === '+' ? left + right : left - right;
+  }
+  return left;
+}
+
+function parseTerm(): number {
+  let left = parseFactor();
+  while (peek()?.value === '*' || peek()?.value === '/') {
+    const op = next().value;
+    const right = parseFactor();
+    left = op === '*' ? left * right : left / right;
+  }
+  return left;
+}
+</code></pre>
+<p>A quick shell session to check it works, including the <code>&amp;&amp;</code> chaining and a redirect:</p>
+<pre><code class="language-bash">$ npx tsx parser.ts "1 + 2 * 3" &amp;&amp; echo ok
+7
+ok
+$ npx tsx parser.ts "(1 + 2" 2&gt; err.log; cat err.log
+SyntaxError: expected ")" at end of input
+</code></pre>
+<p>Inline code also needs escaping: <code>if (a &lt; b &amp;&amp; b &gt; c)</code> must survive the round trip. And here is an HTML snippet shown as code:</p>
+<pre><code class="language-html">&lt;div class="card"&gt;
+  &lt;p&gt;Hello &amp;amp; welcome&lt;/p&gt;
+&lt;/div&gt;
+</code></pre>
+<h2>Wrapping up</h2>
+<p>That is the whole trick: one function per precedence level, a cursor over the token list, and a clear error when something unexpected shows up. From here you can add unary minus, exponentiation with right associativity, or variables, each in a handful of lines.</p>
+</article>
+</div>
+<div class="sidebar"><h4>Popular</h4><ul><li><a href="/posts/regex">Regex without tears</a></li><li><a href="/posts/sql">SQL joins visualised</a></li></ul></div>
+</div>
+<div class="footer">Tidy Bytes &copy; 2024 &middot; Built with a static site generator</div>
+</body>
+</html>

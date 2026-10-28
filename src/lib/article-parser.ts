@@ -1,5 +1,5 @@
 import DefuddleClass from 'defuddle';
-import { JSDOM, VirtualConsole } from 'jsdom';
+import { parseHtmlDocument } from '@/lib/linkedom-document';
 import { sanitizeArticleHtml } from '@/lib/sanitize';
 import { postProcessHtml } from '@/lib/html-post-processor';
 import { safeFetchText } from '@/lib/fetch-utils';
@@ -8,9 +8,6 @@ import { ExternalServiceError, ValidationError } from '@/lib/errors';
 import { validateUrl } from '@/lib/url-validator';
 import { logger } from '@/lib/logger';
 import { computeWordCount, stripHtml, truncate } from '@/lib/text-utils';
-
-/** Shared VirtualConsole instance that suppresses JSDOM noise */
-const virtualConsole = new VirtualConsole();
 
 const USER_AGENT =
   'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
@@ -72,6 +69,25 @@ interface ContentPipelineResult {
 }
 
 /**
+ * Reads the extraction errors a Defuddle instance recorded during its last parse.
+ *
+ * Defuddle catches extraction failures, reports them through `console.error`
+ * and silently falls back to the whole `<body>`, so a broken extractor never
+ * reaches our logs. It only exposes the errors on the result in `debug` mode,
+ * and `debug: true` changes the extracted output (it keeps class attributes
+ * and skips div flattening), so we read its private `_parseErrors` Set
+ * instead. `__tests__/unit/article-parser-parse-errors.test.ts` pins the field
+ * name against the real class, so a Defuddle rename fails CI.
+ *
+ * @param defuddle - A Defuddle instance (typed loosely: the field is private)
+ * @returns The recorded error messages, or [] when there are none or the field is missing
+ */
+export function getDefuddleParseErrors(defuddle: unknown): string[] {
+  const errors = (defuddle as { _parseErrors?: unknown } | null | undefined)?._parseErrors;
+  return errors instanceof Set ? Array.from(errors, String) : [];
+}
+
+/**
  * Shared content extraction pipeline: Defuddle → DOMPurify → turndown.
  * Used by both the direct-fetch and Jina paths.
  * @param rawHtml - Raw HTML to parse
@@ -80,44 +96,47 @@ interface ContentPipelineResult {
  */
 async function runContentPipeline(rawHtml: string, url: string): Promise<ContentPipelineResult> {
   const normalizedHtml = rawHtml.trim() || '<html><head></head><body></body></html>';
-  const dom = new JSDOM(normalizedHtml, { url, virtualConsole });
-  try {
-    const defuddle = new DefuddleClass(dom.window.document, { url });
-    const parsed = await defuddle.parseAsync();
+  const defuddle = new DefuddleClass(parseHtmlDocument(normalizedHtml, url), { url });
+  const parsed = await defuddle.parseAsync();
 
-    const title = parsed.title || url;
-    const author = parsed.author || null;
-    const siteName = parsed.site || null;
-    const imageUrl = parsed.image || null;
-    const publishedAt = parsed.published || null;
-
-    const contentHtml = sanitizeArticleHtml(postProcessHtml(parsed.content ?? ''));
-    const contentText = stripHtml(contentHtml);
-    const contentMarkdown = convertHtmlToMarkdown(contentHtml);
-    const wordCount = computeWordCount(contentText);
-
-    let excerpt: string | null = parsed.description || null;
-    if (excerpt && excerpt.length > 300) {
-      excerpt = truncate(excerpt);
-    } else if (!excerpt && contentText) {
-      excerpt = truncate(contentText);
-    }
-
-    return {
-      title,
-      author,
-      siteName,
-      imageUrl,
-      publishedAt,
-      contentHtml,
-      contentText,
-      contentMarkdown,
-      excerpt,
-      wordCount,
-    };
-  } finally {
-    dom.window.close();
+  const parseErrors = getDefuddleParseErrors(defuddle);
+  if (parseErrors.length > 0) {
+    logger.warn(
+      { event: 'defuddle_parse_errors', url, errors: parseErrors },
+      'Defuddle reported parse errors',
+    );
   }
+
+  const title = parsed.title || url;
+  const author = parsed.author || null;
+  const siteName = parsed.site || null;
+  const imageUrl = parsed.image || null;
+  const publishedAt = parsed.published || null;
+
+  const contentHtml = sanitizeArticleHtml(postProcessHtml(parsed.content ?? ''));
+  const contentText = stripHtml(contentHtml);
+  const contentMarkdown = convertHtmlToMarkdown(contentHtml);
+  const wordCount = computeWordCount(contentText);
+
+  let excerpt: string | null = parsed.description || null;
+  if (excerpt && excerpt.length > 300) {
+    excerpt = truncate(excerpt);
+  } else if (!excerpt && contentText) {
+    excerpt = truncate(contentText);
+  }
+
+  return {
+    title,
+    author,
+    siteName,
+    imageUrl,
+    publishedAt,
+    contentHtml,
+    contentText,
+    contentMarkdown,
+    excerpt,
+    wordCount,
+  };
 }
 
 /**

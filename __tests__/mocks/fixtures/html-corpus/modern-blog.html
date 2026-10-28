@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Why We Rewrote Our Sync Engine Twice | Driftwood Engineering</title>
+    <meta name="description" content="Lessons from two rewrites of an offline-first sync engine: CRDTs, operation logs, and the boring solution that finally worked." />
+    <meta name="author" content="Priya Raman" />
+    <meta property="og:site_name" content="Driftwood Engineering" />
+    <meta property="og:title" content="Why We Rewrote Our Sync Engine Twice" />
+    <meta property="og:image" content="/static/og/sync-engine.png" />
+    <meta property="article:published_time" content="2025-09-14T09:30:00Z" />
+    <link rel="canonical" href="https://blog.driftwood.dev/posts/sync-engine-rewrite" />
+    <link rel="stylesheet" href="/static/css/main.3f9a.css" />
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@type": "BlogPosting",
+        "headline": "Why We Rewrote Our Sync Engine Twice",
+        "author": { "@type": "Person", "name": "Priya Raman" },
+        "datePublished": "2025-09-14T09:30:00Z"
+      }
+    </script>
+  </head>
+  <body class="theme-light">
+    <a class="skip-link" href="#main">Skip to content</a>
+    <header class="site-header">
+      <a href="/" class="logo"><img src="/static/logo.svg" alt="Driftwood" width="120" height="32" /></a>
+      <nav aria-label="Primary">
+        <ul>
+          <li><a href="/posts">Posts</a></li>
+          <li><a href="/careers">Careers</a></li>
+          <li><a href="/about">About</a></li>
+          <li><a href="https://github.com/driftwood">GitHub</a></li>
+        </ul>
+      </nav>
+    </header>
+    <div class="layout">
+      <main id="main">
+        <article class="post">
+          <header class="post-header">
+            <h1>Why We Rewrote Our Sync Engine Twice</h1>
+            <p class="byline">
+              By <a rel="author" href="/authors/priya">Priya Raman</a> &middot;
+              <time datetime="2025-09-14">September 14, 2025</time> &middot; 9 min read
+            </p>
+          </header>
+          <div class="post-body">
+            <p>
+              When we started building Driftwood, offline support was a checkbox on a roadmap. Three
+              years and two rewrites later, it is the single most important piece of infrastructure we
+              own. This is the story of how we got it wrong, got it wrong differently, and then
+              finally settled on something boring that works.
+            </p>
+            <h2>Version one: last write wins</h2>
+            <p>
+              Our first engine stored a timestamp on every record and let the most recent write win.
+              It was simple, it was fast, and it silently destroyed data whenever two people edited
+              the same note on a plane. Clock skew made it worse: a laptop with a wrong clock could
+              overwrite a week of changes with a single keystroke.
+            </p>
+            <figure>
+              <img
+                src="/static/img/lww-diagram.png"
+                srcset="/static/img/lww-diagram.png 1x, /static/img/lww-diagram@2x.png 2x"
+                alt="Diagram of two clients overwriting each other under last-write-wins"
+                width="800"
+                height="420"
+                loading="lazy"
+              />
+              <figcaption>Two clients, one record, and a lot of lost work.</figcaption>
+            </figure>
+            <h2>Version two: CRDTs everywhere</h2>
+            <p>
+              For the rewrite we went all in on conflict-free replicated data types. Every field
+              became a CRDT, every list became a sequence CRDT, and merges became mathematically
+              guaranteed to converge. They did converge. They also converged on states nobody had
+              intended, and the metadata overhead tripled the size of our database.
+            </p>
+            <blockquote>
+              <p>Convergence is a property of the algorithm. Intent is a property of the user.</p>
+            </blockquote>
+            <h2>Version three: an operation log and a server</h2>
+            <p>
+              The engine we run today is an append-only operation log with a central server that
+              assigns a total order. Clients apply operations optimistically and rebase on the
+              server's order when they reconnect. It is less elegant than CRDTs and less clever than
+              anything in a paper, but it is easy to reason about and easy to debug. You can read
+              more in our <a href="/posts/oplog-design">design notes</a> or browse the
+              <a href="../docs/sync/">sync documentation</a>.
+            </p>
+            <ul>
+              <li>Operations are idempotent and carry a client-generated id.</li>
+              <li>The server is the only source of ordering.</li>
+              <li>Rebase conflicts are surfaced to the user, never resolved silently.</li>
+            </ul>
+            <p>
+              If there is one lesson here, it is that the right amount of cleverness for
+              infrastructure is usually less than you think.
+            </p>
+          </div>
+          <footer class="post-footer">
+            <p>Tags: <a href="/tags/sync">sync</a>, <a href="/tags/architecture">architecture</a></p>
+            <div class="share">
+              <a href="https://twitter.com/intent/tweet?url=https%3A%2F%2Fblog.driftwood.dev">Share on X</a>
+              <a href="https://www.linkedin.com/sharing/share-offsite/">Share on LinkedIn</a>
+            </div>
+          </footer>
+        </article>
+      </main>
+      <aside class="sidebar">
+        <section class="newsletter-signup">
+          <h3>Subscribe</h3>
+          <p>Get new posts by email. No spam, unsubscribe anytime.</p>
+          <form action="/subscribe" method="post">
+            <input type="email" name="email" placeholder="you@example.com" />
+            <button type="submit">Subscribe</button>
+          </form>
+        </section>
+        <section class="related">
+          <h3>Related posts</h3>
+          <ul>
+            <li><a href="/posts/postgres-at-scale">Postgres at scale</a></li>
+            <li><a href="/posts/feature-flags">Feature flags without regret</a></li>
+          </ul>
+        </section>
+      </aside>
+    </div>
+    <footer class="site-footer">
+      <p>&copy; 2025 Driftwood Labs, Inc. &middot; <a href="/privacy">Privacy</a> &middot; <a href="/terms">Terms</a></p>
+    </footer>
+    <script src="/static/js/app.91be.js" defer></script>
+  </body>
+</html>
