@@ -67,7 +67,7 @@ This session creates the entire project skeleton. Run once at the start of Phase
    - `src/app/layout.tsx` — root layout with dark mode support (`prefers-color-scheme`)
    - `__tests__/integration/setup.ts` — test DB factory
    - `__tests__/mocks/server.ts` — shared MSW server + `setupHandlers()` (no default handlers)
-   - `__tests__/mocks/msw-setup.ts` — global MSW lifecycle (vitest `setupFiles`, `onUnhandledRequest: 'error'`)
+   - `__tests__/mocks/msw-setup.ts` — global MSW lifecycle (vitest `setupFiles`, `onUnhandledFrame: 'error'`)
    - `.env.example` — all environment variables with descriptions
    - `.gitignore` — include `.env`, `terraform.tfvars`, `*.db`, `.next`
    - `CHANGELOG.md` — initialized with "Unreleased" section
