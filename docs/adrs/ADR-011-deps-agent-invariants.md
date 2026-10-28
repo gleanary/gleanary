@@ -58,7 +58,10 @@ waiver that lapses), while the tests evaluated one run at a time on hand-built f
    Phases 0 to 5, the two pending workflow fixes (`!cancelled()` on the act job, `set -e` in
    the Deploy script), #43 (the `/data` mount) and a clean shadow week whose cases are in
    the simulator. Phase 7 is the strongest single safeguard and should follow soon after.
-5. **New review findings are triaged into a phase** rather than patched on the side, unless
+5. **ADR-012** (investigate, then escalate; majors as migrations) rides on these phases:
+   its facts and hard rules in Phase 1, its resolvers in Phases 2 to 4, and the migration
+   job after Phase 5.
+6. **New review findings are triaged into a phase** rather than patched on the side, unless
    one blocks shadow mode.
 
 ## Alternatives considered
