@@ -12,6 +12,8 @@ All notable changes to this project will be documented in this file.
 
 ### Changed
 
+- **jsdom 30.1.3** (`@types/jsdom` 30): now that the parser runs on linkedom (#95), jsdom only serves highlight re-anchoring, DOMPurify and the jsdom test environment, none of which hit jsdom 30's 2048-character selector limit. One jsdom copy is installed again (isomorphic-dompurify no longer nests its own), and Dependabot no longer ignores jsdom 30.
+
 - **Server-side HTML parsing moves from jsdom to linkedom** (article-parser, html-post-processor, email-preprocessor, reformat-chunker): a new `parseHtmlDocument()`/`parseHtmlFragment()` helper (`src/lib/linkedom-document.ts`) wraps fragments, lowercases attribute names and merges text nodes like an HTML5 parser, and adds Defuddle's `styleSheets`/`getComputedStyle` polyfills and base URL. Output is held to jsdom 29 baselines over a new raw-HTML corpus (`__tests__/mocks/fixtures/html-corpus/`, `linkedom-parity.test.ts`). Defuddle's swallowed extraction errors are now logged as `defuddle_parse_errors` (warn). jsdom stays for `reanchor-highlights` and DOMPurify; `linkedom` is a direct dependency and the `overrides.defuddle.jsdom` entry is gone.
 
 - **Faster fragment parsing and chunking** (html-post-processor, reformat-chunker): `parseHtmlDocument()` wraps `<html>`-less input before the first parse instead of parsing it twice, and `chunkHtml()` splits an oversized block from its live element instead of re-parsing it (about 35% faster post-processing of fragments, about 2x faster chunking of an oversized table).
