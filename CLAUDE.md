@@ -343,7 +343,6 @@ Claude Code updates the status column as modules are completed.
 
 ## Files Claude Code Must Never Modify Without Explicit Request
 
-- `docs/architecture.md` — source of truth, only updated with human approval
 - `.env` / `terraform.tfvars` — contain secrets
 - `infra/` — infrastructure changes require human review before apply
 - `.github/workflows/` — CI/CD changes require human review
