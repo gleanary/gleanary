@@ -313,6 +313,7 @@ Mistral OCR is billed per page. `pricing.ts` includes a per-page rate card entry
 
 - `pdfjs-dist` used server-side only for metadata extraction (`pdf-preflight.ts`); no `getTextContent()` calls on the server
 - Worker runs in its own context; embedded JavaScript disabled by default
+- One `pdfjs-dist` copy: `react-pdf` pins an exact version, and `package.json` `overrides` (`"pdfjs-dist": "$pdfjs-dist"`) forces it onto ours. The viewer loads its worker from `pdfjs-dist/build/pdf.worker.min.mjs` (`pdf-viewer.tsx`), and pdf.js refuses to run when the API and worker versions differ, so two copies mean no page renders
 - CSP: `worker-src 'self' blob:` in `next.config.ts` `headers()`; `style-src 'unsafe-inline'` already present for layer CSS
 
 ---

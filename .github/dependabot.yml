@@ -31,6 +31,11 @@ updates:
       # dev-dependencies group would otherwise take @types/react*.
       react:
         patterns: ["react", "react-dom", "@types/react", "@types/react-dom"]
+      # react-pdf pins an exact pdfjs-dist, and package.json overrides it with ours so the
+      # viewer's API and the worker we serve are one copy (PR #72 split them and no PDF
+      # rendered). Bumping the two together keeps that override close to react-pdf's pin.
+      pdf:
+        patterns: ["react-pdf", "pdfjs-dist"]
       # Dev-only patch/minor bumps ship together; production bumps stay one per PR
       # so a production regression maps to exactly one package.
       dev-dependencies:
