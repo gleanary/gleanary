@@ -50,6 +50,7 @@ interface FakeState {
   deployRuns: { status: string; conclusion: string }[] | null;
   auditFails: boolean;
   recordSaveFails: boolean;
+  reactionFails: boolean;
   npmCalls: number;
   npmDiffFiles: string[];
   npmDiffs: string[][];
@@ -190,6 +191,7 @@ function write(method: string, path: string, body: Record<string, unknown>): unk
   if (state.recordSaveFails && String(body.body ?? '').includes('deps-agent:record')) {
     throw new Error('Validation Failed: body is too long (maximum is 65536 characters)');
   }
+  if (state.reactionFails && path.endsWith('/reactions')) throw new Error('gh: HTTP 502');
   state.writes.push({ method, path, body });
   if (method === 'POST' && path.endsWith(`issues/${PR}/comments`)) {
     const c = {
@@ -354,6 +356,7 @@ beforeEach(() => {
     deployRuns: null,
     auditFails: false,
     recordSaveFails: false,
+    reactionFails: false,
     npmCalls: 0,
     npmDiffFiles: [],
     npmDiffs: [],
@@ -1047,9 +1050,44 @@ describe('assessment tool flags', () => {
 
 describe('command', () => {
   const run = (body: string, commenter = 'owner') => {
-    Object.assign(process.env, { PR: String(PR), COMMENTER: commenter, COMMENT_BODY: body });
+    Object.assign(process.env, {
+      PR: String(PR),
+      COMMENTER: commenter,
+      COMMENT_BODY: body,
+      COMMENT_ID: '4242',
+    });
     return cli.commands.command();
   };
+  const reactions = () =>
+    state.writes
+      .filter((w) => w.method === 'POST' && w.path.endsWith('/issues/comments/4242/reactions'))
+      .map((w) => w.body.content);
+
+  it('reacts 👍 once a command is carried out', async () => {
+    await run('/deps hold waiting for the release notes');
+    expect(reactions()).toEqual(['+1']);
+  });
+
+  it('reacts 😕 to a command it cannot parse', async () => {
+    await run('/deps frobnicate');
+    expect(reactions()).toEqual(['confused']);
+  });
+
+  it('reacts 😕, not 👍, when it refuses a command', async () => {
+    await run('/deps merge'); // never evaluated: nothing the owner has seen to approve
+    expect(reactions()).toEqual(['confused']);
+  });
+
+  it('does not react to a comment from anyone else', async () => {
+    await run('/deps hold', 'mallory');
+    expect(reactions()).toEqual([]);
+  });
+
+  it('still runs the command when the reaction cannot be posted', async () => {
+    state.reactionFails = true;
+    await run('/deps hold');
+    expect(state.dispatches).toHaveLength(1);
+  });
 
   const evaluated = () =>
     cli.evaluatePr(PR, {
