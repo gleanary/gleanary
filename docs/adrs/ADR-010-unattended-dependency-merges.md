@@ -114,26 +114,27 @@ the first ten) still gets through. A human approving a green PR would
 let the same release through, so the agent raises the bar rather than lowering it. The
 remaining defense is limiting what a payload can do once deployed (next section).
 
-## Runtime hardening (proposed, not implemented)
+## Runtime hardening (in progress, #43)
 
 Code inside the app process can read whatever the app can: `process.env` (including
 `SETTINGS_ENCRYPTION_KEY`) and the database with the encrypted provider keys. Hardening
 cannot hide those. It limits what else a payload can reach, whether it can persist, and how
-much it can exfiltrate. Current state: the container starts as root, `start.sh` chowns
-`/data` and drops to uid 1001 with `su-exec`, the root filesystem is writable, default
-capabilities apply, there are no resource limits, and outbound traffic is unrestricted.
+much it can exfiltrate. Starting state: the container started as root, `start.sh` chowned
+`/data` and dropped to uid 1001 with `su-exec`, the root filesystem was writable, default
+capabilities applied, there were no resource limits, and outbound traffic was unrestricted.
 
-Each step below keeps Gleanary working (it must still fetch arbitrary feed and article URLs,
+Each step below (marked with its status) keeps Gleanary working (it must still fetch arbitrary feed and article URLs,
 reach the AI providers, and poll IMAP for newsletters), in order of risk:
 
-1. **Resource limits** (no breakage risk): `mem_limit` around 1.5 GB (the heap is capped at
+1. _(pending)_ **Resource limits** (no breakage risk): `mem_limit` around 1.5 GB (the heap is capped at
    1 GB for PDF parsing), `pids_limit: 256`, a `cpus` cap. Limits crypto-mining and fork bombs.
-2. **Never run as root, drop capabilities**: `USER nextjs` in the Dockerfile, remove the
+2. _(image side done: `USER nextjs`, app code root-owned; compose side pending)_
+   **Never run as root, drop capabilities**: `USER nextjs` in the Dockerfile, remove the
    `chown` and `su-exec` from `start.sh`, and add `cap_drop: [ALL]` and
    `security_opt: [no-new-privileges:true]` in compose. Node binds port 3000, so no
    capability is needed. One-time prerequisite on the server:
    `chown -R 1001:1001 /opt/gleanary/data`, otherwise the app cannot write its database.
-3. **Read-only root filesystem**: `read_only: true`, with `tmpfs` for `/tmp` and
+3. _(pending)_ **Read-only root filesystem**: `read_only: true`, with `tmpfs` for `/tmp` and
    `/app/.next/cache` (Next.js image and fetch caches, rebuilt after a restart). A payload
    can then no longer modify the app's code or persist outside `/data`. Prerequisite: the
    server's compose file bind-mounts only `/opt/gleanary/data/db`. The TTS cache and PDF
@@ -142,7 +143,7 @@ reach the AI providers, and poll IMAP for newsletters), in order of risk:
    Bind-mount the whole `/opt/gleanary/data` to `/data` first. That fix is worth doing on
    its own, since unattended merges make deploys more frequent. Then verify PDF import,
    TTS and the E2E suite against the hardened container.
-4. **Egress limits that keep feed fetching working**: a host allowlist is impossible
+4. _(pending)_ **Egress limits that keep feed fetching working**: a host allowlist is impossible
    (Gleanary fetches arbitrary URLs), but two host firewall rules on the container's network
    (the `DOCKER-USER` iptables chain, provisioned through `infra/` cloud-init) are safe:
    - allow outbound TCP only to ports 53, 80, 443 and the configured IMAP port (993 by
@@ -154,12 +155,12 @@ reach the AI providers, and poll IMAP for newsletters), in order of risk:
 
    Exfiltration over HTTPS remains possible; these rules only close the cheap channels.
 
-5. **Smaller runtime image**: remove `npm`/`npx` from the runner stage (only `node` is
+5. _(done)_ **Smaller runtime image**: remove `npm`/`npx` from the runner stage (only `node` is
    needed at runtime) and pin the base image by digest.
 6. **Recovery**: keep provider-key rotation ready (the key-rotation tool is tracked in the
    public issue tracker), so a suspected compromise ends with rotated keys, not just a revert.
 
-Steps 1 and 5 change `docker/Dockerfile` and `scripts/start.sh`. Steps 1 to 4 also change
+Steps 2 and 5 change `docker/Dockerfile` and `scripts/start.sh`. Steps 1 to 4 also change
 the server's compose file and firewall, both provisioned by `infra/cloud-init.yml` (the
 server does not use `docker/compose.yml`), so they need applying on the existing server too.
 Each should be its own `SESSION: infra`, reviewed before apply, with feed polling, IMAP

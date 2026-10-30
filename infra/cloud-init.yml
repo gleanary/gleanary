@@ -18,6 +18,8 @@ runcmd:
   - mkdir -p /opt/gleanary/data/db
   - mkdir -p /opt/gleanary/data/backups
   - mkdir -p /opt/gleanary/data/caddy
+  # The app container runs as uid 1001 (USER nextjs in docker/Dockerfile)
+  - chown -R 1001:1001 /opt/gleanary/data/db
 
   # Write environment file
   - |

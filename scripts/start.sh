@@ -1,12 +1,10 @@
 #!/bin/sh
 set -e
 
-# Ensure data directories exist and are writable by nextjs user
-mkdir -p /data/db /data/originals/images
-chown -R nextjs:nodejs /data/db /data/originals
-
+# Runs as the image's non-root user (USER nextjs): no chown, no privilege drop.
+# migrate.mjs, pdf-storage and tts-cache create the directories they need.
 echo "[start] Running database migrations..."
-su-exec nextjs node scripts/migrate.mjs
+node scripts/migrate.mjs
 
 echo "[start] Starting Next.js server..."
-exec su-exec nextjs node server.js
+exec node server.js
