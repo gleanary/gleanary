@@ -126,23 +126,21 @@ capabilities applied, there were no resource limits, and outbound traffic was un
 Each step below (marked with its status) keeps Gleanary working (it must still fetch arbitrary feed and article URLs,
 reach the AI providers, and poll IMAP for newsletters), in order of risk:
 
-1. _(pending)_ **Resource limits** (no breakage risk): `mem_limit` around 1.5 GB (the heap is capped at
+1. _(done)_ **Resource limits** (no breakage risk): `mem_limit` around 1.5 GB (the heap is capped at
    1 GB for PDF parsing), `pids_limit: 256`, a `cpus` cap. Limits crypto-mining and fork bombs.
-2. _(image side done: `USER nextjs`, app code root-owned; compose side pending)_
+2. _(done)_
    **Never run as root, drop capabilities**: `USER nextjs` in the Dockerfile, remove the
    `chown` and `su-exec` from `start.sh`, and add `cap_drop: [ALL]` and
    `security_opt: [no-new-privileges:true]` in compose. Node binds port 3000, so no
    capability is needed. One-time prerequisite on the server:
    `chown -R 1001:1001 /opt/gleanary/data`, otherwise the app cannot write its database.
-3. _(pending)_ **Read-only root filesystem**: `read_only: true`, with `tmpfs` for `/tmp` and
-   `/app/.next/cache` (Next.js image and fetch caches, rebuilt after a restart). A payload
-   can then no longer modify the app's code or persist outside `/data`. Prerequisite: the
-   server's compose file bind-mounts only `/opt/gleanary/data/db`. The TTS cache and PDF
-   originals live in the anonymous volume created by the Dockerfile's `VOLUME /data`, which
-   survives `docker compose up` but is orphaned by a `down`/`up` and is not backed up.
-   Bind-mount the whole `/opt/gleanary/data` to `/data` first. That fix is worth doing on
-   its own, since unattended merges make deploys more frequent. Then verify PDF import,
-   TTS and the E2E suite against the hardened container.
+3. _(done)_ **Read-only root filesystem**: `read_only: true`, with size-capped `tmpfs` for
+   `/tmp` and `/app/.next/cache`. A payload can then no longer modify the app's code or
+   persist outside `/data`. The TTS cache and PDF originals used to live in the anonymous
+   volume from the Dockerfile's `VOLUME /data` (orphaned by a `down`/`up`); the image now
+   has no `VOLUME`, and compose bind-mounts `db`, `tts-cache` and `originals` one by one.
+   Per-subdirectory mounts keep the live DB path unchanged and keep `backups/` and Caddy's
+   certificates (also under `/opt/gleanary/data`) out of the app's reach.
 4. _(pending)_ **Egress limits that keep feed fetching working**: a host allowlist is impossible
    (Gleanary fetches arbitrary URLs), but two host firewall rules on the container's network
    (the `DOCKER-USER` iptables chain, provisioned through `infra/` cloud-init) are safe:
@@ -165,7 +163,11 @@ the server's compose file and firewall, both provisioned by `infra/cloud-init.ym
 server does not use `docker/compose.yml`), so they need applying on the existing server too.
 Each should be its own `SESSION: infra`, reviewed before apply, with feed polling, IMAP
 ingestion, PDF import and TTS checked afterward. Tracked in
-[#43](https://github.com/gleanary/gleanary/issues/43).
+[#43](https://github.com/gleanary/gleanary/issues/43). The three copies of the hardening
+(server compose, `docker/compose.yml`, CI's docker-smoke flags) are kept in sync by
+`__tests__/unit/container-hardening.test.ts`. Follow-up: the live server's compose file
+drifts from cloud-init after first boot (changes are applied by hand, architecture.md
+§8.7); having Deploy ship the compose file would remove that step.
 
 ## Cost and model choice
 
