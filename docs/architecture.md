@@ -692,10 +692,10 @@ Two workflows on the code path, plus the dependency agent (§9.5):
 PR / push (any branch → main)          Push/merge to main
             │                                 │
             ▼                                 ▼
-┌────────────────────────────┐    CI (same four parallel jobs)
-│ CI: 4 parallel jobs         │                │ on success (workflow_run)
-│ lint · typecheck ·          │                ▼
-│ test(+coverage) · e2e       │    ┌───────────────────────────┐
+┌────────────────────────────┐    CI (same five parallel jobs)
+│ CI: 5 parallel jobs         │                │ on success (workflow_run)
+│ lint · typecheck · e2e ·    │                ▼
+│ test(+cov) · docker-smoke   │    ┌───────────────────────────┐
 └──────────┬─────────────────┘    │ Deploy (deploy.yml)        │
            │                      │ gated: DEPLOY_ENABLED=true │
            ▼                      │ Docker build → GHCR push → │
@@ -703,19 +703,20 @@ PR / push (any branch → main)          Push/merge to main
                                   └───────────────────────────┘
 ```
 
-The four CI jobs run in parallel (E2E does not wait for the others); deploy is a **separate workflow** triggered by CI completing successfully on `main`, not a job in the same run.
+The five CI jobs run in parallel (E2E does not wait for the others); deploy is a **separate workflow** triggered by CI completing successfully on `main`, not a job in the same run.
 
 ### 9.2 Workflow Files
 
 **`.github/workflows/` is the source of truth** — the YAML is deliberately not mirrored here (it drifted every time). What follows is the design intent; read the workflow files for the exact steps and action versions.
 
-**`ci.yml`** — runs on every PR and push to `main`, with per-ref concurrency cancellation. Four independent jobs, all in parallel (no `needs` chaining — total wall-clock is the slowest job, not the sum):
+**`ci.yml`** — runs on every PR and push to `main`, with per-ref concurrency cancellation. Five independent jobs, all in parallel (no `needs` chaining — total wall-clock is the slowest job, not the sum):
 
 - **`lint`**, **`typecheck`** — `npm run lint` / `npm run typecheck`.
 - **`test`** — `npm run test:coverage`: all Vitest unit + integration tests with v8 coverage; baseline thresholds in `vitest.config.mts` fail the job on regression, and the coverage report is uploaded as a workflow artifact.
 - **`e2e`** — production build (`npm run build`) served by `next start`, then the full Playwright suite. Two load-bearing details:
   - **Real-auth mode**: the Playwright config derives `SETTINGS_AUTH_HASH` from `E2E_AUTH_PASSWORD` (plus a fixed `SETTINGS_ENCRYPTION_KEY`) for the spawned server, so the whole suite runs against the built-in auth gate, including the login journey.
   - Playwright browsers are cached (`actions/cache` keyed on `package-lock.json`); the HTML report and traces upload as artifacts whenever the run isn't cancelled.
+- **`docker-smoke`** (`Docker image smoke test`) — CI runs on glibc, but production is the Alpine (musl) image Deploy builds only after the merge. On PRs whose diff touches `package*.json`, `.dockerignore`, `next.config.*`, `docker/**`, `scripts/migrate.mjs` or `scripts/start.sh`, the job builds `docker/Dockerfile` for linux/amd64 (loaded, not pushed; reads the Deploy build cache), runs it with a fresh DB on the anonymous `/data` volume (`start.sh` migrates, then starts `server.js`) and polls `/api/health` for `db: connected` for up to 60 s. The arch must match Deploy's because Next's output tracing keeps only the build machine's native binaries. Otherwise (and on pushes to `main`) the job succeeds without building: deps-agent's gate requires it by name (§9.5), so it must never be skipped.
 
 **`deploy.yml`** — a separate, owner-specific workflow triggered by `workflow_run` when CI completes successfully on `main`. It runs only when the repository variable `DEPLOY_ENABLED == 'true'` (forks never set it) **and** the CI run was a `push` from this repository (`workflow_run.event == 'push'` and `head_repository == github.repository`), so a fork PR whose branch is named `main` cannot trigger it. The job uses the `production` environment (deployable from `main` only), checks out exactly the commit CI tested (`workflow_run.head_sha`), never runs two deploys at once (`concurrency: deploy-production`) and times out after 20 minutes. Steps: Docker build → push `ghcr.io/<repo>:latest` → SSH to the server as `ubuntu` → `docker compose pull && up -d` → poll `/api/health` (unauthenticated) for up to 60 s. A container that never turns healthy fails the run, and old images are pruned only after a healthy check, so the previous image stays available for a manual rollback. Deploy logs are public on the public repo; secrets are masked.
 
@@ -1213,7 +1214,7 @@ __tests__/
 
 ### 11.8 CI Integration
 
-The CI pipeline (see §9.2) runs four parallel jobs on every push/PR: `lint`, `typecheck`, `test` (all Vitest unit + integration tests, with coverage — see §11.9), and `e2e` (`npm run build`, then `npx playwright test` against the production build served by `next start`, in real-auth mode — one spec per critical journey, see §11.5).
+The CI pipeline (see §9.2) runs five parallel jobs on every push/PR: `lint`, `typecheck`, `test` (all Vitest unit + integration tests, with coverage — see §11.9), `docker-smoke` (production image build + boot, see §9.2) and `e2e` (`npm run build`, then `npx playwright test` against the production build served by `next start`, in real-auth mode — one spec per critical journey, see §11.5).
 
 E2E runs on PRs too, so a broken critical journey fails CI before merge; the Playwright HTML report and traces are uploaded as workflow artifacts for debugging. Deploy is a separate workflow triggered on CI success on `main` (§9.2).
 

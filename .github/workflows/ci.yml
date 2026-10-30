@@ -63,6 +63,61 @@ jobs:
           path: coverage/
           retention-days: 7
 
+  # CI runs on glibc, but Deploy ships an Alpine (musl) image it only builds after
+  # the merge: a native module without a musl prebuild (better-sqlite3) would first
+  # fail in production. Build and boot that image on PRs that can change it. The
+  # job always reports success when nothing relevant changed, because deps-agent's
+  # gate requires it by name (REQUIRED_CHECKS in .github/deps-agent/gate.mjs).
+  docker-smoke:
+    name: Docker image smoke test
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      # A PR checks out its merge commit: depth 2 brings its first parent (the base).
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 2
+
+      # The image's inputs: keep in sync with docker/Dockerfile's COPY lines.
+      - name: Detect image-relevant changes
+        id: changes
+        if: github.event_name == 'pull_request'
+        run: |
+          if git diff --name-only HEAD^1 HEAD |
+            grep -qE '^(package(-lock)?\.json|\.dockerignore|next\.config\..*|docker/.*|scripts/(migrate\.mjs|start\.sh))$'; then
+            echo "build=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "No image-relevant changes, nothing to build."
+          fi
+
+      - uses: docker/setup-buildx-action@v4
+        if: steps.changes.outputs.build == 'true'
+
+      # Next's output tracing keeps only the build machine's native binaries: amd64 like Deploy.
+      - name: Build image (linux/amd64, not pushed)
+        if: steps.changes.outputs.build == 'true'
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: docker/Dockerfile
+          platforms: linux/amd64
+          load: true
+          tags: gleanary:ci
+          cache-from: type=gha
+
+      # start.sh migrates a fresh DB on the anonymous /data volume, then starts server.js.
+      - name: Migrate, boot and check /api/health
+        if: steps.changes.outputs.build == 'true'
+        run: |
+          docker run -d --name app -p 3000:3000 -e DATABASE_URL=file:/data/db/gleanary.db gleanary:ci
+          trap 'docker logs app' EXIT
+          for i in $(seq 1 30); do
+            curl -fsS http://127.0.0.1:3000/api/health | grep -q '"db":"connected"' && exit 0
+            sleep 2
+          done
+          echo "health check failed after 60s"
+          exit 1
+
   e2e:
     name: E2E Tests (critical paths)
     runs-on: ubuntu-latest

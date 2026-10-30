@@ -12,7 +12,8 @@ only when every gate below passes.
    production regression maps to exactly one package. The exception is `react`, `react-dom`
    and their `@types`, which arrive as one PR because react-dom pins an exact react peer.
 2. **CI** runs lint, type-check, unit + integration (with coverage floor) and E2E against a
-   production build.
+   production build, and builds and boots the production Alpine (musl) image for amd64 (migrations
+   plus `/api/health`), so a native module missing its musl binary fails CI instead of Deploy.
 3. **Assessment** (LLM, read-only token): changelog vs our actual usage → `merge` or `escalate`.
 4. **Gate** (`gate.mjs`, no LLM, the only step holding a write token) checks the rules below.
 5. **At most one merge per run**, and only while `main` is healthy: the next merge waits for
