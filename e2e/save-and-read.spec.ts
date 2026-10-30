@@ -77,10 +77,17 @@ test.describe('Save Article and Read', { lock: HIGHLIGHT_WRITER_LOCKS.saveAndRea
     // Click Archive button to finish the article. The click fires an async PATCH
     // to /api/articles/:id; wait on that specific response (and assert it succeeded)
     // before reading the status back, so the GET can't race ahead of the write.
+    // Match on the body too: the reader's auto mark-as-reading PATCH on mount hits the
+    // same URL and method, and must not satisfy this wait in place of the archive write.
     const archiveButton = page.getByTestId('archive-footer-button');
     await expect(archiveButton).toBeVisible({ timeout: 3000 });
     await expect(archiveButton).toContainText('Archive');
-    const patchResponse = waitForApiResponse(page, `/api/articles/${article.id}`, 'PATCH');
+    const patchResponse = waitForApiResponse(
+      page,
+      `/api/articles/${article.id}`,
+      'PATCH',
+      (body) => (body as { status?: string } | null)?.status === 'archived',
+    );
     await archiveButton.click();
     expect((await patchResponse).ok()).toBe(true);
 
