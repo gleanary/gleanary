@@ -363,6 +363,15 @@ export interface NewsletterPollResult {
   errors: string[];
 }
 
+/** Why an IMAP connection attempt failed, so login throttling is not mistaken for bad credentials */
+export type ImapConnectFailureReason = 'throttled' | 'auth_failed' | 'other';
+
+/** User-facing description of an IMAP connection failure */
+export interface ImapConnectErrorInfo {
+  reason: ImapConnectFailureReason;
+  message: string;
+}
+
 /** Newsletter source approval status: null=pending, false=approved, true=blocked */
 export type NewsletterApprovalStatus = 'pending' | 'approved' | 'blocked';
 

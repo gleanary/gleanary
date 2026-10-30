@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { logger } from '@/lib/logger';
-import { getImapConfig, createImapClient } from '@/lib/newsletter-poller';
+import { getImapConfig, createImapClient, describeImapConnectError } from '@/lib/newsletter-poller';
 import { logAudit } from '@/lib/audit';
 import { getClientIp } from '@/lib/auth';
 import { validateHostname } from '@/lib/url-validator';
@@ -54,8 +54,8 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json({ success: true, mailboxes });
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    logger.warn({ event: 'imap_test_failed', err: error }, 'IMAP test failed');
+    const { reason, message } = describeImapConnectError(error);
+    logger.warn({ event: 'imap_test_failed', reason, err: error }, 'IMAP test failed');
     return NextResponse.json({ success: false, error: message });
   }
 }

@@ -28,13 +28,14 @@ const mockConnect = vi.fn();
 const mockLogout = vi.fn();
 const mockDispose = vi.fn();
 const mockSearch = vi.fn();
+const mockOn = vi.fn();
 vi.mock('imapflow', async (importOriginal) => {
   const actual = await importOriginal<typeof import('imapflow')>();
   return {
     ImapFlowErrorCode: actual.ImapFlowErrorCode,
     ImapFlow: vi.fn().mockImplementation(function () {
       return {
-        on: vi.fn(),
+        on: mockOn,
         connect: mockConnect,
         logout: mockLogout,
         [Symbol.asyncDispose]: mockDispose,
@@ -58,6 +59,7 @@ import { db } from '@/db';
 import { sources, articles } from '@/db/schema';
 import { pollNewsletters } from '@/lib/newsletter-poller';
 import { setSetting, clearSettingsCache } from '@/lib/settings';
+import { logger } from '@/lib/logger';
 
 describe('newsletter-poller', () => {
   beforeAll(() => {
@@ -257,6 +259,64 @@ describe('newsletter-poller', () => {
 
     expect(mockDispose).toHaveBeenCalledTimes(1);
     expect(result.errors).toEqual(['IMAP connection failed: Error: Connection refused']);
+  });
+
+  it('reports login throttling separately and logs it at warn level', async () => {
+    mockConnect.mockRejectedValue(
+      Object.assign(new Error('Request is throttled'), {
+        code: 'ETHROTTLE',
+        throttleReset: 30_000,
+      }),
+    );
+
+    const result = await pollNewsletters();
+
+    expect(result.errors).toEqual([
+      'IMAP connection failed: IMAP server is throttling logins — try again later (retry in ~30 s)',
+    ]);
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ event: 'newsletter_imap_throttled', reason: 'throttled' }),
+      result.errors[0],
+    );
+    expect(logger.error).not.toHaveBeenCalledWith(
+      expect.objectContaining({ event: 'newsletter_imap_connect_failed' }),
+      expect.anything(),
+    );
+  });
+
+  it('reports bad credentials as an authentication failure', async () => {
+    mockConnect.mockRejectedValue(
+      Object.assign(new Error('Command failed'), {
+        authenticationFailed: true,
+        serverResponseCode: 'AUTHENTICATIONFAILED',
+      }),
+    );
+
+    const result = await pollNewsletters();
+
+    expect(result.errors).toEqual([
+      'IMAP connection failed: IMAP authentication failed — check username and password (AUTHENTICATIONFAILED)',
+    ]);
+    expect(logger.error).toHaveBeenCalledWith(
+      expect.objectContaining({ event: 'newsletter_imap_connect_failed', reason: 'auth_failed' }),
+      result.errors[0],
+    );
+  });
+
+  it('logs server ALERT messages from the IMAP client', async () => {
+    mockSimpleParser.mockResolvedValue(validNewsletterEmail);
+
+    await pollNewsletters();
+
+    const alertCall = mockOn.mock.calls.find(([event]) => event === 'alert');
+    expect(alertCall).toBeDefined();
+    const onAlert = alertCall![1] as (alert: { message: string; response: string }) => void;
+    onAlert({ message: 'Mailbox is over quota', response: 'NO' });
+
+    expect(logger.warn).toHaveBeenCalledWith(
+      { event: 'imap_server_alert', alert: 'Mailbox is over quota', response: 'NO' },
+      'IMAP server alert',
+    );
   });
 
   it('disposes the IMAP client when opening the mailbox fails', async () => {

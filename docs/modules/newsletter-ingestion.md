@@ -198,7 +198,7 @@ Add columns:
 5. **Plain text-only email (no HTML)** — Wrap in `<p>` tags (with HTML entity escaping), treat as content.
 6. **Multipart email with attachments** — Ignore attachments, only process the HTML/text body.
 7. **Very large email (>5MB)** — Skip, log warning. Don't process to avoid memory issues.
-8. **IMAP connection failure** — Log error, retry on next cron tick. Don't crash the app.
+8. **IMAP connection failure** — Log error, retry on next cron tick. Don't crash the app. `describeImapConnectError()` (`src/lib/newsletter-poller.ts`) tells login throttling (imapflow `ETHROTTLE`, e.g. Microsoft 365) apart from rejected credentials (`authenticationFailed`), throttling first: the poll error reads `IMAP connection failed: IMAP server is throttling logins — try again later (retry in ~N s)` (logged at warn, event `newsletter_imap_throttled`) or `IMAP connection failed: IMAP authentication failed — check username and password (<server response code>)` (logged at error, event `newsletter_imap_connect_failed` with `reason`); any other failure keeps `IMAP connection failed: <error>`. The Settings IMAP test (`POST /api/settings/test-imap`) returns the same throttled/auth messages as `{ success: false, error }`. Server `[ALERT]` texts (RFC 9051 §7.1, e.g. quota or account warnings) are logged at warn as `imap_server_alert` and never returned to the client.
 9. **Invalid email encoding** — `mailparser` handles charset detection. Fall back to UTF-8.
 10. **Newsletter with "View in browser" link** — Don't follow the link. Use the email HTML directly.
 11. **Forwarded email** — The original `From` is preserved. Sender goes through the allowlist flow.

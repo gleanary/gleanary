@@ -1,5 +1,5 @@
 import 'server-only';
-import { ImapFlow, ImapFlowErrorCode } from 'imapflow';
+import { ImapFlow, ImapFlowErrorCode, type ImapFlowError } from 'imapflow';
 import { simpleParser } from 'mailparser';
 import { eq } from 'drizzle-orm';
 import { db } from '@/db';
@@ -10,7 +10,7 @@ import { convertHtmlToMarkdown } from '@/lib/html-to-markdown';
 import { computeWordCount, stripHtml, truncate } from '@/lib/text-utils';
 import { logger } from '@/lib/logger';
 import { getSetting } from '@/lib/settings';
-import type { NewsletterPollResult } from '@/types';
+import type { ImapConnectErrorInfo, NewsletterPollResult } from '@/types';
 
 interface ImapConfig {
   host: string;
@@ -48,8 +48,39 @@ const CONNECTION_LOST_CODES: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * Creates a configured ImapFlow client with standard timeout settings and
- * a no-op error handler to prevent socket timeout errors from leaking as uncaughtException.
+ * Classifies an error thrown while connecting/logging in to IMAP, so a throttled login
+ * (imapflow `ETHROTTLE`) is reported differently from rejected credentials.
+ * Throttling wins when both flags are set: retrying with the same password is the fix.
+ * @param error - Value thrown by `ImapFlow.connect()` (or anything else)
+ * @returns The failure reason and a user-facing message (never contains credentials)
+ */
+export function describeImapConnectError(error: unknown): ImapConnectErrorInfo {
+  const { code, throttleReset, authenticationFailed, serverResponseCode } = (error ??
+    {}) as ImapFlowError;
+  if (code === ImapFlowErrorCode.ETHROTTLE) {
+    const retryHint =
+      typeof throttleReset === 'number' && throttleReset > 0
+        ? ` (retry in ~${Math.ceil(throttleReset / 1000)} s)`
+        : '';
+    return {
+      reason: 'throttled',
+      message: `IMAP server is throttling logins — try again later${retryHint}`,
+    };
+  }
+  if (authenticationFailed === true) {
+    const responseCode = serverResponseCode ? ` (${serverResponseCode})` : '';
+    return {
+      reason: 'auth_failed',
+      message: `IMAP authentication failed — check username and password${responseCode}`,
+    };
+  }
+  return { reason: 'other', message: error instanceof Error ? error.message : String(error) };
+}
+
+/**
+ * Creates a configured ImapFlow client with standard timeout settings,
+ * a no-op error handler to prevent socket timeout errors from leaking as uncaughtException,
+ * and a listener that logs server ALERT messages (RFC 9051 §7.1).
  * @param config - IMAP configuration
  * @returns Configured ImapFlow instance
  */
@@ -66,6 +97,10 @@ export function createImapClient(config: ImapConfig): ImapFlow {
   });
   // Prevent socket timeout errors from leaking as uncaughtException
   client.on('error', () => {});
+  // Server-supplied text (e.g. quota or account warnings): log only, never surface to the client
+  client.on('alert', ({ message, response }) => {
+    logger.warn({ event: 'imap_server_alert', alert: message, response }, 'IMAP server alert');
+  });
   return client;
 }
 
@@ -125,9 +160,14 @@ export async function pollNewsletters(): Promise<NewsletterPollResult> {
   try {
     await client.connect();
   } catch (error) {
-    const msg = `IMAP connection failed: ${String(error)}`;
+    const { reason, message } = describeImapConnectError(error);
+    const msg = `IMAP connection failed: ${reason === 'other' ? String(error) : message}`;
     result.errors.push(msg);
-    logger.error({ err: error, event: 'newsletter_imap_connect_failed' }, msg);
+    if (reason === 'throttled') {
+      logger.warn({ err: error, event: 'newsletter_imap_throttled', reason }, msg);
+    } else {
+      logger.error({ err: error, event: 'newsletter_imap_connect_failed', reason }, msg);
+    }
     return result;
   }
 

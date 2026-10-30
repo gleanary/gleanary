@@ -142,6 +142,35 @@ describe('POST /api/settings/test-imap', () => {
     }
   });
 
+  it.each([
+    [
+      'login throttling',
+      { code: 'ETHROTTLE', throttleReset: 5_500 },
+      'IMAP server is throttling logins — try again later (retry in ~6 s)',
+    ],
+    [
+      'bad credentials',
+      { authenticationFailed: true, serverResponseCode: 'AUTHENTICATIONFAILED' },
+      'IMAP authentication failed — check username and password (AUTHENTICATIONFAILED)',
+    ],
+  ])('reports %s with a distinct error message', async (_label, props, expected) => {
+    setSetting('imap_host', 'imap.example.com', { encrypted: false });
+    setSetting('imap_user', 'user@example.com', { encrypted: false });
+    setSetting('imap_password', 'password123', { encrypted: false });
+    clearSettingsCache();
+
+    mockConnect.mockRejectedValue(Object.assign(new Error('Command failed'), props));
+    mockDispose.mockResolvedValue(undefined);
+
+    const { POST } = await import('@/app/api/settings/test-imap/route');
+    const req = jsonReq('POST', 'http://localhost:3000/api/settings/test-imap');
+    const res = await POST(req as NextRequest);
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ success: false, error: expected });
+    expect(mockDispose).toHaveBeenCalledTimes(1);
+  });
+
   it('rejects private IP hosts (SSRF prevention)', async () => {
     // Update the DNS mock to return a private IP
     mockResolve4.mockResolvedValue(['192.168.1.1']);
