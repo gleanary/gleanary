@@ -41,7 +41,7 @@ updates:
       dev-dependencies:
         dependency-type: "development"
         update-types: ["minor", "patch"]
-  # Base image (docker/Dockerfile, pinned to an exact Node version): Node patch/minor
+  # Base image (docker/Dockerfile, pinned to an exact Node version and digest): Node patch/minor
   # bumps arrive as PRs. deps-agent's ecosystem gate sends them to a human, since the
   # image is the production runtime.
   - package-ecosystem: "docker"

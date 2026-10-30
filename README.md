@@ -74,7 +74,13 @@ docker run --rm -w /tmp node:26-alpine sh -c "npm i -s bcryptjs >/dev/null 2>&1 
 > [Development Setup](#development-setup): it needs a different form. If the hash
 > is corrupted, login answers with an explicit "not a valid bcrypt hash" error.
 
-Then start the stack:
+Then start the stack. The app runs as uid 1001, not root: on a Linux host, create
+the data directory and hand it over first (Docker Desktop on macOS/Windows does
+not need this):
+
+```bash
+mkdir -p data/db && sudo chown -R 1001:1001 data
+```
 
 ```bash
 # Local / VPN-only (app on http://127.0.0.1:3000)

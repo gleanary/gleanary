@@ -1,4 +1,5 @@
-FROM node:26.12.1-alpine AS base
+# Pinned by digest (Dependabot bumps tag and digest together).
+FROM node:26.12.1-alpine@sha256:40cd011b55415bc894e45b02fdd5a5dfde056921b7d23a64c74f80497af48797 AS base
 
 FROM base AS builder
 WORKDIR /app
@@ -14,24 +15,24 @@ RUN npm run build
 FROM base AS runner
 WORKDIR /app
 ENV NODE_ENV=production
-RUN addgroup --system --gid 1001 nodejs
-RUN adduser --system --uid 1001 nextjs
-RUN apk add --no-cache su-exec
 
+# Only node runs in production. Defense in depth: what stops a payload from
+# installing code is the non-root user with root-owned code; npm/npx just go too.
+# uid 1001 is also set up by infra/cloud-init.yml and the README's chown step.
+RUN rm -rf /usr/local/lib/node_modules/npm /usr/local/bin/npm /usr/local/bin/npx \
+  && addgroup --system --gid 1001 nodejs \
+  && adduser --system --uid 1001 --ingroup nodejs nextjs
+
+# App code stays root-owned: the app user can read it but not rewrite it.
 COPY --from=builder /app/public ./public
-COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
-COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
+COPY --from=builder /app/.next/standalone ./
+COPY --from=builder /app/.next/static ./.next/static
+COPY --from=builder /app/drizzle ./drizzle
+COPY --from=builder --chmod=755 /app/scripts/migrate.mjs /app/scripts/start.sh ./scripts/
 
-# Include Drizzle migration files
-COPY --from=builder --chown=nextjs:nodejs /app/drizzle ./drizzle
-
-# Include migration runner script
-COPY --from=builder --chown=nextjs:nodejs /app/scripts/migrate.mjs ./scripts/migrate.mjs
-COPY --from=builder --chown=nextjs:nodejs /app/scripts/start.sh ./scripts/start.sh
-RUN chmod +x ./scripts/start.sh
-
-# Data directory (mounted as volume) — db, tts-cache, and pdf originals
-RUN mkdir -p /data/db /data/tts-cache /data/originals/images && chown -R nextjs:nodejs /data
+# Writable by the app user: Next's image cache and the data directory (mounted
+# as volume). The app creates db/, tts-cache/ and originals/ under it itself.
+RUN mkdir -p .next/cache /data && chown nextjs:nodejs .next/cache /data
 VOLUME /data
 
 ENV PDF_DATA_DIR=/data
@@ -49,4 +50,5 @@ ENV HOSTNAME="0.0.0.0"
 # cheaper than starting node; probes run every 2s while starting, then every 30s.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --start-interval=2s --retries=3 \
   CMD wget -q -T 4 -O /dev/null http://127.0.0.1:3000/api/health || exit 1
+USER nextjs
 CMD ["./scripts/start.sh"]
