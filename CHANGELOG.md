@@ -6,7 +6,7 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
-- **CI builds and boots the production Docker image** (#101): a new `Docker image smoke test` job in `ci.yml` builds `docker/Dockerfile` for linux/amd64 (not pushed) on PRs that touch `package*.json`, `docker/**`, `next.config.*`, `.dockerignore` or the start/migrate scripts, migrates a fresh DB and asserts `/api/health` reports `db: connected`, so a native module missing its musl binary fails the PR instead of Deploy. It succeeds as a no-op otherwise, and deps-agent's gate now requires it.
+- **CI builds and boots the production Docker image** (#101): a new `Docker image smoke test` job in `ci.yml` builds `docker/Dockerfile` for linux/amd64 (not pushed) on PRs that touch `package*.json`, `ci.yml`, `docker/**`, `next.config.*`, `.dockerignore` or the start/migrate scripts, migrates a fresh DB and asserts `/api/health` reports `db: connected`, so a native module missing its musl binary fails the PR instead of Deploy. It succeeds as a no-op otherwise, and deps-agent's gate now requires it.
 
 - **deps-agent reacts to `/deps` commands**: 👍 when it carries the command out, 😕 when it cannot parse or refuses it (its reply says why), like Dependabot acknowledges its own commands.
 
