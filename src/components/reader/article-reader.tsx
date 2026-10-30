@@ -69,10 +69,11 @@ export function ArticleReader({ children }: { children: React.ReactNode }) {
   const debounceTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const isResettingProgress = useRef(false);
 
-  // Auto-mark as "reading" if status is "inbox"
+  // Auto-mark as "reading" if status is "inbox". Conditional on the server still seeing
+  // "inbox" so a late request never downgrades a status set meanwhile (e.g. archived).
   useEffect(() => {
     if (article.status === 'inbox') {
-      patchArticle(article.id, { status: 'reading' });
+      patchArticle(article.id, { status: 'reading', ifStatus: 'inbox' });
     }
   }, [article.id, article.status]);
 

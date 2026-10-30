@@ -94,13 +94,17 @@ export const updateArticleSchema = partialWithAtLeastOne(
     ttsParagraph: z.number().int().min(0).nullable(),
     ttsTimeOffset: z.number().min(0).nullable(),
   }),
-).refine(
-  (data) =>
-    data.readingProgress !== undefined ||
-    (data.readingAnchorBlock === undefined && data.readingAnchorOffset === undefined),
-  // The anchor is only written alongside progress, so the forward-only guard covers both
-  { message: 'readingAnchorBlock/readingAnchorOffset require readingProgress' },
-);
+)
+  // Precondition, not a column: apply the update only if the current status matches.
+  // Kept outside the at-least-one check so it cannot be the only field.
+  .and(z.object({ ifStatus: articleStatusEnum.optional() }))
+  .refine(
+    (data) =>
+      data.readingProgress !== undefined ||
+      (data.readingAnchorBlock === undefined && data.readingAnchorOffset === undefined),
+    // The anchor is only written alongside progress, so the forward-only guard covers both
+    { message: 'readingAnchorBlock/readingAnchorOffset require readingProgress' },
+  );
 
 /** Validates GET /api/articles query params */
 export const listArticlesSchema = z.object({

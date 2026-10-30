@@ -45,9 +45,15 @@ export const PATCH = withRoute(
   async (req: NextRequest, context: RouteContext) => {
     const id = await parseIdParam(context);
     const body = await req.json();
-    const data = updateArticleSchema.parse(body);
+    const { ifStatus, ...data } = updateArticleSchema.parse(body);
 
     const existing = getArticleOrThrow(id);
+
+    // Conditional update: no-op when the status changed meanwhile (e.g. archived before a late auto-mark).
+    // The read and write below are synchronous (better-sqlite3), so the check cannot race the update.
+    if (ifStatus !== undefined && existing.status !== ifStatus) {
+      return NextResponse.json({ article: existing });
+    }
 
     // Enforce monotonic reading progress — never decrease (except for explicit reset to 0)
     if (data.readingProgress !== undefined) {
