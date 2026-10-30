@@ -16,6 +16,7 @@ All notable changes to this project will be documented in this file.
 
 ### Changed
 
+- **Production image builds without install scripts and carries its own health check** (#43): `docker/Dockerfile` installs with `npm ci --ignore-scripts` (no runtime dependency needs one; the unused `deps` stage and the native build toolchain are gone) and declares a `HEALTHCHECK` on `/api/health`; Deploy now runs `docker compose up -d --wait --wait-timeout 90` instead of polling the endpoint itself.
 - **Claude Code task tools enabled for the project**: `.claude/settings.json` sets `CLAUDE_CODE_ENABLE_TODO_TOOLS=1`, so the TaskCreate/TaskUpdate checklist tools that `CLAUDE.md`'s workflow enforcement relies on are available on models outside Claude Code's default list (e.g. Opus 5.5).
 - **IMAP login throttling is reported apart from bad credentials** (newsletter-ingestion, #80): the newsletter poller and the Settings IMAP test now say "IMAP server is throttling logins — try again later (retry in ~N s)" for imapflow's `ETHROTTLE` error and "IMAP authentication failed — check username and password" for rejected logins, instead of the raw error; throttled polls log at warn (`newsletter_imap_throttled`), and server `[ALERT]` messages are logged as `imap_server_alert`.
 
