@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useMemo } from 'react';
 import { Globe, BookOpen, Tag, Clock, ChevronDown, Search } from 'lucide-react';
-import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
+import { Popover, PopoverContent, PopoverTitle, PopoverTrigger } from '@/components/ui/popover';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 
@@ -87,6 +87,7 @@ export function ScopeSelector({ value, onChange, disabled }: Props) {
         </Button>
       </PopoverTrigger>
       <PopoverContent className="w-72 p-0" align="start">
+        <PopoverTitle className="sr-only">Chat scope</PopoverTitle>
         {/* Search */}
         <div className="border-border flex items-center gap-2 border-b px-3 py-2">
           <Search size={14} className="text-muted-foreground shrink-0" />

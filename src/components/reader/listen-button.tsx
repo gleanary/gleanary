@@ -2,7 +2,7 @@
 
 import { Headphones, Play, RotateCcw } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
+import { Popover, PopoverContent, PopoverTitle, PopoverTrigger } from '@/components/ui/popover';
 import { useTTS } from '@/components/reader/tts-provider';
 
 /** Shared className for the full-width option rows in the resume-prompt popover. */
@@ -44,6 +44,7 @@ export function ListenButton({ articleId }: { articleId: number }) {
         </Button>
       </PopoverTrigger>
       <PopoverContent className="w-56 p-1" align="start">
+        <PopoverTitle className="sr-only">Resume listening</PopoverTitle>
         <Button variant="ghost" className={POPOVER_ITEM_CLASS} onClick={resumeFromSaved}>
           <Play className="h-4 w-4" />
           Resume where you left off
