@@ -15,11 +15,9 @@ runcmd:
   - usermod -aG docker ubuntu
 
   # Create app directories
-  - mkdir -p /opt/gleanary/data/db
-  - mkdir -p /opt/gleanary/data/backups
-  - mkdir -p /opt/gleanary/data/caddy
+  - mkdir -p /opt/gleanary/data/db /opt/gleanary/data/tts-cache /opt/gleanary/data/originals /opt/gleanary/data/backups /opt/gleanary/data/caddy
   # The app container runs as uid 1001 (USER nextjs in docker/Dockerfile)
-  - chown -R 1001:1001 /opt/gleanary/data/db
+  - chown -R 1001:1001 /opt/gleanary/data/db /opt/gleanary/data/tts-cache /opt/gleanary/data/originals
 
   # Write environment file
   - |
@@ -57,8 +55,22 @@ runcmd:
         restart: unless-stopped
         volumes:
           - /opt/gleanary/data/db:/data/db
+          - /opt/gleanary/data/tts-cache:/data/tts-cache
+          - /opt/gleanary/data/originals:/data/originals
         env_file:
           - .env
+        # Runtime hardening (ADR-010): code cannot be rewritten and nothing
+        # persists outside the data mounts; no capabilities (node binds 3000
+        # as uid 1001 without any); memory above the 1 GB heap cap.
+        read_only: true
+        tmpfs:
+          - /tmp:size=64m
+          - /app/.next/cache:uid=1001,gid=1001,size=64m
+        cap_drop: [ALL]
+        security_opt: ['no-new-privileges:true']
+        mem_limit: 1536m
+        cpus: 1.5
+        pids_limit: 256
         networks:
           - internal
 
