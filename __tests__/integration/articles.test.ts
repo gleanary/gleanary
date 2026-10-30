@@ -313,6 +313,58 @@ describe('Articles API', () => {
       expect(res.status).toBe(422);
     });
 
+    it('does not revert an archived article when ifStatus does not match (#44)', async () => {
+      const createRes = await createArticle(jsonReq('POST', '/api/articles', validArticle));
+      const { article } = await createRes.json();
+      await updateArticle(
+        jsonReq('PATCH', `/api/articles/${article.id}`, { status: 'archived' }),
+        routeParams(article.id),
+      );
+
+      // The reader's late auto-mark lands after the user's Archive
+      const res = await updateArticle(
+        jsonReq('PATCH', `/api/articles/${article.id}`, { status: 'reading', ifStatus: 'inbox' }),
+        routeParams(article.id),
+      );
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.article.status).toBe('archived');
+      expect(body.article).not.toHaveProperty('ifStatus');
+
+      const getRes = await getArticle(
+        new NextRequest(`http://localhost:3000/api/articles/${article.id}`),
+        routeParams(article.id),
+      );
+      const stored = await getRes.json();
+      expect(stored.article.status).toBe('archived');
+    });
+
+    it('applies the status change when ifStatus matches', async () => {
+      const createRes = await createArticle(jsonReq('POST', '/api/articles', validArticle));
+      const { article } = await createRes.json();
+      expect(article.status).toBe('inbox');
+
+      const res = await updateArticle(
+        jsonReq('PATCH', `/api/articles/${article.id}`, { status: 'reading', ifStatus: 'inbox' }),
+        routeParams(article.id),
+      );
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.article.status).toBe('reading');
+      expect(body.article).not.toHaveProperty('ifStatus');
+    });
+
+    it('rejects an invalid ifStatus with 422', async () => {
+      const createRes = await createArticle(jsonReq('POST', '/api/articles', validArticle));
+      const { article } = await createRes.json();
+
+      const res = await updateArticle(
+        jsonReq('PATCH', `/api/articles/${article.id}`, { status: 'reading', ifStatus: 'read' }),
+        routeParams(article.id),
+      );
+      expect(res.status).toBe(422);
+    });
+
     it('updates reading progress', async () => {
       const createRes = await createArticle(jsonReq('POST', '/api/articles', validArticle));
       const { article } = await createRes.json();

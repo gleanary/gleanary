@@ -100,6 +100,19 @@ describe('updateArticleSchema', () => {
     expect(updateArticleSchema.parse({ readingProgress: 0 })).toBeDefined();
     expect(updateArticleSchema.parse({ readingProgress: 1 })).toBeDefined();
   });
+
+  it('accepts a status update guarded by ifStatus', () => {
+    const result = updateArticleSchema.parse({ status: 'reading', ifStatus: 'inbox' });
+    expect(result.ifStatus).toBe('inbox');
+  });
+
+  it('rejects an invalid ifStatus', () => {
+    expect(() => updateArticleSchema.parse({ status: 'reading', ifStatus: 'read' })).toThrow();
+  });
+
+  it('rejects ifStatus without any field to update', () => {
+    expect(() => updateArticleSchema.parse({ ifStatus: 'inbox' })).toThrow();
+  });
 });
 
 describe('listArticlesSchema', () => {

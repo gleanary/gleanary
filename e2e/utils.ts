@@ -12,22 +12,27 @@ import { expect, type Locator, type Page, type Response } from '@playwright/test
  *
  * The pathname is compared against `new URL(res.url()).pathname` (never a substring
  * `includes`), so query strings are ignored and unrelated routes cannot match. Pass
- * a RegExp when the id in the path is not known ahead of time.
+ * a RegExp when the id in the path is not known ahead of time. Pass `matchBody` when
+ * another request can hit the same path and method first (e.g. the reader's auto
+ * mark-as-reading PATCH), so only the request carrying the intended payload matches.
  *
  * @param page - Playwright page to listen on
  * @param pathname - Exact URL pathname to match, or a RegExp tested against it
  * @param method - HTTP method to match (e.g. 'POST', 'PATCH', 'DELETE')
+ * @param matchBody - Optional predicate tested against the request's parsed JSON body
  * @returns Promise resolving to the first matching Playwright Response
  */
 export function waitForApiResponse(
   page: Page,
   pathname: string | RegExp,
   method: string,
+  matchBody?: (body: unknown) => boolean,
 ): Promise<Response> {
   return page.waitForResponse((res) => {
     const path = new URL(res.url()).pathname;
     const pathMatches = typeof pathname === 'string' ? path === pathname : pathname.test(path);
-    return pathMatches && res.request().method() === method;
+    if (!pathMatches || res.request().method() !== method) return false;
+    return !matchBody || matchBody(res.request().postDataJSON());
   });
 }
 

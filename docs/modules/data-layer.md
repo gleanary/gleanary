@@ -135,8 +135,11 @@ Update article fields (status, progress, favorite, etc.).
   isFavorite?: boolean;
   title?: string;
   readAt?: string;                // ISO 8601
+  ifStatus?: "inbox" | "reading" | "archived"; // precondition, never stored
 }
 ```
+
+**Conditional update (`ifStatus`)**: when `ifStatus` is present and the stored status differs, the whole update is ignored and the existing article is returned with `200`. It is a precondition, not a field: it is never written, and a body with only `ifStatus` is rejected with `422`. The reader's auto mark-as-reading sends `{ status: "reading", ifStatus: "inbox" }` so it cannot revert an article archived meanwhile (#44).
 
 **Reading progress is monotonic**: if `readingProgress` is present and not greater than the stored value (and not `0`), the whole update is ignored and the existing article is returned, so the reading anchor fields are dropped with it and always describe the furthest point reached. `readingProgress: 0` (reset) also clears `readingAnchorBlock`/`readingAnchorOffset`. The anchor fields are only accepted alongside `readingProgress`: a body with `readingAnchorBlock` or `readingAnchorOffset` but no `readingProgress` is rejected with `422`, so the anchor cannot drift from the saved progress.
 
