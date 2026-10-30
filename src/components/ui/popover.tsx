@@ -49,13 +49,35 @@ function PopoverHeader({ className, ...props }: React.ComponentProps<'div'>) {
   );
 }
 
-function PopoverTitle({ className, ...props }: React.ComponentProps<'h2'>) {
-  return <div data-slot="popover-title" className={cn('font-medium', className)} {...props} />;
+/**
+ * Accessible title for the popover; Radix wires it to the content's `aria-labelledby`.
+ * @param props - Radix `Popover.Title` props.
+ * @returns The title element.
+ */
+function PopoverTitle({
+  className,
+  ...props
+}: React.ComponentProps<typeof PopoverPrimitive.Title>) {
+  return (
+    <PopoverPrimitive.Title
+      data-slot="popover-title"
+      className={cn('font-medium', className)}
+      {...props}
+    />
+  );
 }
 
-function PopoverDescription({ className, ...props }: React.ComponentProps<'p'>) {
+/**
+ * Accessible description for the popover; Radix wires it to the content's `aria-describedby`.
+ * @param props - Radix `Popover.Description` props.
+ * @returns The description element.
+ */
+function PopoverDescription({
+  className,
+  ...props
+}: React.ComponentProps<typeof PopoverPrimitive.Description>) {
   return (
-    <p
+    <PopoverPrimitive.Description
       data-slot="popover-description"
       className={cn('text-muted-foreground', className)}
       {...props}
