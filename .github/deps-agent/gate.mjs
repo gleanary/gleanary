@@ -21,6 +21,7 @@ export const REQUIRED_CHECKS = [
   'Type-check',
   'Unit + Integration Tests',
   'E2E Tests (critical paths)',
+  'Docker image smoke test',
 ];
 
 export const LIMITS = {

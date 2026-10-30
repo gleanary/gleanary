@@ -59,7 +59,7 @@ sequenceDiagram
     participant S as Production server
 
     DB->>CI: opens PR once the release is 7+ days old
-    CI-->>DB: lint, type-check, tests, E2E all green
+    CI-->>DB: lint, type-check, tests, E2E, Docker image smoke test all green
     Note over P: scheduled run, every 3 h
     P->>P: pick PRs whose CI finished and whose head commit has no assessment yet
     P->>A: one job per PR, up to 5 per run
