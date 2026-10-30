@@ -16,6 +16,7 @@ All notable changes to this project will be documented in this file.
 
 ### Changed
 
+- **Claude Code task tools enabled for the project**: `.claude/settings.json` sets `CLAUDE_CODE_ENABLE_TODO_TOOLS=1`, so the TaskCreate/TaskUpdate checklist tools that `CLAUDE.md`'s workflow enforcement relies on are available on models outside Claude Code's default list (e.g. Opus 5.5).
 - **IMAP login throttling is reported apart from bad credentials** (newsletter-ingestion, #80): the newsletter poller and the Settings IMAP test now say "IMAP server is throttling logins — try again later (retry in ~N s)" for imapflow's `ETHROTTLE` error and "IMAP authentication failed — check username and password" for rejected logins, instead of the raw error; throttled polls log at warn (`newsletter_imap_throttled`), and server `[ALERT]` messages are logged as `imap_server_alert`.
 
 - **Anthropic client resolves the API key per request** (ai-features, #104): `getClient()` builds the SDK client once and passes `apiKey` as a function (new in `@anthropic-ai/sdk` 1.0.0), so a key changed in Settings applies on the next call without rebuilding the client; a missing key still returns 503 "not configured".
