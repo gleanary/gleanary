@@ -229,17 +229,17 @@ review, so it is not the preferred lever.
   the owner after 14 days of waiting (a fast-moving dependency can keep resetting the clock).
 - Overrides are append-only and cannot be withdrawn; `/deps hold` is the revocation (a held
   PR never merges).
-- Install scripts run in the Docker build, so a version change of a package that runs one
-  escalates. Escalating every bump of the few packages that legitimately run scripts and
+- Install scripts run in CI's `npm ci` (no secrets), so a version change of a package that
+  runs one escalates. Escalating every bump of the few packages that legitimately run scripts and
   bump often (`better-sqlite3`, `esbuild`, `msw`, `unrs-resolver`) was too much friction,
   so those four pass when the install command is byte-identical to the previous version's
   and both versions have npm provenance (all four publish with it). The cooldown and the
   code review still apply; a changed command, lost provenance, a new script or any other
   package still escalates. Considered and rejected: relaxing all dev dependencies (the
   Docker builder stage runs a full `npm ci`, so dev scripts can still tamper with the
-  production bundle). Complementary, tracked in #43: build the image with
-  `npm ci --ignore-scripts` plus an explicit `npm rebuild better-sqlite3`, so new
-  versions' scripts don't run in the production build at all.
+  production bundle). Complementary, done in #43: the image builds with
+  `npm ci --ignore-scripts`, so new versions' scripts don't run in the production build at
+  all (`better-sqlite3` 13 ships N-API prebuilds, so no rebuild step is needed).
 - `/deps` commands never merge and never write the decision record. `/deps merge` posts an
   append-only App comment naming the approved versions, and the scheduled `act` job (the
   only writer of records and the only merger) reads it. A command can therefore neither

@@ -1,16 +1,13 @@
 FROM node:26.12.1-alpine AS base
 
-FROM base AS deps
-WORKDIR /app
-RUN apk add --no-cache python3 make g++ && npm install -g npm@11
-COPY package.json package-lock.json ./
-RUN npm ci --omit=dev
-
 FROM base AS builder
 WORKDIR /app
-RUN apk add --no-cache python3 make g++ && npm install -g npm@11
 COPY package.json package-lock.json ./
-RUN npm ci
+# Install scripts never run in the image build, so a compromised dependency
+# version cannot tamper with what ships (ADR-010, option D). No runtime
+# dependency needs one: better-sqlite3 ships N-API prebuilds, and esbuild /
+# unrs-resolver resolve their platform binary through optional dependencies.
+RUN npm ci --ignore-scripts
 COPY . .
 RUN npm run build
 
@@ -47,4 +44,9 @@ ENV NODE_OPTIONS="--max-old-space-size=1024"
 EXPOSE 3000
 ENV PORT=3000
 ENV HOSTNAME="0.0.0.0"
+# The one definition of "healthy": Deploy (`docker compose up --wait`) and CI's
+# docker-smoke job wait on it, and `docker ps` shows it. busybox wget is far
+# cheaper than starting node; probes run every 2s while starting, then every 30s.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --start-interval=2s --retries=3 \
+  CMD wget -q -T 4 -O /dev/null http://127.0.0.1:3000/api/health || exit 1
 CMD ["./scripts/start.sh"]

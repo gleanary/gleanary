@@ -107,16 +107,23 @@ jobs:
           cache-from: type=gha
 
       # start.sh migrates a fresh DB on the anonymous /data volume, then starts server.js.
+      # Waits on the image's own HEALTHCHECK, the one Deploy's `compose up --wait` uses.
       - name: Migrate, boot and check /api/health
         if: steps.changes.outputs.build == 'true'
         run: |
           docker run -d --name app -p 3000:3000 -e DATABASE_URL=file:/data/db/gleanary.db gleanary:ci
           trap 'docker logs app' EXIT
-          for i in $(seq 1 30); do
-            curl -fsS http://127.0.0.1:3000/api/health | grep -q '"db":"connected"' && exit 0
+          for i in $(seq 1 45); do
+            status=$(docker inspect -f '{{.State.Health.Status}}' app)
+            if [ "$status" = healthy ]; then
+              curl -fsS http://127.0.0.1:3000/api/health | grep -q '"db":"connected"' && exit 0
+              echo "healthy but the database is not connected"
+              exit 1
+            fi
+            [ "$status" = unhealthy ] && break
             sleep 2
           done
-          echo "health check failed after 60s"
+          echo "container did not turn healthy (last status: $status)"
           exit 1
 
   e2e:
