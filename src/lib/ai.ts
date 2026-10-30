@@ -125,7 +125,6 @@ const TIMEOUT_MS = 30_000;
 // --- Singleton client ---
 
 let _client: Anthropic | null = null;
-let _clientConfigKey: string = '';
 
 /**
  * Returns the configured Anthropic API key, or throws a clear "not configured" error.
@@ -146,20 +145,19 @@ export function requireAnthropicApiKey(): string {
 
 /**
  * Returns the Anthropic SDK client singleton.
- * Recreates the client if the configured API key has changed.
+ * The SDK resolves the API key per request, so a key changed in Settings applies
+ * on the next call. The eager check keeps the 503: the SDK wraps errors thrown
+ * by the key function in a generic AnthropicError.
  * @returns Anthropic client instance
  * @throws ExternalServiceError (503) when no API key is configured
  */
 function getClient(): Anthropic {
-  const apiKey = requireAnthropicApiKey();
-  if (!_client || _clientConfigKey !== apiKey) {
-    _client = new Anthropic({
-      apiKey,
-      timeout: TIMEOUT_MS,
-      ...(process.env.NODE_ENV === 'test' && { maxRetries: 0 }),
-    });
-    _clientConfigKey = apiKey;
-  }
+  requireAnthropicApiKey();
+  _client ??= new Anthropic({
+    apiKey: async () => requireAnthropicApiKey(),
+    timeout: TIMEOUT_MS,
+    ...(process.env.NODE_ENV === 'test' && { maxRetries: 0 }),
+  });
   return _client;
 }
 
@@ -168,7 +166,6 @@ function getClient(): Anthropic {
  */
 export function resetClient(): void {
   _client = null;
-  _clientConfigKey = '';
 }
 
 /**
