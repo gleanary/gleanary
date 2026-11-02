@@ -137,6 +137,27 @@ describe('useSheetDrag: handle and header (pointer events)', () => {
     expect(onDismiss).toHaveBeenCalledTimes(1);
   });
 
+  it.each([
+    [true, '120px'],
+    [false, ''],
+  ])('reduced motion %s: the exit keyframe ends at the release point (%s)', (reduce, exitY) => {
+    vi.stubGlobal(
+      'matchMedia',
+      vi.fn(() => ({ matches: reduce })),
+    );
+    const { onDismiss, sheet, handle } = setup();
+    fireEvent.pointerDown(handle, { pointerId: 1, pointerType: 'mouse', clientY: 100 });
+    at(1000);
+    fireEvent.pointerMove(handle, { pointerId: 1, pointerType: 'mouse', clientY: 220 });
+    at(2000);
+    fireEvent.pointerUp(handle, { pointerId: 1, pointerType: 'mouse', clientY: 220 });
+    expect(onDismiss).toHaveBeenCalledTimes(1);
+    // Without slide-out-to-bottom, tw-animate-css's exit would snap back to 0 while fading;
+    // with motion, the slide-out class's 100% must win (no inline override)
+    expect(sheet.style.getPropertyValue('--tw-exit-translate-y')).toBe(exitY);
+    vi.unstubAllGlobals();
+  });
+
   it('dismisses a fast short flick', () => {
     const { onDismiss, handle } = setup();
     at(0);

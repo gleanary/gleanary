@@ -108,14 +108,17 @@ function createSheetDrag() {
     const velocity =
       first && last && last.t > first.t ? (last.y - first.y) / (last.t - first.t) : 0;
     const height = sheet.getBoundingClientRect().height;
+    const reduceMotion =
+      typeof window.matchMedia === 'function' &&
+      window.matchMedia('(prefers-reduced-motion: reduce)').matches;
     if (y !== null && shouldDismissSheet({ dy, height, velocity })) {
+      // The fade-out (no slide-out class) would otherwise end at translateY 0, sliding
+      // the sheet back up. Not with motion: inline, it would beat slide-out's 100%
+      if (reduceMotion) sheet.style.setProperty('--tw-exit-translate-y', `${dy}px`);
       dismiss();
       return;
     }
     // Spring back (an instant snap under reduced motion)
-    const reduceMotion =
-      typeof window.matchMedia === 'function' &&
-      window.matchMedia('(prefers-reduced-motion: reduce)').matches;
     sheet.style.transition = reduceMotion ? 'none' : SPRING_BACK_TRANSITION;
     sheet.style.transform = '';
   }
