@@ -22,6 +22,8 @@ All notable changes to this project will be documented in this file.
 
 ### Changed
 
+- **Readwise importer integration tests share their DB helpers**: `__tests__/integration/readwise-importer.test.ts` reads the mocked test DB through one `getTestDb()` and looks up the imported article and highlight with `getArticle()` / `getHighlight()` instead of repeating the cast and query in each test. Test-only, no behavior change.
+
 - **Context panel Generate requests are owned by `ArticleProvider`**: request state and `generate()` come from `useArticle()`, the request lives in `generateArticleAi` (`src/lib/article-api.ts`), and `updateArticle` loses its optional `articleId` guard (the reader's providers are keyed per article). One behavior change: leaving an article while its Generate request runs drops that request's state, so coming back shows Generate again until the server-saved result appears on reload.
 
 - **Context panel place-keeping moved out of the reader** (module 22, refactor): the anchor capture, TTS sync, layout-key restore and unmount cleanup now live in `src/hooks/use-panel-place-keeping.ts`, with behavior unchanged; `clampScrollY` and `RESTORE_CANCEL_EVENTS` moved to `src/lib/scroll-progress.ts`.
