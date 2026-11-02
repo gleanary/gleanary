@@ -18,6 +18,16 @@ export function getScrollableHeight(): number {
 }
 
 /**
+ * Clamps a scroll offset to the scrollable range, like the browser clamps scrollTo.
+ *
+ * @param top - Desired vertical scroll offset in pixels.
+ * @returns The offset clamped to `[0, getScrollableHeight()]`.
+ */
+export function clampScrollY(top: number): number {
+  return Math.min(Math.max(top, 0), getScrollableHeight());
+}
+
+/**
  * Convert a scroll offset into reading progress.
  *
  * @param scrollY - Vertical scroll offset in pixels.
@@ -49,3 +59,10 @@ export function progressToScrollY(progress: number, scrollableHeight: number): n
   if (scrollableHeight <= 0) return null;
   return progress * scrollableHeight;
 }
+
+/**
+ * User input that hands scrolling back to the reader, ending a programmatic restore
+ * (the mount restore window or a panel restore). Scrolls also end the mount restore
+ * (see its `onScroll`); these catch input before, or without, a scroll.
+ */
+export const RESTORE_CANCEL_EVENTS = ['wheel', 'touchstart', 'keydown', 'pointerdown'] as const;
