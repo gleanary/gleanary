@@ -277,6 +277,15 @@ export function useTTS(): TTSContextValue {
 }
 
 /**
+ * Non-throwing variant of {@link useTTS} for components that also render outside a
+ * TTSProvider (e.g. `ArticleReader` in unit tests).
+ * @returns The TTS context value, or null outside a TTSProvider
+ */
+export function useOptionalTTS(): TTSContextValue | null {
+  return useContext(TTSContext);
+}
+
+/**
  * Hook that returns the TTS content ref callback if TTS is available.
  * Uses a separate context from TTSContext to avoid re-renders from TTS state changes.
  * Returns undefined if outside TTSProvider — safe to call unconditionally.

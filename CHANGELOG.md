@@ -6,6 +6,8 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
+- **Context panel shell** (module 22, session 1): desktop push side sheet toggled from the reader toolbar or Cmd/Ctrl+Shift+\, one side panel at a time, keeps your place while toggling.
+
 - **CI builds and boots the production Docker image** (#101): a new `Docker image smoke test` job in `ci.yml` builds `docker/Dockerfile` for linux/amd64 (not pushed) on PRs that touch `package*.json`, `ci.yml`, `docker/**`, `next.config.*`, `.dockerignore` or the start/migrate scripts, migrates a fresh DB and asserts `/api/health` reports `db: connected`, so a native module missing its musl binary fails the PR instead of Deploy. It succeeds as a no-op otherwise, and deps-agent's gate now requires it.
 
 - **deps-agent reacts to `/deps` commands**: 👍 when it carries the command out, 😕 when it cannot parse or refuses it (its reply says why), like Dependabot acknowledges its own commands.
@@ -70,6 +72,11 @@ All notable changes to this project will be documented in this file.
 - **Infra: `tofu plan` no longer replaces the server** — `lifecycle.ignore_changes` on the keypair and instance stops pre-rename names, the unresolvable image name, and `user_data` drift from forcing a destroy/recreate that would wipe the SQLite DB.
 - **Migrated shadcn UI primitives to per-primitive subpath imports** — the nine shadcn UI components in `src/components/ui/` now import from `radix-ui/<primitive>` instead of the `radix-ui` umbrella. Pattern A (7 files: popover, tooltip, dialog, separator, checkbox, dropdown-menu, select) switched `import { X as XPrimitive } from 'radix-ui'` to `import * as XPrimitive from 'radix-ui/<kebab-primitive>'`. Pattern B (button, badge) switched `import { Slot } from 'radix-ui'` to `import * as Slot from 'radix-ui/slot'` (usage stays Slot.Root). Subpaths resolve via radix-ui 1.6.4's `./*` export map under tsconfig `moduleResolution: bundler`. Exactly one import line changed per file; all call sites and public exports are byte-identical.
 - **KaTeX bumped to 0.18.1** — 0.18's breaking change prefixed only KaTeX's previously-unprefixed internal classes (`base`->`katex-base`, etc.); the classes the reader depends on (`katex`, `katex-mathml`, `katex-html`, `katex-display`, `katex-error`) and the `annotation[encoding="application/x-tex"]` element are unchanged, so no selectors in `highlight-anchoring.ts`, `article-content.tsx`, or `globals.css` moved. Added unit tests that pin this class-name contract against real KaTeX output, an `e2e/math-article.spec.ts` covering inline + display rendering and a highlight spanning a display-math block surviving reload, and a "KaTeX class dependency" note to the highlight-anchoring spec so future bumps re-verify the load-bearing names.
+
+### Fixed
+
+- **Reader Escape**: Escape no longer also navigates back when it exits highlight edit mode.
+- **Reader position on sidebar toggle**: toggling the left sidebar in the reader now keeps your reading position.
 
 ### Security
 

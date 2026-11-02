@@ -93,7 +93,9 @@ export function NewsletterOriginalView({
       </div>
 
       {showOriginal ? (
-        <div>
+        // Raw emails are often fixed-width (600px) tables: scroll inside this box when
+        // the column is narrower (e.g. with a side panel open) instead of breaking the page
+        <div className="overflow-x-auto">
           <div className="mb-4 rounded border border-[rgb(var(--reader-text))]/10 bg-[rgb(var(--reader-text))]/5 px-3 py-2 text-xs text-[rgb(var(--reader-text))]/50">
             Viewing original email. Highlights are unavailable in this view.
           </div>

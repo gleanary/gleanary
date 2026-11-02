@@ -1,3 +1,4 @@
+import type { ReactNode } from 'react';
 import type { InferSelectModel, InferInsertModel } from 'drizzle-orm';
 import type {
   sources,
@@ -151,6 +152,44 @@ export interface ReadingAnchor {
   block: number;
   /** Fraction (0–1) of the block's height above the viewport top. */
   offset: number;
+}
+
+/**
+ * Position at the viewport top kept while a side panel changes the reader width.
+ * `gap` is the distance (px) from the viewport top down to the anchored element
+ * when that element starts below the viewport top (offset 0), else 0.
+ */
+export interface HtmlPanelAnchor extends ReadingAnchor {
+  kind: 'html';
+  gap: number;
+}
+
+/** PDF page anchor: the `[data-page]` element at the viewport top and how far into it. */
+export interface PdfPanelAnchor {
+  kind: 'pdf';
+  /** 1-based page number (the `data-page` attribute). */
+  page: number;
+  /** Fraction (0–1) of the page's height above the viewport top. */
+  offset: number;
+  /** Distance (px) from the viewport top down to the page when it starts below it. */
+  gap: number;
+}
+
+/** Reading position captured before a panel width change (HTML block or PDF page). */
+export type PanelAnchor = HtmlPanelAnchor | PdfPanelAnchor;
+
+/** One section of a context panel tab, rendered under a small uppercase label. */
+export interface ContextPanelSection {
+  id: string;
+  label: string;
+  content: ReactNode;
+}
+
+/** One tab of the context panel; the tab bar only appears when there is more than one. */
+export interface ContextPanelTab {
+  id: string;
+  label: string;
+  sections: ContextPanelSection[];
 }
 
 /** Known setting keys */

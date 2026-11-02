@@ -3,11 +3,15 @@ import { describe, it, expect, vi, beforeAll, beforeEach, afterAll, afterEach } 
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { ArticleProvider, useArticle } from '@/components/reader/article-context';
 import { ArticleReader } from '@/components/reader/article-reader';
+import { SidebarProvider } from '@/components/layout/sidebar-context';
+import { ContextPanelProvider, useContextPanel } from '@/components/layout/context-panel-context';
+import { ContextPanelPortal } from '@/components/layout/context-panel';
 import { anchorToScrollY, computeReadingAnchor } from '@/lib/reading-anchor';
 import { getScrollableHeight } from '@/lib/scroll-progress';
 import type { Article } from '@/types';
 
-vi.mock('next/navigation', () => ({ useRouter: () => ({ back: vi.fn() }) }));
+const { mockBack } = vi.hoisted(() => ({ mockBack: vi.fn() }));
+vi.mock('next/navigation', () => ({ useRouter: () => ({ back: mockBack }) }));
 
 const mockFetch = vi.fn();
 
@@ -113,6 +117,7 @@ afterAll(() => {
 });
 
 beforeEach(() => {
+  mockBack.mockReset();
   mockFetch.mockReset();
   mockFetch.mockResolvedValue({ ok: true, json: () => Promise.resolve({}) });
   layoutShift = 0;
@@ -325,6 +330,141 @@ describe('ArticleReader reading-position save', () => {
     ]);
     const init = mockFetch.mock.calls[0]?.[1] as RequestInit | undefined;
     expect(init?.keepalive).toBe(true);
+  });
+});
+
+describe('ArticleReader Escape', () => {
+  it('goes back on Escape', () => {
+    renderReader({ readingProgress: 0, readingAnchorBlock: null, readingAnchorOffset: null });
+    fireEvent.keyDown(window, { key: 'Escape' });
+    expect(mockBack).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not go back when an earlier handler already handled Escape (defaultPrevented)', () => {
+    renderReader({ readingProgress: 0, readingAnchorBlock: null, readingAnchorOffset: null });
+    // Like highlight-layer / the context panel: a capture-phase handler claims the key
+    const claim = (e: KeyboardEvent) => e.preventDefault();
+    window.addEventListener('keydown', claim, { capture: true });
+    try {
+      fireEvent.keyDown(window, { key: 'Escape' });
+    } finally {
+      window.removeEventListener('keydown', claim, { capture: true });
+    }
+    expect(mockBack).not.toHaveBeenCalled();
+  });
+});
+
+describe('ArticleReader place-keeping across panel width changes', () => {
+  function PanelHarness({ children }: { children: React.ReactNode }) {
+    const { contentWrapperRef, toggle } = useContextPanel();
+    return (
+      <div ref={contentWrapperRef}>
+        <button onClick={() => toggle()}>toggle panel</button>
+        <ContextPanelPortal title="Details" tabs={[]} />
+        {children}
+      </div>
+    );
+  }
+
+  function renderInShell(fields: Partial<Article>) {
+    render(
+      <SidebarProvider>
+        <ContextPanelProvider>
+          <PanelHarness>
+            <ArticleProvider initialArticle={makeArticle(fields)}>
+              <ArticleReader>
+                <div className="article-content" data-testid="article-content">
+                  {Array.from({ length: BLOCK_COUNT }, (_, i) => (
+                    <p key={i}>Paragraph {i}</p>
+                  ))}
+                </div>
+              </ArticleReader>
+            </ArticleProvider>
+          </PanelHarness>
+        </ContextPanelProvider>
+      </SidebarProvider>,
+    );
+    stubBlockRects();
+  }
+
+  function togglePanel() {
+    fireEvent.click(screen.getByRole('button', { name: 'toggle panel' }));
+  }
+
+  function patchProgress(): number[] {
+    return mockFetch.mock.calls
+      .filter(([, init]) => (init as RequestInit | undefined)?.method === 'PATCH')
+      .map(([, init]) => JSON.parse((init as RequestInit).body as string))
+      .filter((body) => 'readingProgress' in body)
+      .map((body) => body.readingProgress as number);
+  }
+
+  beforeEach(() => {
+    localStorage.clear();
+    Object.defineProperty(window, 'matchMedia', {
+      configurable: true,
+      writable: true,
+      value: (query: string) => ({
+        matches: true,
+        media: query,
+        onchange: null,
+        addEventListener: () => {},
+        removeEventListener: () => {},
+        addListener: () => {},
+        removeListener: () => {},
+        dispatchEvent: () => false,
+      }),
+    });
+  });
+
+  it('re-applies the last known anchor while the layout reflows', () => {
+    renderInShell({ readingProgress: 0, readingAnchorBlock: null, readingAnchorOffset: null });
+    flushRaf();
+    setScrollY(1040);
+    fireEvent.scroll(window);
+    flushRaf();
+
+    togglePanel();
+    // The narrower column pushes block 2 down 200px
+    layoutShift = 200;
+    triggerResize();
+    expect(scrollToCalls().at(-1)).toBe(1240);
+  });
+
+  it('does not advance reading progress from scrolls during a panel transition', () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    renderInShell({ readingProgress: 0, readingAnchorBlock: null, readingAnchorOffset: null });
+    flushRaf();
+    setScrollY(400);
+    fireEvent.scroll(window);
+    flushRaf();
+    act(() => vi.advanceTimersByTime(5_000));
+    expect(patchProgress()).toEqual([0.2]);
+
+    togglePanel();
+    // Reflow changes the scroll ratio without the reader reading anything
+    setScrollY(1000);
+    fireEvent.scroll(window);
+    act(() => vi.advanceTimersByTime(5_000));
+    expect(patchProgress()).toEqual([0.2]);
+  });
+
+  it('leaves a layout change during the mount restore window to the mount restore', () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    renderInShell({ readingProgress: 0.5, readingAnchorBlock: 2, readingAnchorOffset: 0.4 });
+    flushRaf();
+    expect(window.scrollY).toBe(1040);
+    // The restore's own scroll event: keeps the window open, updates the last known anchor
+    fireEvent.scroll(window);
+    flushRaf();
+
+    // e.g. the sidebar hydrating open from localStorage right after mount
+    togglePanel();
+    // Progress keeps tracking: no panel transition pause was started
+    setScrollY(1500);
+    fireEvent.scroll(window);
+    act(() => vi.advanceTimersByTime(5_000));
+    expect(patchProgress()).toEqual([0.75]);
   });
 });
 

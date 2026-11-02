@@ -1,9 +1,11 @@
 # Module: Context Panel
 
-**Status**: Not started
+**Status**: In progress (Session 1 done: shell, desktop side sheet, place-keeping)
 **Last verified against code**: 2026-11-02 (spec revision 3, checked against `main` @ `d59f809`)
 **Schema tables**: `articles`, `sources` (reads only — no schema change); `tags` is no longer written by `POST /api/ai/tag`
-**Unimplemented sections**: full module
+**Unimplemented sections**: §5.3 bottom sheet (Session 2); §5.5, §5.6, §6, §4.1 (Session 3)
+
+> **Session 2 note**: the portal slot element must be shared between the side and bottom presentations (one slot reparented, or one slot styled for both). Otherwise switching presentation remounts the portaled widgets and drops their state (e.g. a Generate request in flight in Session 3). Accepting the remount is a valid alternative, since crossing 768px closes the panel anyway (§5.1). Tracked in `TECH_DEBT.md`.
 
 ---
 
@@ -133,7 +135,7 @@ Rendered once by `AppShell`. It renders one of two presentations.
 - `<aside>`: `fixed inset-y-0 right-0 z-40`, width `CONTEXT_PANEL_WIDTH = 320`, `border-l`, chrome tokens. Slides with `translate-x` over `duration-250 ease-out`, the same as the sidebar.
 - `AppShell`'s content wrapper adds `marginRight: CONTEXT_PANEL_WIDTH` when open and `presentation === 'side'`. The transition becomes `transition-[margin-left,margin-right]`.
 - Header row: tab label (or "Details") and an X close button. The body scrolls on its own (`overflow-y-auto`).
-- Not modal: no backdrop, no focus trap. When the panel opens via the keyboard, focus moves to the panel's close button. When it closes, focus returns to the trigger.
+- Not modal: no backdrop, no focus trap. Only activating the trigger from the keyboard moves focus to the panel's close button. The global shortcut leaves focus in place, so article scrolling keys (Space, PageDown) keep working. On any close (X, Escape, shortcut, the sidebar opening, crossing `md`), if focus was inside the panel it returns to the trigger, or to `<main>` if the trigger is gone.
 
 **Bottom sheet (mobile)**
 
@@ -256,14 +258,14 @@ Both are covered in Session 1. The panel itself is the same in every view.
 
 ## 8. Keyboard
 
-| Shortcut                          | Action                                                 |
-| --------------------------------- | ------------------------------------------------------ |
-| `Cmd/Ctrl+Shift+\`                | Toggle the context panel (or open the sheet on mobile) |
-| `Escape` (focus inside the panel) | Close the panel and return focus to the trigger        |
+| Shortcut                          | Action                                                                           |
+| --------------------------------- | -------------------------------------------------------------------------------- |
+| `Cmd/Ctrl+Shift+\`                | Toggle the context panel (or open the sheet on mobile); focus stays where it was |
+| `Escape` (focus inside the panel) | Close the panel; focus returns to the trigger (or `<main>`)                      |
 
 - The shortcut mirrors the left sidebar's `Cmd/Ctrl+\`, with Shift for the other side. Match on **`e.code === 'Backslash'`**, not `e.key`, because Shift turns `e.key` into `|` on QWERTY. No browser binds this combination.
 - It is handled in `AppShell`'s existing keydown listener and ignored when `content === null`.
-- **Escape conflict**: `ArticleReader` binds Escape to `router.back()`. The panel's Escape handler runs in the **capture** phase and calls `preventDefault()`. `ArticleReader`'s handler must return early when `e.defaultPrevented`. Without this, closing the panel also navigates away.
+- **Escape conflict**: `ArticleReader` binds Escape to `router.back()`. The panel's Escape handler is a `window` listener in the **capture** phase (so it runs before the `document`-capture handlers in `highlight-layer` and `tts-player`) and calls `preventDefault()`. `ArticleReader`, `highlight-layer` and `tts-player` return early when `e.defaultPrevented`. Without this, closing the panel also navigates away.
 - **Escape scope**: the panel's Escape handler closes the desktop panel only when focus is inside it. Escape from the article keeps its current meaning (back). On mobile, Radix Dialog owns Escape.
 - **AZERTY note**: on French layouts `\` sits on AltGr/Option combinations, so both the existing left shortcut and this one are awkward there. Out of scope for v1 (it affects both panels). Tracked in §11.
 

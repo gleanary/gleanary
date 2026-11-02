@@ -4,6 +4,7 @@ import { useState, useRef, useEffect, useCallback } from 'react';
 import { Check, Trash2, MessageSquare } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { isMobileDevice } from '@/lib/is-mobile';
+import { isMacPlatform } from '@/lib/platform';
 import { clampToViewport } from '@/lib/clamp-to-viewport';
 
 /** Gap between the popover bottom edge and the highlight top (px) */
@@ -182,7 +183,7 @@ export function HighlightPopover({
       />
       {!isMobileDevice && (
         <p className="mt-0.5 text-xs text-[rgb(var(--reader-text))]/30">
-          {navigator.platform?.includes('Mac') ? '\u2318' : 'Ctrl'}+Enter to save
+          {isMacPlatform() ? '\u2318' : 'Ctrl'}+Enter to save
         </p>
       )}
     </div>

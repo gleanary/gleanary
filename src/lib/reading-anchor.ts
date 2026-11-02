@@ -1,6 +1,15 @@
 import type { ReadingAnchor } from '@/types';
 
 /** Block-level elements that structure reader content (shared with the TTS word highlighter). */
+/**
+ * The reader's HTML content container.
+ *
+ * @returns The `.article-content` element, or `null` when absent (e.g. PDF original view).
+ */
+export function getContentContainer(): HTMLElement | null {
+  return document.querySelector<HTMLElement>('.article-content');
+}
+
 export const BLOCK_SELECTORS = 'p, h1, h2, h3, h4, h5, h6, li, blockquote, figcaption, pre, td, th';
 
 /**

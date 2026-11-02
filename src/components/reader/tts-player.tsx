@@ -131,6 +131,8 @@ export function TTSPlayer() {
     if (status === 'idle') return;
 
     const handler = (e: KeyboardEvent) => {
+      // Already handled earlier (e.g. Escape closing the context panel)
+      if (e.defaultPrevented) return;
       // Don't intercept when typing in inputs
       const target = e.target as HTMLElement;
       if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)
