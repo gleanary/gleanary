@@ -1,6 +1,6 @@
 import { sql } from 'drizzle-orm';
 import { articles, highlights, theses } from '@/db/schema';
-import { truncate } from '@/lib/text-utils';
+import { truncate, parseDbTimestamp } from '@/lib/text-utils';
 import type { LintContext, Suggestion } from './types';
 
 /** Rows per stale category — caps the worst case on a neglected KB. */
@@ -112,7 +112,7 @@ export async function* runStale(ctx: LintContext): AsyncGenerator<Suggestion> {
 
 /** Rough day-delta from a SQLite datetime string to now. */
 function daysSince(datetime: string): number {
-  const then = new Date(datetime.includes('T') ? datetime : datetime + 'Z').getTime();
+  const then = parseDbTimestamp(datetime).getTime();
   const now = Date.now();
   return Math.max(0, Math.floor((now - then) / 86_400_000));
 }

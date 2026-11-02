@@ -7,7 +7,7 @@ import { linkHighlightTags, replaceHighlightTags } from '@/lib/highlight-utils';
 import { sanitizeArticleHtml } from '@/lib/sanitize';
 import { postProcessHtml } from '@/lib/html-post-processor';
 import { convertHtmlToMarkdown } from '@/lib/html-to-markdown';
-import { stripHtml, computeWordCount, truncate } from '@/lib/text-utils';
+import { stripHtml, computeWordCount, truncate, parseDbTimestamp } from '@/lib/text-utils';
 import { logger } from '@/lib/logger';
 import { ExternalServiceError } from '@/lib/errors';
 
@@ -389,7 +389,7 @@ export async function runReadwiseImport(
     } else {
       // Update if Reader version is newer
       const rwUpdated = new Date(doc.updated_at).getTime();
-      const localUpdated = new Date(existingHl.updatedAt).getTime();
+      const localUpdated = parseDbTimestamp(existingHl.updatedAt).getTime();
 
       if (rwUpdated > localUpdated) {
         const tagIds = resolveTagIds(doc.tags);

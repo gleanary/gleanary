@@ -99,30 +99,46 @@ export function parseAiTags(raw: string | null, onInvalid?: () => void): string[
   return [];
 }
 
+const DATE_ONLY = /^\d{4}-\d{2}-\d{2}$/;
+const NAIVE_DATETIME = /^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}(:\d{2}(\.\d+)?)?$/;
+
 /**
- * Formats a date string into a human-readable format.
- * @param dateStr - ISO date string or date-like string
+ * Parses a timestamp, reading a zone-less date-time as UTC. DB rows come from
+ * `datetime('now')`, a UTC value without a zone marker (`2026-11-02 23:30:00`) that
+ * V8 would read as local time and older WebKit rejects outright.
+ * @param dateStr - Timestamp string, usually from the DB
+ * @returns The parsed instant (Invalid Date when unparseable)
+ */
+export function parseDbTimestamp(dateStr: string): Date {
+  return new Date(NAIVE_DATETIME.test(dateStr) ? `${dateStr.replace(' ', 'T')}Z` : dateStr);
+}
+
+/**
+ * Formats a date string into a human-readable format. A date-only value
+ * (`2024-01-15`) is a calendar date and prints as stored in every timezone; a
+ * timestamp prints its local date, with zone-less DB timestamps read as UTC.
+ * @param dateStr - ISO date, DB timestamp or other date-like string
  * @returns Formatted date string (e.g., "January 15, 2024")
  */
 export function formatDate(dateStr: string): string {
-  const date = new Date(dateStr);
+  const date = parseDbTimestamp(dateStr);
   if (isNaN(date.getTime())) return dateStr;
   return date.toLocaleDateString('en-US', {
     year: 'numeric',
     month: 'long',
     day: 'numeric',
+    ...(DATE_ONLY.test(dateStr) ? { timeZone: 'UTC' } : {}),
   });
 }
 
 /**
- * Formats a UTC-naive DB timestamp as a relative time (e.g. "5m ago").
- * DB rows come from `datetime('now')` which is UTC naive — the `+ 'Z'` suffix
- * tells the Date parser to treat the string as UTC.
+ * Formats a timestamp as a relative time (e.g. "5m ago"), reading zone-less DB
+ * timestamps as UTC (see `parseDbTimestamp`).
  * @param dateStr - Timestamp string from the DB
  * @returns Relative time in short form, or a locale date after 30 days
  */
 export function formatRelativeTime(dateStr: string): string {
-  const date = new Date(dateStr + 'Z');
+  const date = parseDbTimestamp(dateStr);
   const now = new Date();
   const diffMs = now.getTime() - date.getTime();
   const diffMins = Math.floor(diffMs / 60_000);

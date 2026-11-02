@@ -12,6 +12,7 @@ import { PasswordConfirmDialog } from '@/components/settings/password-confirm-di
 import { SettingsSidebar, type SettingsSection } from '@/components/settings/settings-sidebar';
 import { VoiceSection } from '@/components/settings/voice-section';
 import { UsageSection } from '@/components/settings/usage-section';
+import { parseDbTimestamp } from '@/lib/text-utils';
 import type { AuditLogEntry, AppearanceMode } from '@/types';
 import type { ReadwiseImportProgress, ReadwiseImportStats } from '@/lib/readwise-import';
 
@@ -958,7 +959,7 @@ export function SettingsPage() {
                               {auditEntries.map((entry) => (
                                 <tr key={entry.id} className="border-b last:border-0">
                                   <td className="text-muted-foreground py-1.5 pr-4 whitespace-nowrap">
-                                    {new Date(entry.timestamp + 'Z').toLocaleString()}
+                                    {parseDbTimestamp(entry.timestamp).toLocaleString()}
                                   </td>
                                   <td className="py-1.5 pr-4">
                                     <span className="bg-muted rounded px-1.5 py-0.5 font-mono text-xs">

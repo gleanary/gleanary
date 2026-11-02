@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
+import { parseDbTimestamp } from '@/lib/text-utils';
 
 interface SummaryData {
   totalUsd: number;
@@ -111,7 +112,7 @@ function UsageMetaCells({
       </td>
       <td className="py-1.5 pr-3 text-right">${costUsd.toFixed(4)}</td>
       <td className="text-muted-foreground py-1.5 text-xs whitespace-nowrap">
-        {new Date(createdAt + 'Z').toLocaleString()}
+        {parseDbTimestamp(createdAt).toLocaleString()}
       </td>
     </>
   );
