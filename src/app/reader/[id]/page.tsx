@@ -14,6 +14,7 @@ import { ArticleProvider } from '@/components/reader/article-context';
 import { TTSProvider } from '@/components/reader/tts-provider';
 import { NewsletterOriginalView } from '@/components/reader/newsletter-original-view';
 import { PdfOriginalView } from '@/components/reader/pdf-original-view';
+import { ReaderContextPanel } from '@/components/reader/reader-context-panel';
 import { config } from '@/config';
 import { getConfig } from '@/lib/settings';
 import type { ArticleStatus } from '@/types';
@@ -87,6 +88,7 @@ export default async function ReaderPage({ params, searchParams }: ReaderPagePro
               : null
           }
         >
+          <ReaderContextPanel />
           <main className="px-4 pt-3 pb-6">
             <ReadingProgressBar />
             <ReaderToolbar ttsEnabled={ttsEnabled} showOpenOriginal={showOpenOriginal} />

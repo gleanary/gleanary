@@ -516,6 +516,8 @@ export function HighlightLayer({
     if (!editingHighlight) return;
 
     const handleKeyDown = (e: KeyboardEvent) => {
+      // Already handled earlier (e.g. Escape closing the context panel)
+      if (e.defaultPrevented) return;
       if (e.key === 'Escape') {
         // Don't handle if typing in textarea (let popover handle it)
         const target = e.target as HTMLElement;

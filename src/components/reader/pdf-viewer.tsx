@@ -10,6 +10,12 @@ pdfjs.GlobalWorkerOptions.workerSrc = new URL(
   import.meta.url,
 ).toString();
 
+/**
+ * Trailing debounce for container width changes: a side panel's 250ms push animation
+ * would otherwise re-render every visible page canvas on each frame.
+ */
+const WIDTH_DEBOUNCE_MS = 150;
+
 interface PdfViewerProps {
   articleId: number;
   pageCount: number | null;
@@ -17,7 +23,7 @@ interface PdfViewerProps {
 
 /**
  * Client component for rendering a stored PDF inline using react-pdf.
- * Features: responsive width (ResizeObserver), lazy page rendering (IntersectionObserver),
+ * Features: responsive width (debounced ResizeObserver), lazy page rendering (IntersectionObserver),
  * text layer for native selection, range-request streaming from the original route.
  */
 export function PdfViewer({ articleId, pageCount }: PdfViewerProps) {
@@ -32,16 +38,29 @@ export function PdfViewer({ articleId, pageCount }: PdfViewerProps) {
   const [renderedPages, setRenderedPages] = useState<Set<number>>(() => new Set([1]));
   const [loadError, setLoadError] = useState(false);
 
-  // Hold off rendering pages until container width is measured (prevents mobile overflow)
+  // Hold off rendering pages until container width is measured (prevents mobile overflow).
+  // The first measurement applies immediately; later width changes are debounced.
   useEffect(() => {
     if (!containerRef.current) return;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    let isMeasured = false;
     const obs = new ResizeObserver((entries) => {
       const entry = entries[0];
       if (!entry) return;
-      setContainerWidth(Math.floor(entry.contentRect.width));
+      const width = Math.floor(entry.contentRect.width);
+      if (!isMeasured) {
+        isMeasured = true;
+        setContainerWidth(width);
+        return;
+      }
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => setContainerWidth(width), WIDTH_DEBOUNCE_MS);
     });
     obs.observe(containerRef.current);
-    return () => obs.disconnect();
+    return () => {
+      obs.disconnect();
+      if (timer) clearTimeout(timer);
+    };
   }, []);
 
   // Lazy page rendering — re-created when numPages becomes known.

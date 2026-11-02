@@ -16,6 +16,7 @@ import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { TopBar, TopBarButton } from '@/components/layout/top-bar';
+import { ContextPanelTrigger } from '@/components/layout/context-panel-trigger';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -164,6 +165,8 @@ export function ReaderToolbar({
           </DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>
+
+      <ContextPanelTrigger />
 
       <Dialog
         open={isDeleteDialogOpen}
