@@ -70,13 +70,18 @@ test.describe('PDF Import — reader view toggle', () => {
     await expect(articleLink).toBeVisible({ timeout: 5000 });
     await expect(articleLink).toContainText(`${article.pageCount} page`);
 
-    // Reader: navigate and verify page count in header
+    // Reader: navigate and verify the page count
     await articleLink.click();
     await page.waitForURL(`/reader/${article.id}`);
     await expect(page.getByTestId('article-title')).toContainText('E2E PDF Import Test', {
       timeout: 5000,
     });
-    await expect(page.getByTestId('article-meta')).toContainText(`${article.pageCount} page`);
+    // The page count is the Length field of the context panel
+    await page.getByRole('button', { name: 'Toggle details panel' }).click();
+    await expect(
+      page.getByTestId('context-panel').getByTestId('panel-field').filter({ hasText: 'Length' }),
+    ).toContainText(`${article.pageCount} page`);
+    await page.getByRole('button', { name: 'Toggle details panel' }).click();
 
     // Default view is extracted — "Original PDF" toggle button is visible
     const originalBtn = page.getByRole('button', { name: /original pdf/i });

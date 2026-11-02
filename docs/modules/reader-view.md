@@ -58,12 +58,7 @@ After mount, `ArticleContent` lazily imports `renderMath()` from `src/lib/math-r
 
 ### 5. Article Header (`src/components/reader/article-header.tsx`)
 
-Server component. Displays:
-
-- Article title
-- Author + site name
-- Published date (formatted)
-- Word count + estimated reading time
+Server component. Renders the article title (H1) only. The byline (author, site) and the meta row (published date, word count, reading time or page count) moved to the context panel's Details tab (`src/components/reader/reader-context-panel.tsx`, see `context-panel.md` §6).
 
 ## Design Spec (from architecture.md)
 

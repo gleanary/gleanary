@@ -7,6 +7,7 @@ import { callClaude, truncateContent, SUMMARIZE_PROMPT } from '@/lib/ai';
 import { logger } from '@/lib/logger';
 import { withRoute } from '@/lib/api-error-handler';
 import { NotFoundError, ValidationError } from '@/lib/errors';
+import type { SummarizeResponse } from '@/types';
 
 /**
  * POST /api/ai/summarize — Summarize an article using Claude.
@@ -29,7 +30,7 @@ export const POST = withRoute('POST /api/ai/summarize', async (req: NextRequest)
   }
 
   if (meta.aiSummary) {
-    return NextResponse.json({ summary: meta.aiSummary, cached: true });
+    return NextResponse.json<SummarizeResponse>({ summary: meta.aiSummary, cached: true });
   }
 
   // Cache miss — load content for Claude
@@ -57,5 +58,5 @@ export const POST = withRoute('POST /api/ai/summarize', async (req: NextRequest)
   db.update(articles).set({ aiSummary: summary }).where(eq(articles.id, articleId)).run();
 
   logger.info({ event: 'ai_summarize', articleId }, 'Article summarized');
-  return NextResponse.json({ summary, cached: false });
+  return NextResponse.json<SummarizeResponse>({ summary, cached: false });
 });

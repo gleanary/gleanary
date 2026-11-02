@@ -77,7 +77,11 @@ export default async function ReaderPage({ params, searchParams }: ReaderPagePro
   }
 
   return (
-    <ArticleStatusProvider articleId={article.id} initialStatus={article.status as ArticleStatus}>
+    <ArticleStatusProvider
+      key={article.id}
+      articleId={article.id}
+      initialStatus={article.status as ArticleStatus}
+    >
       <ArticleProvider initialArticle={article}>
         <TTSProvider
           ttsEnabled={ttsEnabled}
@@ -88,7 +92,10 @@ export default async function ReaderPage({ params, searchParams }: ReaderPagePro
               : null
           }
         >
-          <ReaderContextPanel />
+          <ReaderContextPanel
+            sourceName={source?.name ?? null}
+            aiAvailable={!!getConfig('anthropic_api_key')}
+          />
           <main className="px-4 pt-3 pb-6">
             <ReadingProgressBar />
             <ReaderToolbar ttsEnabled={ttsEnabled} showOpenOriginal={showOpenOriginal} />

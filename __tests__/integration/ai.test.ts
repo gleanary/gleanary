@@ -1,11 +1,13 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { NextRequest } from 'next/server';
 import { http, HttpResponse } from 'msw';
+import { eq } from 'drizzle-orm';
 import { server, setupHandlers } from '../mocks/server';
 
 const dbMock = await vi.hoisted(async () => (await import('./setup')).createDbMock());
 vi.mock('@/db', () => dbMock.mock);
 
+import { articles, tags } from '@/db/schema';
 import { resetClient } from '@/lib/ai';
 import { clearSettingsCache, deleteSetting, setSetting } from '@/lib/settings';
 import { expectActiveModel } from '../mocks/active-models';
@@ -170,6 +172,61 @@ describe('AI Features API', () => {
   });
 
   describe('POST /api/ai/tag', () => {
+    /** Mocks the model's tag reply and records the user message it was sent. */
+    function mockTagReply(reply: string[]): { userMessage: () => string } {
+      let sent = '';
+      server.use(
+        http.post('https://api.anthropic.com/v1/messages', async ({ request }) => {
+          const body = (await request.json()) as {
+            messages: Array<{ content: string | Array<{ text?: string }> }>;
+          };
+          const content = body.messages[0]?.content ?? '';
+          sent = typeof content === 'string' ? content : content.map((b) => b.text ?? '').join('');
+          return HttpResponse.json({
+            id: 'msg_tag',
+            type: 'message',
+            role: 'assistant',
+            content: [{ type: 'text', text: JSON.stringify(reply) }],
+            model: 'claude-sonnet-4-6',
+            stop_reason: 'end_turn',
+            usage: { input_tokens: 100, output_tokens: 20 },
+          });
+        }),
+      );
+      return { userMessage: () => sent };
+    }
+
+    /** The "Existing tags" vocabulary hint parsed out of the user message. */
+    function vocabularyHint(userMessage: string): string[] {
+      const match = /Existing tags: (.*)\n/.exec(userMessage);
+      expect(match).not.toBeNull();
+      return JSON.parse(match![1]!) as string[];
+    }
+
+    /** Creates another article whose ai_tags column holds `aiTags` verbatim. */
+    async function createTaggedArticle(slug: string, aiTags: string | null) {
+      const res = await createArticle(
+        jsonReq('POST', '/api/articles', {
+          ...validArticle,
+          url: `https://example.com/${slug}`,
+          title: slug,
+        }),
+      );
+      const { article } = await res.json();
+      dbMock.mock.db!.update(articles).set({ aiTags }).where(eq(articles.id, article.id)).run();
+      return article.id as number;
+    }
+
+    function storedAiTags(id: number): string | null {
+      return (
+        dbMock.mock
+          .db!.select({ aiTags: articles.aiTags })
+          .from(articles)
+          .where(eq(articles.id, id))
+          .get()?.aiTags ?? null
+      );
+    }
+
     it('auto-tags an article', async () => {
       let requestedModel: unknown;
       server.use(
@@ -192,40 +249,95 @@ describe('AI Features API', () => {
       expectActiveModel(requestedModel);
 
       const body = await res.json();
-      expect(body.tags).toBeInstanceOf(Array);
-      expect(body.tags.length).toBeGreaterThan(0);
-      expect(body.tags[0]).toHaveProperty('name');
+      expect(body).toEqual({ tags: ['testing', 'web-development', 'javascript'] });
+      expect(JSON.parse(storedAiTags(articleId)!)).toEqual([
+        'testing',
+        'web-development',
+        'javascript',
+      ]);
     });
 
-    it('reuses existing tags when matching', async () => {
-      // First create a tag via the tags API
-      const { POST: createTag } = await import('@/app/api/tags/route');
-      await createTag(jsonReq('POST', '/api/tags', { name: 'testing' }));
-
-      server.use(
-        http.post('https://api.anthropic.com/v1/messages', () => {
-          return HttpResponse.json({
-            id: 'msg_tag2',
-            type: 'message',
-            role: 'assistant',
-            content: [{ type: 'text', text: '["testing", "new-tag"]' }],
-            model: 'claude-sonnet-4-6',
-            stop_reason: 'end_turn',
-            usage: { input_tokens: 100, output_tokens: 20 },
-          });
-        }),
-      );
+    it('reuses existing article tag spellings', async () => {
+      await createTaggedArticle('tagged-a', JSON.stringify(['Machine Learning', 'AI']));
+      await createTaggedArticle('tagged-b', JSON.stringify(['ai', 'Databases']));
+      await createTaggedArticle('tagged-malformed', 'not json');
+      const reply = mockTagReply(['machine learning', 'DATABASES', 'new-tag']);
 
       const res = await autoTag(jsonReq('POST', '/api/ai/tag', { articleId }));
-      const body = await res.json();
+      expect(res.status).toBe(200);
 
-      // 'testing' should have id 1 (the pre-existing one)
-      const testingTag = body.tags.find((t: { name: string }) => t.name === 'testing');
-      expect(testingTag).toBeDefined();
-      expect(testingTag.id).toBe(1);
+      // Other articles' tags, de-duplicated case-insensitively, are the vocabulary hint
+      const hint = vocabularyHint(reply.userMessage());
+      expect(hint).toHaveLength(3);
+      expect(hint).toEqual(expect.arrayContaining(['Machine Learning', 'Databases']));
+      expect(hint.filter((t) => t.toLowerCase() === 'ai')).toHaveLength(1);
 
-      // 'new-tag' should be newly created
-      expect(body.created).toContain('new-tag');
+      const expected = ['Machine Learning', 'Databases', 'new-tag'];
+      expect((await res.json()).tags).toEqual(expected);
+      expect(JSON.parse(storedAiTags(articleId)!)).toEqual(expected);
+    });
+
+    it('trims spellings and collapses suggestions that normalize to the same tag', async () => {
+      await createTaggedArticle('tagged-padded', JSON.stringify(['Testing ', '  ']));
+      const reply = mockTagReply(['testing', 'Testing', ' TESTING ']);
+
+      const res = await autoTag(jsonReq('POST', '/api/ai/tag', { articleId }));
+
+      expect(vocabularyHint(reply.userMessage())).toEqual(['Testing']);
+      expect((await res.json()).tags).toEqual(['Testing']);
+    });
+
+    it('sends only the 200 most frequent article tags as the vocabulary hint', async () => {
+      const many = Array.from({ length: 201 }, (_, i) => `tag-${i}`);
+      await createTaggedArticle('tagged-many', JSON.stringify(many));
+      await createTaggedArticle('tagged-frequent', JSON.stringify(['tag-200']));
+      const reply = mockTagReply(['tag-0']);
+
+      await autoTag(jsonReq('POST', '/api/ai/tag', { articleId }));
+
+      const hint = vocabularyHint(reply.userMessage());
+      expect(hint).toHaveLength(200);
+      // tag-200 is used twice, so it ranks first; the last single-use tag is cut
+      expect(hint[0]).toBe('tag-200');
+      expect(hint).not.toContain('tag-199');
+    });
+
+    it("leaves the article's own previous tags out of the vocabulary hint", async () => {
+      dbMock.mock
+        .db!.update(articles)
+        .set({ aiTags: JSON.stringify(['Stale Tag']) })
+        .where(eq(articles.id, articleId))
+        .run();
+      const reply = mockTagReply(['stale tag']);
+
+      const res = await autoTag(jsonReq('POST', '/api/ai/tag', { articleId }));
+
+      expect(vocabularyHint(reply.userMessage())).toEqual([]);
+      expect((await res.json()).tags).toEqual(['stale tag']);
+    });
+
+    it('does not insert into the tags table', async () => {
+      // A highlight tag must neither be offered as vocabulary nor be (re)written
+      const { POST: createTag } = await import('@/app/api/tags/route');
+      await createTag(jsonReq('POST', '/api/tags', { name: 'Testing' }));
+      const reply = mockTagReply(['testing', 'new-tag']);
+
+      const res = await autoTag(jsonReq('POST', '/api/ai/tag', { articleId }));
+      expect(res.status).toBe(200);
+
+      expect(vocabularyHint(reply.userMessage())).toEqual([]);
+      expect((await res.json()).tags).toEqual(['testing', 'new-tag']);
+      const rows = dbMock.mock.db!.select({ name: tags.name }).from(tags).all();
+      expect(rows).toEqual([{ name: 'Testing' }]);
+    });
+
+    it('returns an empty tag list when the model suggests none', async () => {
+      mockTagReply([]);
+
+      const res = await autoTag(jsonReq('POST', '/api/ai/tag', { articleId }));
+
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ tags: [] });
     });
 
     it('returns 404 for nonexistent article', async () => {

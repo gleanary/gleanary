@@ -335,7 +335,7 @@ npx playwright test <file> # Specific E2E
 | 19  | Global Search                            | `docs/modules/global-search.md`                    | Done        |
 | 20  | Robust Highlight Anchoring               | `docs/modules/highlight-anchoring.md`              | Done        |
 | 21  | Authentication                           | `docs/modules/auth.md`                             | Done        |
-| 22  | Context Panel                            | `docs/modules/context-panel.md`                    | In progress |
+| 22  | Context Panel                            | `docs/modules/context-panel.md`                    | Done        |
 | —   | Content Pipeline (cross-cutting)         | `docs/modules/content-pipeline.md`                 | Done        |
 
 Claude Code updates the status column as modules are completed.

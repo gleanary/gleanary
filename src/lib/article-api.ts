@@ -1,4 +1,4 @@
-import type { Highlight } from '@/types';
+import type { Article, AutoTagResponse, GenerateKind, Highlight, SummarizeResponse } from '@/types';
 
 /** Result of attempting to upload a PDF file */
 export interface UploadPdfResult {
@@ -178,4 +178,58 @@ export async function updateHighlight(
   }
   const json = await res.json();
   return json.highlight;
+}
+
+interface GenerateConfig {
+  endpoint: string;
+  /** The article update for a successful response, or null when it carries nothing. */
+  toUpdate: (data: unknown) => Partial<Article> | null;
+  emptyError: string;
+}
+
+const GENERATE_CONFIG: Record<GenerateKind, GenerateConfig> = {
+  summary: {
+    endpoint: '/api/ai/summarize',
+    toUpdate: (data) => {
+      const { summary } = data as SummarizeResponse;
+      return summary ? { aiSummary: summary } : null;
+    },
+    emptyError: 'No summary was generated',
+  },
+  tags: {
+    endpoint: '/api/ai/tag',
+    toUpdate: (data) => {
+      const { tags } = data as AutoTagResponse;
+      return tags?.length ? { aiTags: JSON.stringify(tags) } : null;
+    },
+    emptyError: 'No tags were suggested for this article',
+  },
+};
+
+/**
+ * Generates an article's AI summary or tags. The server also stores the result on the
+ * article, so the request is safe to leave running after the caller goes away.
+ * @param kind - Which AI field to generate
+ * @param articleId - The article to generate it for
+ * @returns The article update to apply (`aiSummary`, or `aiTags` as a JSON array string)
+ * @throws Error with the API message on a non-OK response or a network failure, or when
+ *   the response carries nothing to apply
+ */
+export async function generateArticleAi(
+  kind: GenerateKind,
+  articleId: number,
+): Promise<Partial<Article>> {
+  const config = GENERATE_CONFIG[kind];
+  const res = await fetch(config.endpoint, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ articleId }),
+  });
+  const data: unknown = await res.json().catch(() => null);
+  if (!res.ok) {
+    throw new Error((data as { error?: string } | null)?.error || `Failed (${res.status})`);
+  }
+  const update = data ? config.toUpdate(data) : null;
+  if (!update) throw new Error(config.emptyError);
+  return update;
 }

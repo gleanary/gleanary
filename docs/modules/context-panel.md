@@ -1,11 +1,11 @@
 # Module: Context Panel
 
-**Status**: In progress (Sessions 1–2 done: shell, desktop side sheet, place-keeping, mobile bottom sheet)
+**Status**: Done (Sessions 1–3: shell, desktop side sheet, place-keeping, mobile bottom sheet, widgets, Generate, header slimming)
 **Last verified against code**: 2026-11-02 (spec revision 3, checked against `main` @ `d59f809`)
 **Schema tables**: `articles`, `sources` (reads only — no schema change); `tags` is no longer written by `POST /api/ai/tag`
-**Unimplemented sections**: §5.5, §5.6, §6, §4.1 (Session 3)
+**Unimplemented sections**: none
 
-> **Session 2 decision (slot)**: one portal slot is enough. Switching between the side and bottom presentations remounts the portaled widgets, and that is accepted: crossing 768px already closes the panel (§5.1), so the widgets remount on reopen either way. The only state at risk is an in-flight Generate request, and §5.6 keeps it safe by applying results through `ArticleContext.updateArticle`, which is not remounted.
+> **Session 2 decision (slot)**: one portal slot is enough. Switching between the side and bottom presentations remounts the portaled widgets, and that is accepted: crossing 768px already closes the panel (§5.1), so the widgets remount on reopen either way. The only state at risk is an in-flight Generate request, and §5.6 keeps it safe by owning the request in `ArticleProvider`, which is not remounted.
 
 ---
 
@@ -63,9 +63,9 @@ Both return **422** (`ValidationError`) when the article has no content to analy
 **New behavior**
 
 1. Validate the input (unchanged) and load the article (404 if missing).
-2. **Vocabulary hint**: the distinct tag names already present in other articles' `ai_tags` (JSON arrays, parsed with `parseAiTags`, de-duplicated case-insensitively). These are sent to the model as "Existing tags", replacing the highlight `tags` table. This keeps article tags consistent with each other without touching highlight tags.
+2. **Vocabulary hint**: the distinct tag names already present in other articles' `ai_tags` (JSON arrays, parsed with `parseAiTags`, trimmed, de-duplicated case-insensitively). Only the `ai_tags` column is selected, never whole rows. The vocabulary is capped at the **200 most frequent** names so the prompt doesn't grow with the library. These are sent to the model as "Existing tags", replacing the highlight `tags` table. This keeps article tags consistent with each other without touching highlight tags.
 3. Call the model with `AUTO_TAG_PROMPT` (unchanged), and parse the reply with `parseTagsResponse` (unchanged).
-4. **Normalize** each suggestion to the existing spelling when it case-insensitively matches a name from step 2.
+4. **Normalize** each suggestion to the existing spelling when it case-insensitively matches a name from step 2. Suggestions are already trimmed, lower-cased and de-duplicated by `parseTagsResponse`, so "testing" and "Testing" end up as one "Testing".
 5. Write `articles.ai_tags = JSON.stringify(names)`. **No insert into, and no read from, the `tags` table.**
 6. Respond `200 { tags: string[] }`. The `created` field and the `{id, name, color}` objects are removed. This is a breaking change with no aliases. Nothing in the UI calls the route today, so only tests and docs are affected.
 
@@ -180,6 +180,8 @@ interface TagListProps {
 }
 ```
 
+As built: `<Field>` renders a `dt`/`dd` row (`data-testid="panel-field"`) inside the About section's `<dl>`; `<TextBlock>` has `data-testid="panel-text-block"`.
+
 `<TextBlock>` renders **plain text** through React (auto-escaped), with `whitespace-pre-line`. `SUMMARIZE_PROMPT` asks for plain sentences, so v1 needs no HTML path. **Rule**: if summaries are ever rendered as markdown or HTML, they must go through `renderMarkdown()` → `sanitizeArticleHtml()` (DOMPurify) before `dangerouslySetInnerHTML`. Never inject raw model output as HTML.
 
 ### 5.6 `<GenerateAction>` (`src/components/context-panel/generate-action.tsx`)
@@ -188,7 +190,15 @@ The empty state for the summary and tags sections.
 
 - Idle: a short muted hint and a "Generate" `Button` (`variant="outline" size="sm"`, `Sparkles` icon).
 - Pending: button disabled with a spinner and the label "Generating…". Navigating away during the request leaves the server work running; the result is cached on the article.
-- **The request outlives the widget.** The panel widgets can remount (the presentation switches at 768px, see the header note), so the request must not be tied to the widget's lifetime: don't abort it on unmount, and apply the result through `ArticleContext.updateArticle` (owned by the reader page, never remounted), after checking that the response's `articleId` still matches the current article.
+- **The request outlives the widget.** The panel widgets can remount (the presentation switches at 768px, see the header note), so the request must not be tied to the widget's lifetime: it is not aborted on unmount, and its state lives above the widgets.
+- **Ownership: `ArticleProvider`.** The per-kind request state (`generateRequests`: pending, or error with its message) and `generate(kind)` live in `ArticleProvider` and are exposed through `useArticle()`; the request itself is `generateArticleAi(kind, articleId)` in `src/lib/article-api.ts`. Why the provider:
+  - It is the one owner whose lifetime matches the request's: it is never remounted while you stay on the article (the portaled widgets are), so a remounted widget still shows the spinner and no second request is sent.
+  - It remounts per article: the App Router remounts the `[id]` segment, and the reader page also keys its outermost provider (`ArticleStatusProvider`, which wraps `ArticleProvider`) by `article.id` so the guarantee is explicit. A result that settles after you navigate away reaches an unmounted provider and is dropped, so no `articleId` check is needed, and the next visit starts idle with no stale error.
+  - Trade-off: leaving an article while its request runs drops the request's state. Coming back shows Generate again (the server still saves the result, which appears on reload, and the summarize route returns the stored summary on a second click).
+  - Results apply through the provider's own state (`updateArticle`), so the article and the request state change together in one render.
+  - The request closure captures only the article id, not the article, so a request left running after navigation does not keep the previous article's content in memory.
+  - A failed `fetch` (offline, server restart) and an empty tag suggestion both end in the inline error, so the spinner always stops.
+  - An earlier version kept requests in a module-scope store keyed by article, with an optional `articleId` guard on `updateArticle`. It was replaced: two owners with different lifetimes needed a guard on the shared context API that every async caller had to remember, and errors needed manual clearing.
 - Success: the parent updates the article through `ArticleContext.updateArticle({ aiSummary })` / `({ aiTags })`. The section re-renders with the content. No full page refresh.
 - Error: the error message inline in `text-destructive` with a Retry button.
 - Unavailable: if no Anthropic key is configured (`!getConfig('anthropic_api_key')`, passed from the server page as `aiAvailable`), show the hint "Add an Anthropic API key in Settings to generate" linking to `/settings`. No button.
@@ -212,7 +222,7 @@ The empty state for the summary and tags sections.
      - `readingTime()` already exists in `src/lib/text-utils.ts` (238 WPM, `max(1, round(words/238))`). Reuse it. Don't recompute.
 2. **Summary**: `<TextBlock value={article.aiSummary} emptyState={<GenerateAction kind="summary" />} />`
 3. **Tags**: `<TagList tags={parseAiTags(article.aiTags)} emptyState={<GenerateAction kind="tags" />} />`
-   - `parseAiTags(raw: string | null): string[]` goes in `src/lib/text-utils.ts`. It does `JSON.parse` in a try/catch, validates with `z.array(z.string())`, and returns `[]` (plus a logged warning) on malformed input.
+   - `parseAiTags(raw: string | null, onInvalid?: () => void): string[]` lives in `src/lib/text-utils.ts`. It does `JSON.parse` in a try/catch, checks for an array of strings (no zod, to keep it out of client bundles), and returns `[]` on malformed input. It does not import the logger: text-utils is also bundled for the client, where pino doesn't belong. Server callers (the tag route) pass `onInvalid` to log a warning.
 
 **Data plumbing**: `ReaderPage` already loads `source`. It passes `sourceName` and `aiAvailable` down. `ArticleContext` already holds the full article row (including `aiSummary`, `aiTags`, `savedAt`, `readAt`), so no new query is needed.
 
@@ -281,7 +291,7 @@ Both are covered in Session 1. The panel itself is the same in every view.
 - **Malformed `aiTags`**: `parseAiTags` returns `[]`. The Tags section shows its Generate empty state.
 - **Article with no extractable content** (e.g. a scanned PDF before OCR): Generate returns 422. Show the message inline with a Retry button.
 - **Double-click on Generate**: disable the button while the request is pending. The summarize route is idempotent anyway (it returns the cached value).
-- **Navigating between articles with the panel open (desktop)**: it stays open, and the new page's `setContent` replaces the tabs. Pending Generate requests from the previous article must not write into the new article's context. Check `articleId` before calling `updateArticle`.
+- **Navigating between articles with the panel open (desktop)**: it stays open, and the new page's `setContent` replaces the tabs. Pending Generate requests from the previous article must not write into the new article's context: the previous article's `ArticleProvider` has unmounted, so their results are dropped (§5.6).
 - **Viewport crosses `md` while open**: the panel closes (§5.1).
 - **Mutual exclusion and reload**: after a reload, the right panel starts closed (in-memory) and the left sidebar comes back from localStorage. If the right panel was open before the reload, the sidebar was persisted closed, so the user sees neither panel. That is expected.
 - **Mobile**: the sheet is modal, so the left sidebar can't be opened while it is up. Opening the sheet while the mobile sidebar overlay is open closes the sidebar first.
