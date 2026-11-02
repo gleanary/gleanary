@@ -127,7 +127,7 @@ Each step below (marked with its status) keeps Gleanary working (it must still f
 reach the AI providers, and poll IMAP for newsletters), in order of risk:
 
 1. _(done)_ **Resource limits** (no breakage risk): `mem_limit` around 1.5 GB (the heap is capped at
-   1 GB for PDF parsing), `pids_limit: 256`, a `cpus` cap. Limits crypto-mining and fork bombs.
+   1 GB for PDF parsing), `pids_limit: 256`. Limits fork bombs and memory exhaustion. No `cpus` cap: a value above the host's core count stops the container from starting (the server has 1 vCPU), where it would limit nothing.
 2. _(done)_
    **Never run as root, drop capabilities**: `USER nextjs` in the Dockerfile, remove the
    `chown` and `su-exec` from `start.sh`, and add `cap_drop: [ALL]` and

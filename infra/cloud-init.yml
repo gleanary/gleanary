@@ -69,7 +69,6 @@ runcmd:
         cap_drop: [ALL]
         security_opt: ['no-new-privileges:true']
         mem_limit: 1536m
-        cpus: 1.5
         pids_limit: 256
         networks:
           - internal

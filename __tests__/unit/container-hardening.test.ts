@@ -33,7 +33,8 @@ const APP_SERVICES = [
 
 // ADR-010 runtime hardening. The server's compose, the self-host compose and CI's
 // docker-smoke run must agree, or the smoke test stops catching writes that would
-// fail in production (only the server sets a CPU cap: hosts differ in core count).
+// fail in production. No CPU cap: `cpus` above the host's core count stops the
+// container from starting, and on a 1-vCPU server it limits nothing.
 const HARDENING = [
   'read_only: true',
   '- /tmp:size=64m',
@@ -44,9 +45,15 @@ const HARDENING = [
   'pids_limit: 256',
 ];
 
+const FORBIDDEN = ['cpus:'];
+
 describe.each(APP_SERVICES)('$name app service', ({ lines }) => {
   it.each(HARDENING)('sets %s', (setting) => {
     expect(lines).toContain(setting);
+  });
+
+  it.each(FORBIDDEN)('does not set %s', (key) => {
+    expect(lines.some((line) => line.startsWith(key))).toBe(false);
   });
 
   it.each(['db', 'tts-cache', 'originals'])('bind-mounts /data/%s', (dir) => {
