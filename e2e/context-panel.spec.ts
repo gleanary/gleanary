@@ -1,7 +1,7 @@
 import { test, expect, type Page } from '@playwright/test';
 import { readFileSync } from 'fs';
 import { join } from 'path';
-import { waitForApiResponse } from './utils';
+import { HIGHLIGHT_WRITER_LOCKS, waitForApiResponse, waitForMarks } from './utils';
 
 // Narrow enough that the 320px panel (and the 280px sidebar) narrow the 680px reader
 // column, so toggling really reflows the text. At the default 1280px nothing would move.
@@ -340,3 +340,244 @@ test.describe('Context panel (desktop side sheet)', () => {
     expect(new URL(page.url()).pathname).toBe(`/reader/${id}`);
   });
 });
+
+test.describe(
+  'Context panel (mobile bottom sheet)',
+  // Creates a highlight and deletes its article (cascade) during cleanup
+  { lock: HIGHLIGHT_WRITER_LOCKS.contextPanelSheet },
+  () => {
+    test.use({ viewport: { width: 390, height: 844 }, hasTouch: true });
+
+    const createdIds: number[] = [];
+
+    test.afterEach(async ({ page }) => {
+      for (const id of createdIds.splice(0)) {
+        await page.request.delete(`/api/articles/${id}`).catch(() => {});
+      }
+    });
+
+    // While the modal sheet is open, Radix hides the rest of the page from the
+    // accessibility tree, so the trigger is looked up by test id here.
+    const sheetTrigger = (page: Page) => page.getByTestId('context-panel-trigger');
+    const sheet = (page: Page) => page.getByTestId('context-panel-sheet');
+    const sheetBody = (page: Page) => page.getByTestId('context-panel-sheet-body');
+
+    async function createArticle(page: Page, title: string, contentHtml = LONG_HTML) {
+      const res = await page.request.post('/api/articles', {
+        data: {
+          url: `https://example.com/e2e-context-sheet-${Date.now()}-${Math.random()}`,
+          title,
+          contentHtml,
+          contentText: contentHtml.replace(/<[^>]+>/g, ' '),
+          status: 'inbox',
+        },
+      });
+      expect(res.ok()).toBe(true);
+      const { article } = await res.json();
+      createdIds.push(article.id);
+      return article.id as number;
+    }
+
+    async function openReader(page: Page, id: number) {
+      await page.goto(`/reader/${id}`);
+      await expect(page.getByTestId('article-content').first()).toBeVisible({ timeout: 10_000 });
+      await expect(sheetTrigger(page)).toBeVisible({ timeout: 10_000 });
+    }
+
+    async function openSheet(page: Page) {
+      await sheetTrigger(page).tap();
+      await expect(sheet(page)).toBeVisible();
+      await expect(sheetTrigger(page)).toHaveAttribute('aria-expanded', 'true');
+    }
+
+    /** Makes the sheet body overflow so it can scroll (the v1 placeholder content is short). */
+    async function makeBodyTall(page: Page) {
+      await sheetBody(page).evaluate((body) => {
+        const filler = document.createElement('div');
+        filler.style.height = '3000px';
+        body.appendChild(filler);
+      });
+    }
+
+    /**
+     * A real touch drag through the browser input pipeline (CDP), so native scrolling and
+     * passive/non-passive listener behavior apply. A mouse drag can't reproduce this.
+     */
+    async function touchDrag(
+      page: Page,
+      from: { x: number; y: number },
+      to: { x: number; y: number },
+      steps = 12,
+    ) {
+      const cdp = await page.context().newCDPSession(page);
+      await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [from] });
+      for (let i = 1; i <= steps; i++) {
+        await cdp.send('Input.dispatchTouchEvent', {
+          type: 'touchMove',
+          touchPoints: [
+            {
+              x: from.x + ((to.x - from.x) * i) / steps,
+              y: from.y + ((to.y - from.y) * i) / steps,
+            },
+          ],
+        });
+      }
+      await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+      await cdp.detach();
+    }
+
+    test('the trigger fits a 375px toolbar and opens the sheet; X and backdrop close it', async ({
+      page,
+    }) => {
+      await page.setViewportSize({ width: 375, height: 812 });
+      const id = await createArticle(page, 'E2E Context Sheet Open');
+      await openReader(page, id);
+      const box = await sheetTrigger(page).boundingBox();
+      expect(box!.x + box!.width).toBeLessThanOrEqual(375);
+
+      await openSheet(page);
+      await expect(sheet(page)).toContainText('Details');
+      await expect(sheet(page)).toContainText('About');
+      // Above the highlight popover (z-[70]) and the TTS player (z-20)
+      await expect(sheet(page)).toHaveCSS('z-index', '80');
+      // The side sheet does not push the content on mobile
+      await expect(wrapper(page)).toHaveCSS('margin-right', '0px');
+
+      await sheet(page).getByRole('button', { name: 'Close details panel' }).tap();
+      await expect(sheet(page)).toBeHidden();
+      await expect(sheetTrigger(page)).toHaveAttribute('aria-expanded', 'false');
+
+      await openSheet(page);
+      // The backdrop covers everything above the sheet
+      await page.touchscreen.tap(187, 40);
+      await expect(sheet(page)).toBeHidden();
+    });
+
+    test('a mouse drag on the handle past 25% of the height closes it', async ({ page }) => {
+      const id = await createArticle(page, 'E2E Context Sheet Handle Drag');
+      await openReader(page, id);
+      await openSheet(page);
+
+      const handle = await page.getByTestId('context-panel-sheet-handle').boundingBox();
+      const sheetBox = await sheet(page).boundingBox();
+      const x = handle!.x + handle!.width / 2;
+      const y = handle!.y + handle!.height / 2;
+      await page.mouse.move(x, y);
+      await page.mouse.down();
+      await page.mouse.move(x, y + sheetBox!.height * 0.5, { steps: 10 });
+      await page.mouse.up();
+      await expect(sheet(page)).toBeHidden();
+    });
+
+    test('a downward touch drag on the body at the top closes the sheet', async ({ page }) => {
+      const id = await createArticle(page, 'E2E Context Sheet Body Drag');
+      await openReader(page, id);
+      await openSheet(page);
+      await makeBodyTall(page);
+      expect(await sheetBody(page).evaluate((el) => el.scrollTop)).toBe(0);
+
+      const body = await sheetBody(page).boundingBox();
+      const x = body!.x + body!.width / 2;
+      await touchDrag(page, { x, y: body!.y + 30 }, { x, y: body!.y + 430 });
+      await expect(sheet(page)).toBeHidden();
+    });
+
+    test('a touch drag inside a scrolled body scrolls it instead of dismissing', async ({
+      page,
+    }) => {
+      const id = await createArticle(page, 'E2E Context Sheet Body Scroll');
+      await openReader(page, id);
+      await openSheet(page);
+      await makeBodyTall(page);
+      await sheetBody(page).evaluate((el) => {
+        el.scrollTop = 1200;
+      });
+
+      const body = await sheetBody(page).boundingBox();
+      const x = body!.x + body!.width / 2;
+      await touchDrag(page, { x, y: body!.y + 30 }, { x, y: body!.y + 330 });
+      await page.waitForTimeout(500);
+      expect(await sheetBody(page).evaluate((el) => el.scrollTop)).toBeLessThan(1200);
+      await expect(sheet(page)).toBeVisible();
+      await expect(sheet(page)).toHaveCSS('transform', 'none');
+    });
+
+    test('opening the sheet exits highlight edit mode, and the sheet sits above the popover', async ({
+      page,
+    }) => {
+      const id = await createArticle(page, 'E2E Context Sheet Highlight', articleHtml(8));
+      const hl = await page.request.post('/api/highlights', {
+        data: { articleId: id, text: 'Paragraph 3. The quick brown fox jumps over the lazy dog' },
+      });
+      expect(hl.ok()).toBe(true);
+      await openReader(page, id);
+      await waitForMarks(page);
+
+      await page.locator('mark[data-highlight-id]').first().tap();
+      await expect(page.getByTestId('highlight-popover')).toBeVisible({ timeout: 3_000 });
+
+      await sheetTrigger(page).tap();
+      await expect(sheet(page)).toBeVisible();
+      await expect(page.getByTestId('highlight-popover')).toBeHidden();
+      // The edit was saved, not discarded: the highlight is still there
+      await expect(page.locator('mark[data-highlight-id]').first()).toBeAttached();
+    });
+
+    test('the left-edge swipe does not open the sidebar while the sheet is open', async ({
+      page,
+    }) => {
+      const id = await createArticle(page, 'E2E Context Sheet Swipe');
+      await openReader(page, id);
+      await openSheet(page);
+
+      await touchDrag(page, { x: 5, y: 300 }, { x: 260, y: 300 });
+      await page.waitForTimeout(300);
+      expect(await page.evaluate(() => localStorage.getItem('sidebar-open'))).not.toBe('true');
+      await expect(sheet(page)).toBeVisible();
+    });
+
+    test('is closed after navigating to another article', async ({ page }) => {
+      const first = await createArticle(page, `E2E Context Sheet Nav A ${Date.now()}`);
+      const second = await createArticle(page, `E2E Context Sheet Nav B ${Date.now()}`);
+
+      await page.goto('/');
+      await page.locator(`a[href="/reader/${first}"]`).click();
+      await page.waitForURL(`/reader/${first}`);
+      await expect(sheetTrigger(page)).toBeVisible({ timeout: 10_000 });
+      await openSheet(page);
+
+      // Client-side navigation away and into another article
+      await page.goBack();
+      await page.waitForURL('/');
+      await page.locator(`a[href="/reader/${second}"]`).click();
+      await page.waitForURL(`/reader/${second}`);
+      await expect(page.getByTestId('article-title')).toContainText('Nav B');
+      await expect(sheetTrigger(page)).toBeVisible({ timeout: 10_000 });
+      await expect(sheetTrigger(page)).toHaveAttribute('aria-expanded', 'false');
+      await expect(sheet(page)).toHaveCount(0);
+    });
+
+    test('crossing to desktop width while open closes the panel', async ({ page }) => {
+      const id = await createArticle(page, 'E2E Context Sheet Resize');
+      await openReader(page, id);
+      await openSheet(page);
+
+      await page.setViewportSize({ width: 900, height: 844 });
+      await expect(sheet(page)).toHaveCount(0);
+      await expect(trigger(page)).toHaveAttribute('aria-expanded', 'false');
+      await expect(wrapper(page)).toHaveCSS('margin-right', '0px');
+    });
+
+    test('Escape closes the sheet without navigating back', async ({ page }) => {
+      const id = await createArticle(page, 'E2E Context Sheet Escape');
+      await page.goto('/');
+      await openReader(page, id);
+      await openSheet(page);
+
+      await page.keyboard.press('Escape');
+      await expect(sheet(page)).toBeHidden();
+      await page.waitForTimeout(500);
+      expect(new URL(page.url()).pathname).toBe(`/reader/${id}`);
+    });
+  },
+);

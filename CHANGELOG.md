@@ -8,6 +8,8 @@ All notable changes to this project will be documented in this file.
 
 - **Context panel shell** (module 22, session 1): desktop push side sheet toggled from the reader toolbar or Cmd/Ctrl+Shift+\, one side panel at a time, keeps your place while toggling.
 
+- **Context panel on mobile** (module 22, session 2): the details panel opens as a bottom sheet below 768px; swipe down, tap outside or press X to close. With reduced motion it fades in place instead of sliding.
+
 - **CI builds and boots the production Docker image** (#101): a new `Docker image smoke test` job in `ci.yml` builds `docker/Dockerfile` for linux/amd64 (not pushed) on PRs that touch `package*.json`, `ci.yml`, `docker/**`, `next.config.*`, `.dockerignore` or the start/migrate scripts, migrates a fresh DB and asserts `/api/health` reports `db: connected`, so a native module missing its musl binary fails the PR instead of Deploy. It succeeds as a no-op otherwise, and deps-agent's gate now requires it.
 
 - **deps-agent reacts to `/deps` commands**: 👍 when it carries the command out, 😕 when it cannot parse or refuses it (its reply says why), like Dependabot acknowledges its own commands.
@@ -17,6 +19,8 @@ All notable changes to this project will be documented in this file.
 - **Shared articles open automatically after saving** (mobile-save): when `/save` is opened from the Android share sheet (or an iOS Shortcut), a successful or duplicate save now navigates straight to `/reader/<id>` (history-replacing, so Back doesn't re-save); the URL is also extracted from the share `text` param (`"Title https://…"`) via `extractSharedUrl()`. Manual saves are unchanged.
 
 ### Changed
+
+- **Context panel place-keeping moved out of the reader** (module 22, refactor): the anchor capture, TTS sync, layout-key restore and unmount cleanup now live in `src/hooks/use-panel-place-keeping.ts`, with behavior unchanged; `clampScrollY` and `RESTORE_CANCEL_EVENTS` moved to `src/lib/scroll-progress.ts`.
 
 - **Container egress firewall** (#43, ADR-010 step 4): cloud-init installs `gleanary-egress`, which limits containers' new outbound connections to DNS, HTTP(S) and IMAPS on public addresses (no private ranges, no cloud metadata), re-applied whenever Docker starts. See architecture.md §8.5; existing servers install it by hand.
 - **Production container runs hardened, with all its data on the host** (#43): the server compose (`infra/cloud-init.yml`) and `docker/compose.yml` bind-mount `tts-cache` and `originals` next to `db` (no more orphaned anonymous volume; the image drops `VOLUME /data`) and run the app read-only with no capabilities, `no-new-privileges` and memory/pid limits (ADR-010; no CPU cap, which a 1-vCPU host rejects); CI's docker-smoke boots the image the same way, and `container-hardening.test.ts` keeps the three in sync. Existing servers apply the compose change by hand (architecture.md §8.7); self-hosters on `docker/compose.yml` copy `tts-cache/` and `originals/` out of the old anonymous `/data` volume into `data/` first.

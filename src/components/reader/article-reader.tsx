@@ -1,30 +1,23 @@
 'use client';
 
-import { useEffect, useLayoutEffect, useRef } from 'react';
+import { useEffect, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import { patchArticle } from '@/lib/article-api';
-import { getScrollableHeight, getScrollProgress, progressToScrollY } from '@/lib/scroll-progress';
+import {
+  clampScrollY,
+  getScrollableHeight,
+  getScrollProgress,
+  progressToScrollY,
+  RESTORE_CANCEL_EVENTS,
+} from '@/lib/scroll-progress';
 import { anchorToScrollY, computeReadingAnchor, getContentContainer } from '@/lib/reading-anchor';
-import { capturePanelAnchor, panelAnchorToScrollY } from '@/lib/panel-anchor';
 import { useArticle } from '@/components/reader/article-context';
-import { useOptionalTTS } from '@/components/reader/tts-provider';
-import { useOptionalContextPanel } from '@/components/layout/context-panel-context';
-import type { PanelAnchor, ReadingAnchor } from '@/types';
+import { usePanelPlaceKeeping } from '@/hooks/use-panel-place-keeping';
+import type { ReadingAnchor } from '@/types';
 
 const PROGRESS_DEBOUNCE_MS = 5_000;
 /** How long after mount late layout (images, KaTeX) may re-apply the restored position. */
 const RESTORE_WINDOW_MS = 3_000;
-/**
- * User input that hands scrolling back to the reader, ending the restore window. Scrolls
- * also end it (see `onScroll`); these catch input before, or without, a scroll.
- */
-const RESTORE_CANCEL_EVENTS = ['wheel', 'touchstart', 'keydown', 'pointerdown'] as const;
-/** A panel restore ends once the slide is over and layout has been quiet this long. */
-const PANEL_RESTORE_QUIET_MS = 300;
-/** Hard cap on a panel restore (e.g. when `transitionend` never fires). */
-const PANEL_RESTORE_MAX_MS = 1_500;
-/** Trailing programmatic scroll events after a panel restore stops are still ignored. */
-const PANEL_TRANSITION_SETTLE_MS = 200;
 
 /**
  * Content anchor at the given scroll offset, or null when there is no `.article-content`
@@ -49,11 +42,6 @@ function progressUpdate(progress: number, scrollY: number) {
   };
 }
 
-/** Clamps a scroll offset to the scrollable range, like the browser clamps scrollTo. */
-function clampScrollY(top: number): number {
-  return Math.min(Math.max(top, 0), getScrollableHeight());
-}
-
 /** Returns scroll progress as a 0–1 float (rounded to 2 decimals), or null if page is not scrollable. */
 function getRoundedScrollProgress(): number | null {
   const progress = getScrollProgress();
@@ -65,6 +53,7 @@ function getRoundedScrollProgress(): number | null {
  * - Reading progress tracking (scroll → percentage + content anchor → debounced PATCH)
  * - Scroll restore to the saved content anchor (ratio fallback), re-applied on late layout
  * - Keeping the place when a side panel (context panel, sidebar) changes the column width
+ *   (see `usePanelPlaceKeeping`)
  * - Auto-mark as "reading" when opened from inbox
  * - Keyboard shortcut: Escape to go back
  */
@@ -79,20 +68,8 @@ export function ArticleReader({ children }: { children: React.ReactNode }) {
   const stopRestore = useRef<(() => void) | null>(null);
   const debounceTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const isResettingProgress = useRef(false);
-
-  // Place-keeping across side-panel width changes (null outside the app shell)
-  const contextPanel = useOptionalContextPanel();
-  const layoutKey = contextPanel?.layoutKey ?? null;
-  const contentWrapperRef = contextPanel?.contentWrapperRef;
-  const tts = useOptionalTTS();
-  const isTTSPlaying = useRef(false);
-  // Position at the viewport top, kept current by a throttled scroll listener
-  const lastAnchor = useRef<PanelAnchor | null>(null);
-  // Set while a panel transition reflows the page: progress and anchor tracking pause
+  // Set by usePanelPlaceKeeping while a panel transition reflows the page
   const isPanelTransitioning = useRef(false);
-  const stopPanelRestore = useRef<(() => void) | null>(null);
-  const panelSettleTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const prevLayoutKey = useRef(layoutKey);
 
   // Auto-mark as "reading" if status is "inbox". Conditional on the server still seeing
   // "inbox" so a late request never downgrades a status set meanwhile (e.g. archived).
@@ -236,100 +213,11 @@ export function ArticleReader({ children }: { children: React.ReactNode }) {
     };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps -- run once on mount only
 
-  // Last known anchor: captured on scroll (once per frame), seeded once after mount.
-  // Frozen during a panel transition so reflow scrolls never overwrite it.
-  const hasContextPanel = layoutKey !== null;
-  useEffect(() => {
-    if (!hasContextPanel) return;
-    let rafId: number | null = null;
-    const capture = () => {
-      rafId = null;
-      if (!isPanelTransitioning.current) lastAnchor.current = capturePanelAnchor();
-    };
-    const onScroll = () => {
-      if (rafId === null) rafId = requestAnimationFrame(capture);
-    };
-    rafId = requestAnimationFrame(capture);
-    window.addEventListener('scroll', onScroll, { passive: true });
-    return () => {
-      window.removeEventListener('scroll', onScroll);
-      if (rafId !== null) cancelAnimationFrame(rafId);
-    };
-  }, [hasContextPanel]);
-
-  useLayoutEffect(() => {
-    isTTSPlaying.current = tts?.status === 'playing';
+  // Called after the mount restore so its effects run after it (anchor seeded post-restore)
+  usePanelPlaceKeeping({
+    mountRestoreRef: stopRestore,
+    isPanelTransitioning,
   });
-
-  // A side panel opened or closed: the column width changes and the text reflows. Keep
-  // the last known anchor at the viewport top until the slide is over and layout is quiet
-  // (PDF pages re-render after a debounced width update, well after transitionend).
-  useLayoutEffect(() => {
-    if (prevLayoutKey.current === layoutKey) return;
-    prevLayoutKey.current = layoutKey;
-    // The mount restore owns the position during its window (its observer handles the reflow)
-    if (stopRestore.current) return;
-    // TTS auto-scroll owns the position while playing
-    if (isTTSPlaying.current) return;
-    const anchor = lastAnchor.current;
-    if (!anchor) return;
-
-    stopPanelRestore.current?.();
-    if (panelSettleTimer.current) clearTimeout(panelSettleTimer.current);
-    isPanelTransitioning.current = true;
-
-    const wrapper = contentWrapperRef?.current ?? null;
-    let transitionEnded = false;
-    let quietTimer: ReturnType<typeof setTimeout> | null = null;
-    const restore = () => {
-      const top = panelAnchorToScrollY(anchor);
-      if (top !== null) window.scrollTo({ top: clampScrollY(top), behavior: 'instant' });
-    };
-    const armQuietTimer = () => {
-      if (quietTimer) clearTimeout(quietTimer);
-      quietTimer = setTimeout(() => {
-        if (transitionEnded) stop();
-      }, PANEL_RESTORE_QUIET_MS);
-    };
-    const onResize = () => {
-      restore();
-      armQuietTimer();
-    };
-    const onTransitionEnd = (e: TransitionEvent) => {
-      if (e.target !== wrapper) return;
-      transitionEnded = true;
-      restore();
-      armQuietTimer();
-    };
-    const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(onResize);
-    const container = getContentContainer();
-    if (container) observer?.observe(container);
-    observer?.observe(document.documentElement);
-    wrapper?.addEventListener('transitionend', onTransitionEnd);
-    const capTimer = setTimeout(stop, PANEL_RESTORE_MAX_MS);
-    RESTORE_CANCEL_EVENTS.forEach((type) => window.addEventListener(type, stop, { passive: true }));
-
-    function stop() {
-      observer?.disconnect();
-      wrapper?.removeEventListener('transitionend', onTransitionEnd);
-      if (quietTimer) clearTimeout(quietTimer);
-      clearTimeout(capTimer);
-      RESTORE_CANCEL_EVENTS.forEach((type) => window.removeEventListener(type, stop));
-      stopPanelRestore.current = null;
-      panelSettleTimer.current = setTimeout(() => {
-        isPanelTransitioning.current = false;
-      }, PANEL_TRANSITION_SETTLE_MS);
-    }
-    stopPanelRestore.current = stop;
-  }, [layoutKey, contentWrapperRef]);
-
-  useEffect(
-    () => () => {
-      stopPanelRestore.current?.();
-      if (panelSettleTimer.current) clearTimeout(panelSettleTimer.current);
-    },
-    [],
-  );
 
   // Scroll to top and reset tracking refs when the user explicitly resets progress.
   // Uses progressResetKey (incremented by the toolbar) so this only fires on real

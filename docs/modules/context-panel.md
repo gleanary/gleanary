@@ -1,9 +1,9 @@
 # Module: Context Panel
 
-**Status**: In progress (Session 1 done: shell, desktop side sheet, place-keeping)
+**Status**: In progress (Sessions 1–2 done: shell, desktop side sheet, place-keeping, mobile bottom sheet)
 **Last verified against code**: 2026-11-02 (spec revision 3, checked against `main` @ `d59f809`)
 **Schema tables**: `articles`, `sources` (reads only — no schema change); `tags` is no longer written by `POST /api/ai/tag`
-**Unimplemented sections**: §5.3 bottom sheet (Session 2); §5.5, §5.6, §6, §4.1 (Session 3)
+**Unimplemented sections**: §5.5, §5.6, §6, §4.1 (Session 3)
 
 > **Session 2 decision (slot)**: one portal slot is enough. Switching between the side and bottom presentations remounts the portaled widgets, and that is accepted: crossing 768px already closes the panel (§5.1), so the widgets remount on reopen either way. The only state at risk is an in-flight Generate request, and §5.6 keeps it safe by applying results through `ArticleContext.updateArticle`, which is not remounted.
 
@@ -104,9 +104,11 @@ interface ContextPanelContextValue {
 }
 ```
 
-- The mobile sheet uses its own `isSheetOpen` state. That state resets to `false` when the route changes. The desktop `isOpen` flag is unaffected.
+- One `isOpen` flag serves both presentations: crossing `md` closes the panel, so it never carries over. On mobile (`isSheetOpen = isOpen && presentation === 'bottom'`) it resets to `false` when the route changes or the page drops its content (`usePathname`, in the same render-time adjust block as the sidebar and `md` checks); on desktop it survives navigation.
+- Callers (trigger, shortcut) never branch on presentation: `open()` closes the sidebar and opens the current presentation (only the side sheet honours `focusPanel`; Radix focuses the modal sheet), `toggle()` and `close()` act on the one flag.
+- As implemented, the value also exposes `isSheetOpen`, `hasContent` (`contentTitle !== null`: drives the trigger and the shortcut in both presentations) and `isAvailable` (`hasContent && presentation === 'side'`: drives the aside and the push margin). `isSheetOpenRef` mirrors `isSheetOpen` for `AppShell`'s swipe listener. The sheet's dialog id is `CONTEXT_PANEL_SHEET_ID` (the trigger's `aria-controls` on mobile).
 - `presentation` uses `useSyncExternalStore` over `matchMedia`. The server snapshot is `'side'` with `isOpen = false`, so nothing renders on the server and there is no hydration mismatch.
-- If the viewport crosses `md` while the panel is open, the panel **closes** (both flags). A layout change should never pop up a modal.
+- If the viewport crosses `md` while the panel is open, the panel **closes**. A layout change should never pop up a modal.
 
 ### 5.2 Content registration — `useContextPanelContent(tabs)`
 
@@ -142,7 +144,7 @@ Rendered once by `AppShell`. It renders one of two presentations.
 - **Slot**: the context keeps a single `slotEl`, set by whichever presentation is mounted: the side sheet's body on desktop, the bottom sheet's body while it is open on mobile. No element is moved between containers; switching presentation remounts the portaled widgets, which is accepted (see the header note).
 - Built on the existing Radix `Dialog` primitive (`radix-ui`, already a dependency). That gives focus trap, Escape, backdrop-click and `aria-modal` for free. **No new dependency** (no `vaul`).
 - Sheet: `fixed inset-x-0 bottom-0`, `max-h-[85dvh]`, rounded top corners, a grab handle at the top, an X button in the header, and a scrollable body. Padding includes `env(safe-area-inset-bottom)`.
-- **Swipe to dismiss** uses pointer events on the handle and header. It also works on the body when the body's `scrollTop === 0` and the drag is downward. The sheet follows the finger (`translateY`). On release it closes if the drag is > 25% of the sheet height or the velocity is > 0.5 px/ms; otherwise it springs back.
+- **Swipe to dismiss** (`src/hooks/use-sheet-drag.ts`) uses pointer events on the handle and header (`touch-action: none`; presses on the X button are ignored so it still gets its click). On the body, input goes through native listeners (the body's content is portaled in from another React tree, so React's synthetic events never reach the body element, and React's `onTouchMove` is passive): a non-passive `touchmove` listener, plus pointer listeners that take mouse input only (so touch is never handled twice). A gesture that starts with `scrollTop === 0` and moves mostly down (vertical travel greater than horizontal) is `preventDefault`ed and drives the drag; any other gesture is classified as a scroll for its whole duration and left to the browser. A second finger during a drag cancels it. The sheet follows the finger (`translateY`). On release it closes if the drag is > 25% of the sheet height, or if the velocity over the last 100 ms is > 0.5 px/ms and the drag is at least 10 px, so a jittery tap never dismisses (`shouldDismissSheet`); otherwise it springs back (200 ms ease-out, an instant snap under reduced motion).
 - z-index: **above everything in the reader** (`z-[80]` for backdrop and sheet). It must sit above the highlight popover (`z-[70]`), the progress bar (`z-50`), the undo toast (`z-50`) and the TTS player (`z-20`).
 - While the sheet is open, `AppShell`'s left-edge swipe gesture is ignored, so the sidebar can't open under a modal.
 
@@ -268,7 +270,7 @@ Both are covered in Session 1. The panel itself is the same in every view.
 - The shortcut mirrors the left sidebar's `Cmd/Ctrl+\`, with Shift for the other side. Match on **`e.code === 'Backslash'`**, not `e.key`, because Shift turns `e.key` into `|` on QWERTY. No browser binds this combination.
 - It is handled in `AppShell`'s existing keydown listener and ignored when `content === null`.
 - **Escape conflict**: `ArticleReader` binds Escape to `router.back()`. The panel's Escape handler is a `window` listener in the **capture** phase (so it runs before the `document`-capture handlers in `highlight-layer` and `tts-player`) and calls `preventDefault()`. `ArticleReader`, `highlight-layer` and `tts-player` return early when `e.defaultPrevented`. Without this, closing the panel also navigates away.
-- **Escape scope**: the panel's Escape handler closes the desktop panel only when focus is inside it. Escape from the article keeps its current meaning (back). On mobile, Radix Dialog owns Escape.
+- **Escape scope**: the panel's Escape handler closes the desktop panel only when focus is inside it. Escape from the article keeps its current meaning (back). On mobile, Radix Dialog owns Escape: its dismissable layer calls `preventDefault()` before closing, so `ArticleReader` does not navigate back. `tts-player` ignores every key whose target is inside a `[role="dialog"]`; otherwise its `document`-capture listener would stop playback and `preventDefault()` first, and Radix would skip the dismiss.
 - **AZERTY note**: on French layouts `\` sits on AltGr/Option combinations, so both the existing left shortcut and this one are awkward there. Out of scope for v1 (it affects both panels). Tracked in §11.
 
 ---
@@ -287,7 +289,7 @@ Both are covered in Session 1. The panel itself is the same in every view.
 - **Mobile sheet + highlight edit mode**: opening the sheet exits highlight edit mode (saving, as click-outside already does), so the popover and drag handles don't linger under the backdrop.
 - **Mobile sheet + body scroll**: lock background scroll while the sheet is open (Radix `Dialog` does this).
 - **Pages without a panel**: the trigger is hidden, the shortcut does nothing, and the content wrapper has no right margin, even if `isOpen` is still true from an earlier reader visit.
-- **Reduced motion**: under `prefers-reduced-motion`, the slide and sheet transitions drop to opacity only, and the swipe-to-dismiss follow is kept.
+- **Reduced motion**: under `prefers-reduced-motion`, the bottom sheet fades instead of sliding, and the swipe-to-dismiss follow is kept. The side sheet and the content wrapper's margin both switch instantly (no transition), so the panel never overlaps the text mid-fade.
 
 ---
 

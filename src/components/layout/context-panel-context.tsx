@@ -5,16 +5,21 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
   useSyncExternalStore,
 } from 'react';
 import type { ReactNode, RefObject } from 'react';
+import { usePathname } from 'next/navigation';
 import { useSidebar } from './sidebar-context';
 
 /** Width of the desktop side sheet, in px. */
 export const CONTEXT_PANEL_WIDTH = 320;
+
+/** DOM id of the mobile sheet's dialog content (the trigger's `aria-controls` on mobile). */
+export const CONTEXT_PANEL_SHEET_ID = 'context-panel-sheet';
 
 /** Same breakpoint as Tailwind `md` (the left sidebar's backdrop breakpoint). */
 const DESKTOP_QUERY = '(min-width: 768px)';
@@ -27,23 +32,33 @@ interface ContextPanelOpenOptions {
 }
 
 interface ContextPanelContextValue {
-  /** Desktop session flag. In memory: survives client navigation, resets on reload. */
+  /**
+   * Whether the panel of the current presentation is open. In memory: on desktop it
+   * survives client navigation and resets on reload; crossing `md` closes it.
+   */
   isOpen: boolean;
+  /** `isOpen` on mobile (the modal sheet). Starts closed and closes on every route change. */
+  isSheetOpen: boolean;
+  /** Opens the panel of the current presentation (side sheet or bottom sheet). */
   open: (options?: ContextPanelOpenOptions) => void;
+  /** Closes the panel. */
   close: () => void;
+  /** Toggles the panel of the current presentation. */
   toggle: (options?: ContextPanelOpenOptions) => void;
   /** 'side' (≥ md) or 'bottom' (< md); derived from matchMedia, never stored. */
   presentation: ContextPanelPresentation;
   /** Header title registered by the current page; null = the page has no context panel. */
   contentTitle: string | null;
   setContentTitle: (title: string | null) => void;
-  /** Whether the panel can be shown at all (content registered, desktop presentation). */
+  /** Whether the page registered content (drives the trigger and shortcut on both presentations). */
+  hasContent: boolean;
+  /** Whether the side sheet can be shown (content registered, desktop presentation). */
   isAvailable: boolean;
   /** Whether the side sheet is actually shown (open and available): drives the push margin. */
   isVisible: boolean;
   /** Changes whenever the effective left/right content margins change. */
   layoutKey: string;
-  /** Body slot element of the shell; pages portal their tabs into it. */
+  /** Body slot of the mounted presentation (side sheet, or the open bottom sheet); pages portal their tabs into it. */
   slotEl: HTMLDivElement | null;
   setSlotEl: (el: HTMLDivElement | null) => void;
   /** Set by an open that asked for focus; consumed (and cleared) by the shell. */
@@ -78,7 +93,8 @@ function getServerPresentation(): ContextPanelPresentation {
  * Provides the context panel state. Must be mounted inside `SidebarProvider`: opening the
  * panel closes the sidebar (persisted as usual), and the sidebar going from closed to
  * open — by any entry point, since all of them write the one sidebar store — closes the
- * panel. Crossing below `md` while open closes it too.
+ * panel. Crossing `md` either way while open closes it too, and a route change closes the
+ * mobile sheet (the desktop flag survives navigation).
  * @param props.children - The app shell and pages
  * @returns Context provider wrapping children
  */
@@ -89,6 +105,7 @@ export function ContextPanelProvider({ children }: { children: ReactNode }) {
     getPresentation,
     getServerPresentation,
   );
+  const pathname = usePathname();
   const [isOpen, setIsOpen] = useState(false);
   const [contentTitle, setContentTitle] = useState<string | null>(null);
   const [slotEl, setSlotEl] = useState<HTMLDivElement | null>(null);
@@ -97,23 +114,49 @@ export function ContextPanelProvider({ children }: { children: ReactNode }) {
   const contentWrapperRef = useRef<HTMLDivElement | null>(null);
   const isSheetOpenRef = useRef(false);
 
-  // Adjust state when an input changes, during render (no effect, no extra paint):
-  // the sidebar opening or the viewport crossing to mobile closes the panel.
-  const [prevInputs, setPrevInputs] = useState({ isSidebarOpen, presentation });
-  if (prevInputs.isSidebarOpen !== isSidebarOpen || prevInputs.presentation !== presentation) {
-    setPrevInputs({ isSidebarOpen, presentation });
+  // Adjust state when an input changes, during render (no effect, no extra paint): the
+  // sidebar opening or the viewport crossing `md` (either way) closes the panel, and a
+  // route change, or the page dropping its content, closes the mobile sheet (mobile always
+  // starts closed). Crossing closes the
+  // panel, so one flag serves both presentations.
+  const hasContent = contentTitle !== null;
+  const [prevInputs, setPrevInputs] = useState({
+    isSidebarOpen,
+    presentation,
+    pathname,
+    hasContent,
+  });
+  if (
+    prevInputs.isSidebarOpen !== isSidebarOpen ||
+    prevInputs.presentation !== presentation ||
+    prevInputs.pathname !== pathname ||
+    prevInputs.hasContent !== hasContent
+  ) {
+    setPrevInputs({ isSidebarOpen, presentation, pathname, hasContent });
     const sidebarOpened = isSidebarOpen && !prevInputs.isSidebarOpen;
-    const becameMobile = presentation === 'bottom' && prevInputs.presentation === 'side';
-    if (isOpen && (sidebarOpened || becameMobile)) setIsOpen(false);
+    const crossed = presentation !== prevInputs.presentation;
+    // The modal sheet never outlives its page or its content (else it would pop back open)
+    const sheetLeft =
+      presentation === 'bottom' && (pathname !== prevInputs.pathname || !hasContent);
+    if (isOpen && (sidebarOpened || crossed || sheetLeft)) setIsOpen(false);
   }
+
+  const isSheetOpen = isOpen && presentation === 'bottom';
+
+  // AppShell's swipe handler reads this ref (a stable listener, no re-subscription)
+  useLayoutEffect(() => {
+    isSheetOpenRef.current = isSheetOpen;
+  }, [isSheetOpen]);
 
   const open = useCallback(
     (options?: ContextPanelOpenOptions) => {
-      focusRequestRef.current = !!options?.focusPanel;
+      // Focus moves into the non-modal side sheet only on request; the modal sheet
+      // takes focus itself (Radix)
+      focusRequestRef.current = presentation === 'side' && !!options?.focusPanel;
       closeSidebar();
       setIsOpen(true);
     },
-    [closeSidebar],
+    [closeSidebar, presentation],
   );
   const close = useCallback(() => setIsOpen(false), []);
   const toggle = useCallback(
@@ -121,19 +164,21 @@ export function ContextPanelProvider({ children }: { children: ReactNode }) {
     [isOpen, open, close],
   );
 
-  const isAvailable = contentTitle !== null && presentation === 'side';
+  const isAvailable = hasContent && presentation === 'side';
   const isVisible = isOpen && isAvailable;
   const layoutKey = `${isSidebarOpen ? 'left' : ''}|${isVisible ? 'right' : ''}`;
 
   const value = useMemo(
     () => ({
       isOpen,
+      isSheetOpen,
       open,
       close,
       toggle,
       presentation,
       contentTitle,
       setContentTitle,
+      hasContent,
       isAvailable,
       isVisible,
       layoutKey,
@@ -146,11 +191,13 @@ export function ContextPanelProvider({ children }: { children: ReactNode }) {
     }),
     [
       isOpen,
+      isSheetOpen,
       open,
       close,
       toggle,
       presentation,
       contentTitle,
+      hasContent,
       isAvailable,
       isVisible,
       layoutKey,
