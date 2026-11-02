@@ -20,9 +20,7 @@ function makeArticle(fields: Partial<Article>): Article {
   return fields as Article;
 }
 
-// In-flight requests are tracked per article and kind for the whole page session, so
-// every test uses its own article id.
-let nextArticleId = 100;
+const ARTICLE_ID = 100;
 
 function jsonResponse(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), {
@@ -59,14 +57,6 @@ function ArticleProbe() {
   );
 }
 
-/** Makes the provider hold another article, as navigating to it would. */
-function SwitchArticle({ toId }: { toId: number }) {
-  const { updateArticle } = useArticle();
-  return (
-    <button onClick={() => updateArticle({ id: toId, aiSummary: null })}>switch article</button>
-  );
-}
-
 function Harness({
   kind,
   articleId,
@@ -82,15 +72,15 @@ function Harness({
       <button onClick={() => setShown((s) => !s)}>toggle widget</button>
       {shown && <GenerateAction kind={kind} aiAvailable={aiAvailable} />}
       <ArticleProbe />
-      <SwitchArticle toId={articleId + 10_000} />
     </ArticleProvider>
   );
 }
 
 function renderAction(kind: 'summary' | 'tags' = 'summary', aiAvailable = true) {
-  const articleId = nextArticleId++;
-  render(<Harness kind={kind} articleId={articleId} aiAvailable={aiAvailable} />);
-  return articleId;
+  const { unmount } = render(
+    <Harness kind={kind} articleId={ARTICLE_ID} aiAvailable={aiAvailable} />,
+  );
+  return unmount;
 }
 
 function probe(): { id: number; aiSummary: string | null; aiTags: string | null } {
@@ -110,7 +100,7 @@ describe('GenerateAction', () => {
   });
 
   it('pending: disables the button with a spinner label and sends one request', () => {
-    const articleId = renderAction();
+    renderAction();
     deferFetch();
 
     fireEvent.click(generateButton());
@@ -121,7 +111,7 @@ describe('GenerateAction', () => {
     const [url, init] = fetchMock.mock.calls[0]!;
     expect(url).toBe('/api/ai/summarize');
     expect(init?.method).toBe('POST');
-    expect(JSON.parse(String(init?.body))).toEqual({ articleId });
+    expect(JSON.parse(String(init?.body))).toEqual({ articleId: ARTICLE_ID });
   });
 
   it('success: applies the summary through the article context', async () => {
@@ -135,14 +125,14 @@ describe('GenerateAction', () => {
   });
 
   it('success (tags): posts to the tag route and stores the tags as JSON', async () => {
-    const articleId = renderAction('tags');
+    renderAction('tags');
     const request = deferFetch();
 
     fireEvent.click(generateButton());
     await request.resolve(jsonResponse(200, { tags: ['ai', 'Databases'] }));
 
     expect(fetchMock.mock.calls[0]![0]).toBe('/api/ai/tag');
-    expect(probe()).toEqual({ id: articleId, aiSummary: null, aiTags: '["ai","Databases"]' });
+    expect(probe()).toEqual({ id: ARTICLE_ID, aiSummary: null, aiTags: '["ai","Databases"]' });
   });
 
   it('error: shows the API message inline with a Retry button that retries', async () => {
@@ -224,18 +214,19 @@ describe('GenerateAction', () => {
     expect(probe().aiSummary).toBe('Remounted.');
   });
 
-  it('does not write a late result into another article', async () => {
-    const articleId = renderAction();
+  it('a result that settles after the provider unmounted is a no-op', async () => {
+    const unmount = renderAction();
     const request = deferFetch();
 
     fireEvent.click(generateButton());
     expect(pendingButton()).toBeTruthy();
-    click('switch article');
-    // The new article's status is idle right away, not the old article's pending
-    expect(generateButton().hasAttribute('disabled')).toBe(false);
+    // Navigating to another article remounts the reader page, and with it the provider
+    unmount();
     await request.resolve(jsonResponse(200, { summary: 'For the old article.', cached: false }));
 
-    expect(probe()).toEqual({ id: articleId + 10_000, aiSummary: null, aiTags: null });
+    // The next visit starts from the server's article and an idle request
+    render(<Harness kind="summary" articleId={ARTICLE_ID} />);
+    expect(probe()).toEqual({ id: ARTICLE_ID, aiSummary: null, aiTags: null });
     expect(generateButton().hasAttribute('disabled')).toBe(false);
     expect(screen.queryByRole('alert')).toBeNull();
   });

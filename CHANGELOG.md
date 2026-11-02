@@ -22,6 +22,8 @@ All notable changes to this project will be documented in this file.
 
 ### Changed
 
+- **Context panel Generate requests are owned by `ArticleProvider`**: request state and `generate()` come from `useArticle()`, the request lives in `generateArticleAi` (`src/lib/article-api.ts`), and `updateArticle` loses its optional `articleId` guard (the reader's providers are keyed per article). One behavior change: leaving an article while its Generate request runs drops that request's state, so coming back shows Generate again until the server-saved result appears on reload.
+
 - **Context panel place-keeping moved out of the reader** (module 22, refactor): the anchor capture, TTS sync, layout-key restore and unmount cleanup now live in `src/hooks/use-panel-place-keeping.ts`, with behavior unchanged; `clampScrollY` and `RESTORE_CANCEL_EVENTS` moved to `src/lib/scroll-progress.ts`.
 
 - **Container egress firewall** (#43, ADR-010 step 4): cloud-init installs `gleanary-egress`, which limits containers' new outbound connections to DNS, HTTP(S) and IMAPS on public addresses (no private ranges, no cloud metadata), re-applied whenever Docker starts. See architecture.md §8.5; existing servers install it by hand.

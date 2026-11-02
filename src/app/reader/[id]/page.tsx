@@ -77,7 +77,11 @@ export default async function ReaderPage({ params, searchParams }: ReaderPagePro
   }
 
   return (
-    <ArticleStatusProvider articleId={article.id} initialStatus={article.status as ArticleStatus}>
+    <ArticleStatusProvider
+      key={article.id}
+      articleId={article.id}
+      initialStatus={article.status as ArticleStatus}
+    >
       <ArticleProvider initialArticle={article}>
         <TTSProvider
           ttsEnabled={ttsEnabled}

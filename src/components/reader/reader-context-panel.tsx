@@ -1,11 +1,10 @@
 'use client';
 
-import { useEffect } from 'react';
 import { ContextPanelPortal } from '@/components/layout/context-panel';
 import { Field } from '@/components/context-panel/field';
 import { TextBlock } from '@/components/context-panel/text-block';
 import { TagList } from '@/components/context-panel/tag-list';
-import { GenerateAction, clearGenerateErrors } from '@/components/context-panel/generate-action';
+import { GenerateAction } from '@/components/context-panel/generate-action';
 import { useArticle } from '@/components/reader/article-context';
 import { formatDate, parseAiTags, readingTime } from '@/lib/text-utils';
 import type { Article, ContextPanelTab } from '@/types';
@@ -35,9 +34,6 @@ function lengthLabel({ wordCount, pageCount }: Article): string | null {
 export function ReaderContextPanel({ sourceName, aiAvailable }: ReaderContextPanelProps) {
   const { article } = useArticle();
   const aiTags = parseAiTags(article.aiTags);
-  // A failed Generate shows its error for this visit only
-  const articleId = article.id;
-  useEffect(() => () => clearGenerateErrors(articleId), [articleId]);
 
   const tabs: ContextPanelTab[] = [
     {

@@ -141,7 +141,6 @@ describe('ReaderContextPanel', () => {
   });
 
   it('Generate tags stores the tags as JSON in the article context and lists them', async () => {
-    // Its own article id: Generate requests are tracked per article for the page session
     const tags = ['machine learning', 'Databases'];
     fetchMock.mockResolvedValueOnce(
       new Response(JSON.stringify({ tags }), {

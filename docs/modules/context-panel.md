@@ -5,7 +5,7 @@
 **Schema tables**: `articles`, `sources` (reads only — no schema change); `tags` is no longer written by `POST /api/ai/tag`
 **Unimplemented sections**: none
 
-> **Session 2 decision (slot)**: one portal slot is enough. Switching between the side and bottom presentations remounts the portaled widgets, and that is accepted: crossing 768px already closes the panel (§5.1), so the widgets remount on reopen either way. The only state at risk is an in-flight Generate request, and §5.6 keeps it safe by applying results through `ArticleContext.updateArticle`, which is not remounted.
+> **Session 2 decision (slot)**: one portal slot is enough. Switching between the side and bottom presentations remounts the portaled widgets, and that is accepted: crossing 768px already closes the panel (§5.1), so the widgets remount on reopen either way. The only state at risk is an in-flight Generate request, and §5.6 keeps it safe by owning the request in `ArticleProvider`, which is not remounted.
 
 ---
 
@@ -190,8 +190,15 @@ The empty state for the summary and tags sections.
 
 - Idle: a short muted hint and a "Generate" `Button` (`variant="outline" size="sm"`, `Sparkles` icon).
 - Pending: button disabled with a spinner and the label "Generating…". Navigating away during the request leaves the server work running; the result is cached on the article.
-- **The request outlives the widget.** The panel widgets can remount (the presentation switches at 768px, see the header note), so the request must not be tied to the widget's lifetime: don't abort it on unmount, and apply the result through `ArticleContext.updateArticle` (owned by the reader page, never remounted), after checking that the response's `articleId` still matches the current article.
-- **As built**: requests live in a module-scope store in `generate-action.tsx`, keyed by `${kind}:${articleId}` and read through `useSyncExternalStore`, so a remounted widget sees the running request (spinner kept, no second request), and another article always starts idle. Errors are cleared when you leave the article (`clearGenerateErrors` on `ReaderContextPanel` unmount); running requests are kept. The result goes through `updateArticle(updates, articleId)`: the optional `articleId` makes `ArticleProvider` apply the update only while it still holds that article (checked inside the state updater). A failed `fetch` (offline, server restart) and an empty tag suggestion both end in the inline error, so the spinner always stops.
+- **The request outlives the widget.** The panel widgets can remount (the presentation switches at 768px, see the header note), so the request must not be tied to the widget's lifetime: it is not aborted on unmount, and its state lives above the widgets.
+- **Ownership: `ArticleProvider`.** The per-kind request state (`generateRequests`: pending, or error with its message) and `generate(kind)` live in `ArticleProvider` and are exposed through `useArticle()`; the request itself is `generateArticleAi(kind, articleId)` in `src/lib/article-api.ts`. Why the provider:
+  - It is the one owner whose lifetime matches the request's: it is never remounted while you stay on the article (the portaled widgets are), so a remounted widget still shows the spinner and no second request is sent.
+  - It remounts per article: the App Router remounts the `[id]` segment, and the reader page also keys its outermost provider (`ArticleStatusProvider`, which wraps `ArticleProvider`) by `article.id` so the guarantee is explicit. A result that settles after you navigate away reaches an unmounted provider and is dropped, so no `articleId` check is needed, and the next visit starts idle with no stale error.
+  - Trade-off: leaving an article while its request runs drops the request's state. Coming back shows Generate again (the server still saves the result, which appears on reload, and the summarize route returns the stored summary on a second click).
+  - Results apply through the provider's own state (`updateArticle`), so the article and the request state change together in one render.
+  - The request closure captures only the article id, not the article, so a request left running after navigation does not keep the previous article's content in memory.
+  - A failed `fetch` (offline, server restart) and an empty tag suggestion both end in the inline error, so the spinner always stops.
+  - An earlier version kept requests in a module-scope store keyed by article, with an optional `articleId` guard on `updateArticle`. It was replaced: two owners with different lifetimes needed a guard on the shared context API that every async caller had to remember, and errors needed manual clearing.
 - Success: the parent updates the article through `ArticleContext.updateArticle({ aiSummary })` / `({ aiTags })`. The section re-renders with the content. No full page refresh.
 - Error: the error message inline in `text-destructive` with a Retry button.
 - Unavailable: if no Anthropic key is configured (`!getConfig('anthropic_api_key')`, passed from the server page as `aiAvailable`), show the hint "Add an Anthropic API key in Settings to generate" linking to `/settings`. No button.
@@ -284,7 +291,7 @@ Both are covered in Session 1. The panel itself is the same in every view.
 - **Malformed `aiTags`**: `parseAiTags` returns `[]`. The Tags section shows its Generate empty state.
 - **Article with no extractable content** (e.g. a scanned PDF before OCR): Generate returns 422. Show the message inline with a Retry button.
 - **Double-click on Generate**: disable the button while the request is pending. The summarize route is idempotent anyway (it returns the cached value).
-- **Navigating between articles with the panel open (desktop)**: it stays open, and the new page's `setContent` replaces the tabs. Pending Generate requests from the previous article must not write into the new article's context. Check `articleId` before calling `updateArticle`.
+- **Navigating between articles with the panel open (desktop)**: it stays open, and the new page's `setContent` replaces the tabs. Pending Generate requests from the previous article must not write into the new article's context: the previous article's `ArticleProvider` has unmounted, so their results are dropped (§5.6).
 - **Viewport crosses `md` while open**: the panel closes (§5.1).
 - **Mutual exclusion and reload**: after a reload, the right panel starts closed (in-memory) and the left sidebar comes back from localStorage. If the right panel was open before the reload, the sidebar was persisted closed, so the user sees neither panel. That is expected.
 - **Mobile**: the sheet is modal, so the left sidebar can't be opened while it is up. Opening the sheet while the mobile sidebar overlay is open closes the sidebar first.
