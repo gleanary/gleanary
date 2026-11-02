@@ -1,8 +1,10 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import {
   computeWordCount,
   readingTime,
   formatDate,
+  formatRelativeTime,
+  parseDbTimestamp,
   stripCodeFences,
   parseAiTags,
 } from '@/lib/text-utils';
@@ -102,9 +104,7 @@ describe('formatDate', () => {
   });
 
   it('formats a date-only string', () => {
-    const result = formatDate('2024-06-01');
-    // The exact output depends on timezone, but it should contain the year
-    expect(result).toContain('2024');
+    expect(formatDate('2024-06-01')).toBe('June 1, 2024');
   });
 
   it('returns original string for invalid date', () => {
@@ -113,6 +113,76 @@ describe('formatDate', () => {
 
   it('returns original string for empty string', () => {
     expect(formatDate('')).toBe('');
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  describe('west of UTC (America/New_York)', () => {
+    beforeEach(() => {
+      vi.stubEnv('TZ', 'America/New_York');
+    });
+
+    it('prints the stored calendar day for a date-only string', () => {
+      expect(formatDate('2024-01-15')).toBe('January 15, 2024');
+    });
+
+    it('converts a full ISO timestamp to local time', () => {
+      expect(formatDate('2024-01-15T03:00:00Z')).toBe('January 14, 2024');
+    });
+
+    it('converts an RFC 822 timestamp to local time', () => {
+      expect(formatDate('Mon, 15 Jan 2024 03:00:00 GMT')).toBe('January 14, 2024');
+    });
+  });
+
+  describe('east of UTC (Europe/Paris)', () => {
+    beforeEach(() => {
+      vi.stubEnv('TZ', 'Europe/Paris');
+    });
+
+    it('reads a naive DB timestamp as UTC', () => {
+      // 23:30 UTC is already the next day in Paris
+      expect(formatDate('2026-11-02 23:30:00')).toBe('November 3, 2026');
+    });
+  });
+});
+
+describe('parseDbTimestamp', () => {
+  it('reads a space-separated DB timestamp as UTC', () => {
+    expect(parseDbTimestamp('2026-11-02 23:30:00').toISOString()).toBe('2026-11-02T23:30:00.000Z');
+  });
+
+  it('reads a zone-less ISO timestamp as UTC', () => {
+    expect(parseDbTimestamp('2026-11-02T23:30:00').toISOString()).toBe('2026-11-02T23:30:00.000Z');
+  });
+
+  it('keeps an explicit zone', () => {
+    expect(parseDbTimestamp('2026-11-02T23:30:00+02:00').toISOString()).toBe(
+      '2026-11-02T21:30:00.000Z',
+    );
+  });
+});
+
+describe('formatRelativeTime', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-11-02T23:35:00Z'));
+    vi.stubEnv('TZ', 'Europe/Paris');
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllEnvs();
+  });
+
+  it('reads a naive DB timestamp as UTC', () => {
+    expect(formatRelativeTime('2026-11-02 23:30:00')).toBe('5m ago');
+  });
+
+  it('accepts a timestamp that already carries a zone', () => {
+    expect(formatRelativeTime('2026-11-02T22:35:00Z')).toBe('1h ago');
   });
 });
 

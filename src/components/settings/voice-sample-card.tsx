@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
+import { parseDbTimestamp } from '@/lib/text-utils';
 import type { VoiceSample } from '@/types';
 
 interface Props {
@@ -126,7 +127,7 @@ export function VoiceSampleCard({ sample, onUpdate, onDelete }: Props) {
             {tag}
           </span>
         ))}
-        <span>{new Date(sample.createdAt).toLocaleDateString()}</span>
+        <span>{parseDbTimestamp(sample.createdAt).toLocaleDateString()}</span>
       </div>
 
       {editMode && (

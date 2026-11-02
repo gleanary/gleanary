@@ -216,6 +216,7 @@ The empty state for the summary and tags sections.
    - **Published**: `formatDate(article.publishedAt)`
    - **Saved**: `formatDate(article.savedAt)`
    - **Read**: `formatDate(article.readAt)`, shown only when set (stamped on first archive)
+   - The panel is a client component, so `formatDate` runs in the browser's timezone. A date-only `publishedAt` (`2024-01-15`) is a calendar date and prints as stored (`timeZone: 'UTC'`); zone-less DB timestamps (`datetime('now')`, e.g. `savedAt`) are read as UTC through `parseDbTimestamp` and printed as the local date.
    - **Length**:
      - Web and newsletter articles: `"{wordCount} words · {readingTime(wordCount)}"`
      - PDFs (`pageCount` set): `readingTime(wordCount, pageCount)` → `"42 pages"`

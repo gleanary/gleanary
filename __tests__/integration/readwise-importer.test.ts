@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
 // DB mock — hoisted so vi.mock works
 const dbMock = await vi.hoisted(async () => (await import('./setup')).createDbMock());
@@ -206,6 +206,10 @@ describe('runReadwiseImport', () => {
     mockGetSetting.mockReturnValue(null);
     mockLinkHighlightTags.mockClear();
     mockReplaceHighlightTags.mockClear();
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
   });
 
   it('imports article and highlight from a single page', async () => {
@@ -490,5 +494,35 @@ describe('runReadwiseImport', () => {
       .get();
     expect(saved?.text).toBe('Updated text');
     expect(saved?.note).toBe('Updated note');
+  });
+
+  it('keeps a newer local edit stored as a zone-less UTC timestamp (server east of UTC)', async () => {
+    vi.stubEnv('TZ', 'Europe/Paris');
+    const article = makeArticleDoc();
+    mockFetch([makeListPage([article, makeHighlightDoc()])]);
+    await runReadwiseImport('test-token', 'full', () => {});
+
+    // A local edit stamps updated_at with datetime('now'): UTC without a zone marker
+    const testDb = db as ReturnType<typeof createTestDb>['db'];
+    testDb
+      .update(highlights)
+      .set({ text: 'Local edit', updatedAt: '2024-06-01 12:00:00' })
+      .where(eq(highlights.externalId, 'rdr_doc-highlight-1'))
+      .run();
+
+    // Reader's copy is 30 minutes older than the local edit
+    const olderHighlight = makeHighlightDoc({
+      updated_at: '2024-06-01T11:30:00Z',
+      content: 'Reader text',
+    });
+    mockFetch([makeListPage([article, olderHighlight])]);
+    await runReadwiseImport('test-token', 'full', () => {});
+
+    const saved = testDb
+      .select()
+      .from(highlights)
+      .where(eq(highlights.externalId, 'rdr_doc-highlight-1'))
+      .get();
+    expect(saved?.text).toBe('Local edit');
   });
 });
