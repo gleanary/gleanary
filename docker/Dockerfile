@@ -30,10 +30,9 @@ COPY --from=builder /app/.next/static ./.next/static
 COPY --from=builder /app/drizzle ./drizzle
 COPY --from=builder --chmod=755 /app/scripts/migrate.mjs /app/scripts/start.sh ./scripts/
 
-# Writable by the app user: Next's image cache and the data directory (mounted
-# as volume). The app creates db/, tts-cache/ and originals/ under it itself.
+# Writable by the app user: Next's image cache and /data. No VOLUME: compose
+# bind-mounts each data subdirectory (no orphaned anonymous volume).
 RUN mkdir -p .next/cache /data && chown nextjs:nodejs .next/cache /data
-VOLUME /data
 
 ENV PDF_DATA_DIR=/data
 # pdfjs-dist can consume 3-5× the raw PDF size when parsing. Keep the heap

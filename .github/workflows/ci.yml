@@ -106,12 +106,17 @@ jobs:
           tags: gleanary:ci
           cache-from: type=gha
 
-      # start.sh migrates a fresh DB on the anonymous /data volume, then starts server.js.
-      # Waits on the image's own HEALTHCHECK, the one Deploy's `compose up --wait` uses.
+      # start.sh migrates a fresh DB on an anonymous /data volume, then starts server.js,
+      # under the server's runtime hardening (read-only root, no capabilities), so a
+      # write outside /data or /tmp fails here instead of in production. Waits on the
+      # image's own HEALTHCHECK, the one Deploy's `compose up --wait` uses.
       - name: Migrate, boot and check /api/health
         if: steps.changes.outputs.build == 'true'
         run: |
-          docker run -d --name app -p 3000:3000 -e DATABASE_URL=file:/data/db/gleanary.db gleanary:ci
+          docker run -d --name app -p 3000:3000 -e DATABASE_URL=file:/data/db/gleanary.db \
+            --read-only --tmpfs /tmp:size=64m --tmpfs /app/.next/cache:uid=1001,gid=1001,size=64m \
+            --cap-drop ALL --security-opt no-new-privileges:true --mount type=volume,dst=/data \
+            gleanary:ci
           trap 'docker logs app' EXIT
           for i in $(seq 1 45); do
             status=$(docker inspect -f '{{.State.Health.Status}}' app)

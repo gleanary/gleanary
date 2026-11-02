@@ -24,12 +24,23 @@ services:
       - '${APP_BIND:-127.0.0.1}:3000:3000'
     volumes:
       - ../data/db:/data/db
+      - ../data/tts-cache:/data/tts-cache
+      - ../data/originals:/data/originals
     environment:
       DATABASE_URL: ${DATABASE_URL:-file:/data/db/gleanary.db}
       NODE_ENV: production
     env_file:
       - path: ../.env
         required: false
+    # Same runtime hardening as the production server (infra/cloud-init.yml)
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m
+      - /app/.next/cache:uid=1001,gid=1001,size=64m
+    cap_drop: [ALL]
+    security_opt: ['no-new-privileges:true']
+    mem_limit: 1536m
+    pids_limit: 256
     networks:
       - internal
 

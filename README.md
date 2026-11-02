@@ -79,7 +79,7 @@ the data directory and hand it over first (Docker Desktop on macOS/Windows does
 not need this):
 
 ```bash
-mkdir -p data/db && sudo chown -R 1001:1001 data
+mkdir -p data/db data/tts-cache data/originals && sudo chown -R 1001:1001 data
 ```
 
 ```bash
