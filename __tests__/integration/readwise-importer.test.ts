@@ -31,6 +31,17 @@ import {
   getOrCreateReadwiseSource,
 } from '@/lib/readwise-import';
 
+// `db` is a getter over the DB that dbMock.setup() swaps in each beforeEach: read it lazily
+const getTestDb = () => db as ReturnType<typeof createTestDb>['db'];
+
+function getArticle(externalId = 'rdr_doc-article-1') {
+  return getTestDb().select().from(articles).where(eq(articles.externalId, externalId)).get();
+}
+
+function getHighlight(externalId = 'rdr_doc-highlight-1') {
+  return getTestDb().select().from(highlights).where(eq(highlights.externalId, externalId)).get();
+}
+
 // --- Fixtures ---
 
 function makeArticleDoc(
@@ -140,11 +151,7 @@ describe('findOrCreateTag', () => {
   it('creates a new tag and returns its id', () => {
     const id = findOrCreateTag('Philosophy');
     expect(id).toBeTypeOf('number');
-    const tag = (db as ReturnType<typeof createTestDb>['db'])
-      .select()
-      .from(tags)
-      .where(eq(tags.name, 'philosophy'))
-      .get();
+    const tag = getTestDb().select().from(tags).where(eq(tags.name, 'philosophy')).get();
     expect(tag?.name).toBe('philosophy');
   });
 
@@ -165,7 +172,7 @@ describe('findOrCreateTag', () => {
   it('returns existing tag id without duplicate insert', () => {
     findOrCreateTag('history');
     findOrCreateTag('history');
-    const allTags = (db as ReturnType<typeof createTestDb>['db']).select().from(tags).all();
+    const allTags = getTestDb().select().from(tags).all();
     const historyTags = allTags.filter((t) => t.name === 'history');
     expect(historyTags).toHaveLength(1);
   });
@@ -181,11 +188,7 @@ describe('getOrCreateReadwiseSource', () => {
   it('creates a readwise source on first call', () => {
     const id = getOrCreateReadwiseSource();
     expect(id).toBeTypeOf('number');
-    const source = (db as ReturnType<typeof createTestDb>['db'])
-      .select()
-      .from(sources)
-      .where(eq(sources.type, 'readwise'))
-      .get();
+    const source = getTestDb().select().from(sources).where(eq(sources.type, 'readwise')).get();
     expect(source?.name).toBe('Readwise Import');
     expect(source?.type).toBe('readwise');
   });
@@ -222,22 +225,13 @@ describe('runReadwiseImport', () => {
       events.push({ event, data });
     });
 
-    const testDb = db as ReturnType<typeof createTestDb>['db'];
-    const savedArticle = testDb
-      .select()
-      .from(articles)
-      .where(eq(articles.externalId, 'rdr_doc-article-1'))
-      .get();
+    const savedArticle = getArticle();
     expect(savedArticle).toBeDefined();
     expect(savedArticle?.title).toBe('Test Article');
     expect(savedArticle?.url).toBe('https://example.com/article');
     expect(savedArticle?.status).toBe('archived');
 
-    const savedHighlight = testDb
-      .select()
-      .from(highlights)
-      .where(eq(highlights.externalId, 'rdr_doc-highlight-1'))
-      .get();
+    const savedHighlight = getHighlight();
     expect(savedHighlight).toBeDefined();
     expect(savedHighlight?.text).toBe('Great insight from the article');
 
@@ -252,12 +246,7 @@ describe('runReadwiseImport', () => {
     ]);
     await runReadwiseImport('test-token', 'full', () => {});
 
-    const testDb = db as ReturnType<typeof createTestDb>['db'];
-    const article = testDb
-      .select()
-      .from(articles)
-      .where(eq(articles.externalId, 'rdr_doc-article-1'))
-      .get();
+    const article = getArticle();
     expect(article?.contentHtml).not.toContain('<script>');
     expect(article?.contentHtml).toContain('<p>');
   });
@@ -273,12 +262,7 @@ describe('runReadwiseImport', () => {
     ]);
     await runReadwiseImport('test-token', 'full', () => {});
 
-    const testDb = db as ReturnType<typeof createTestDb>['db'];
-    const article = testDb
-      .select()
-      .from(articles)
-      .where(eq(articles.externalId, 'rdr_doc-article-1'))
-      .get();
+    const article = getArticle();
     expect(article?.url).toBe('https://original.com/post');
   });
 
@@ -290,12 +274,7 @@ describe('runReadwiseImport', () => {
     ]);
     await runReadwiseImport('test-token', 'full', () => {});
 
-    const testDb = db as ReturnType<typeof createTestDb>['db'];
-    const article = testDb
-      .select()
-      .from(articles)
-      .where(eq(articles.externalId, 'rdr_doc-article-1'))
-      .get();
+    const article = getArticle();
     expect(article?.url).toBe('https://reader.readwise.io/read/xyz');
   });
 
@@ -312,8 +291,7 @@ describe('runReadwiseImport', () => {
     const events: unknown[] = [];
     await runReadwiseImport('test-token', 'full', (event, data) => events.push({ event, data }));
 
-    const testDb = db as ReturnType<typeof createTestDb>['db'];
-    expect(testDb.select().from(articles).all()).toHaveLength(1);
+    expect(getTestDb().select().from(articles).all()).toHaveLength(1);
 
     const completeEvent = events.find((e) => (e as { event: string }).event === 'complete')!;
     expect(
@@ -329,8 +307,7 @@ describe('runReadwiseImport', () => {
     mockFetch([makeListPage([article])]);
     await runReadwiseImport('test-token', 'full', () => {});
 
-    const testDb = db as ReturnType<typeof createTestDb>['db'];
-    expect(testDb.select().from(articles).all()).toHaveLength(1);
+    expect(getTestDb().select().from(articles).all()).toHaveLength(1);
   });
 
   it('deduplicates articles by url when externalId differs', async () => {
@@ -342,8 +319,7 @@ describe('runReadwiseImport', () => {
     mockFetch([makeListPage([article2])]);
     await runReadwiseImport('test-token', 'full', () => {});
 
-    const testDb = db as ReturnType<typeof createTestDb>['db'];
-    expect(testDb.select().from(articles).all()).toHaveLength(1);
+    expect(getTestDb().select().from(articles).all()).toHaveLength(1);
   });
 
   it('deduplicates highlights by externalId on re-run', async () => {
@@ -355,8 +331,7 @@ describe('runReadwiseImport', () => {
     mockFetch([makeListPage([article, highlight])]);
     await runReadwiseImport('test-token', 'full', () => {});
 
-    const testDb = db as ReturnType<typeof createTestDb>['db'];
-    expect(testDb.select().from(highlights).all()).toHaveLength(1);
+    expect(getTestDb().select().from(highlights).all()).toHaveLength(1);
   });
 
   it('paginates through multiple pages', async () => {
@@ -371,9 +346,8 @@ describe('runReadwiseImport', () => {
 
     await runReadwiseImport('test-token', 'full', () => {});
 
-    const testDb = db as ReturnType<typeof createTestDb>['db'];
-    expect(testDb.select().from(articles).all()).toHaveLength(2);
-    expect(testDb.select().from(highlights).all()).toHaveLength(2);
+    expect(getTestDb().select().from(articles).all()).toHaveLength(2);
+    expect(getTestDb().select().from(highlights).all()).toHaveLength(2);
   });
 
   it('passes updatedAfter for incremental mode', async () => {
@@ -431,12 +405,7 @@ describe('runReadwiseImport', () => {
 
     await runReadwiseImport('test-token', 'full', () => {});
 
-    const testDb = db as ReturnType<typeof createTestDb>['db'];
-    const saved = testDb
-      .select()
-      .from(highlights)
-      .where(eq(highlights.externalId, 'rdr_doc-highlight-1'))
-      .get();
+    const saved = getHighlight();
     expect(saved?.note).toBe('My annotation');
   });
 
@@ -451,8 +420,7 @@ describe('runReadwiseImport', () => {
     mockFetch([makeListPage([highlight])]);
     await runReadwiseImport('test-token', 'incremental', () => {});
 
-    const testDb = db as ReturnType<typeof createTestDb>['db'];
-    expect(testDb.select().from(highlights).all()).toHaveLength(1);
+    expect(getTestDb().select().from(highlights).all()).toHaveLength(1);
   });
 
   it('emits fetching and importing progress events', async () => {
@@ -486,12 +454,7 @@ describe('runReadwiseImport', () => {
     mockFetch([makeListPage([article, newerHighlight])]);
     await runReadwiseImport('test-token', 'full', () => {});
 
-    const testDb = db as ReturnType<typeof createTestDb>['db'];
-    const saved = testDb
-      .select()
-      .from(highlights)
-      .where(eq(highlights.externalId, 'rdr_doc-highlight-1'))
-      .get();
+    const saved = getHighlight();
     expect(saved?.text).toBe('Updated text');
     expect(saved?.note).toBe('Updated note');
   });
@@ -503,8 +466,7 @@ describe('runReadwiseImport', () => {
     await runReadwiseImport('test-token', 'full', () => {});
 
     // A local edit stamps updated_at with datetime('now'): UTC without a zone marker
-    const testDb = db as ReturnType<typeof createTestDb>['db'];
-    testDb
+    getTestDb()
       .update(highlights)
       .set({ text: 'Local edit', updatedAt: '2024-06-01 12:00:00' })
       .where(eq(highlights.externalId, 'rdr_doc-highlight-1'))
@@ -518,11 +480,7 @@ describe('runReadwiseImport', () => {
     mockFetch([makeListPage([article, olderHighlight])]);
     await runReadwiseImport('test-token', 'full', () => {});
 
-    const saved = testDb
-      .select()
-      .from(highlights)
-      .where(eq(highlights.externalId, 'rdr_doc-highlight-1'))
-      .get();
+    const saved = getHighlight();
     expect(saved?.text).toBe('Local edit');
   });
 });
