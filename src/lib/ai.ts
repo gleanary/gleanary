@@ -181,6 +181,15 @@ export function truncateContent(content: string, limit = MAX_CONTENT_LENGTH): st
 }
 
 /**
+ * Normalizes a tag name for case-insensitive matching: trimmed and lower-cased.
+ * @param name - A tag name as suggested or stored
+ * @returns The match key ('' for a blank name)
+ */
+export function normalizeTagName(name: string): string {
+  return name.trim().toLowerCase();
+}
+
+/**
  * Parses Claude's tag suggestion response into a clean array of lowercase tag names.
  * Handles JSON embedded in surrounding text, deduplicates, and filters invalid entries.
  * @param response - Raw text response from Claude
@@ -202,7 +211,7 @@ export function parseTagsResponse(response: string): string[] {
 
     for (const item of parsed) {
       if (typeof item !== 'string') continue;
-      const cleaned = item.trim().toLowerCase();
+      const cleaned = normalizeTagName(item);
       if (!cleaned) continue;
       if (seen.has(cleaned)) continue;
       seen.add(cleaned);

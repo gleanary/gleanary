@@ -51,8 +51,12 @@ test.describe('Save Article and Read', { lock: HIGHLIGHT_WRITER_LOCKS.saveAndRea
       'test article created for the E2E',
     );
 
-    // Verify metadata renders
-    await expect(page.getByTestId('article-byline')).toContainText('Test Author');
+    // Metadata lives in the context panel, not the header
+    await expect(page.getByTestId('article-byline')).toHaveCount(0);
+    await page.getByRole('button', { name: 'Toggle details panel' }).click();
+    const fields = page.getByTestId('context-panel').getByTestId('panel-field');
+    await expect(fields.filter({ hasText: 'Author' })).toContainText('Test Author');
+    await expect(fields.filter({ hasText: 'Site' })).toContainText('Example Blog');
   });
 
   test('article status updates from inbox → archived via Archive button', async ({ page }) => {

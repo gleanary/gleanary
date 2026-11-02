@@ -78,6 +78,28 @@ export function readingTime(wordCount: number | null, pageCount?: number | null)
 }
 
 /**
+ * Parses an article's `ai_tags` column (a JSON array of tag names).
+ * Malformed values never throw: they yield no tags. This module is also bundled for the
+ * client, so it does not log itself; server callers pass `onInvalid` to log a warning.
+ * @param raw - The stored JSON string, or null when the article has no tags
+ * @param onInvalid - Called when `raw` is present but malformed
+ * @returns The distinct tag names, or [] when missing or malformed
+ */
+export function parseAiTags(raw: string | null, onInvalid?: () => void): string[] {
+  if (!raw) return [];
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (Array.isArray(parsed) && parsed.every((tag) => typeof tag === 'string')) {
+      return [...new Set(parsed)];
+    }
+  } catch {
+    // Invalid JSON: handled as malformed below
+  }
+  onInvalid?.();
+  return [];
+}
+
+/**
  * Formats a date string into a human-readable format.
  * @param dateStr - ISO date string or date-like string
  * @returns Formatted date string (e.g., "January 15, 2024")

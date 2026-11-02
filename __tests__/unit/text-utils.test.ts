@@ -1,5 +1,11 @@
-import { describe, it, expect } from 'vitest';
-import { computeWordCount, readingTime, formatDate, stripCodeFences } from '@/lib/text-utils';
+import { describe, it, expect, vi } from 'vitest';
+import {
+  computeWordCount,
+  readingTime,
+  formatDate,
+  stripCodeFences,
+  parseAiTags,
+} from '@/lib/text-utils';
 
 describe('computeWordCount', () => {
   it('counts words in a simple sentence', () => {
@@ -107,5 +113,45 @@ describe('formatDate', () => {
 
   it('returns original string for empty string', () => {
     expect(formatDate('')).toBe('');
+  });
+});
+
+describe('parseAiTags', () => {
+  it('returns [] for null without reporting it', () => {
+    const onInvalid = vi.fn();
+    expect(parseAiTags(null, onInvalid)).toEqual([]);
+    expect(onInvalid).not.toHaveBeenCalled();
+  });
+
+  it('returns [] for an empty string without reporting it', () => {
+    const onInvalid = vi.fn();
+    expect(parseAiTags('', onInvalid)).toEqual([]);
+    expect(onInvalid).not.toHaveBeenCalled();
+  });
+
+  it('drops repeated tag names', () => {
+    expect(parseAiTags('["ai", "ai", "Databases"]')).toEqual(['ai', 'Databases']);
+  });
+
+  it('parses a JSON array of strings', () => {
+    expect(parseAiTags('["ai", "Machine Learning"]')).toEqual(['ai', 'Machine Learning']);
+  });
+
+  it('returns [] and reports it for invalid JSON', () => {
+    const onInvalid = vi.fn();
+    expect(parseAiTags('not json', onInvalid)).toEqual([]);
+    expect(onInvalid).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns [] and reports it when the JSON is not an array', () => {
+    const onInvalid = vi.fn();
+    expect(parseAiTags('{"tags": ["ai"]}', onInvalid)).toEqual([]);
+    expect(onInvalid).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns [] and reports it when an item is not a string', () => {
+    const onInvalid = vi.fn();
+    expect(parseAiTags('["ai", 42]', onInvalid)).toEqual([]);
+    expect(onInvalid).toHaveBeenCalledTimes(1);
   });
 });

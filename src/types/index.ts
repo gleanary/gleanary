@@ -178,6 +178,18 @@ export interface PdfPanelAnchor {
 /** Reading position captured before a panel width change (HTML block or PDF page). */
 export type PanelAnchor = HtmlPanelAnchor | PdfPanelAnchor;
 
+/** Response of `POST /api/ai/summarize`. */
+export interface SummarizeResponse {
+  summary: string;
+  /** True when the stored summary was returned without calling the model. */
+  cached: boolean;
+}
+
+/** Response of `POST /api/ai/tag`: article tag names, a vocabulary separate from highlight tags. */
+export interface AutoTagResponse {
+  tags: string[];
+}
+
 /** One section of a context panel tab, rendered under a small uppercase label. */
 export interface ContextPanelSection {
   id: string;

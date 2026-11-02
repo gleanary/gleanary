@@ -1,9 +1,9 @@
 # Module: Context Panel
 
-**Status**: In progress (Sessions 1–2 done: shell, desktop side sheet, place-keeping, mobile bottom sheet)
+**Status**: Done (Sessions 1–3: shell, desktop side sheet, place-keeping, mobile bottom sheet, widgets, Generate, header slimming)
 **Last verified against code**: 2026-11-02 (spec revision 3, checked against `main` @ `d59f809`)
 **Schema tables**: `articles`, `sources` (reads only — no schema change); `tags` is no longer written by `POST /api/ai/tag`
-**Unimplemented sections**: §5.5, §5.6, §6, §4.1 (Session 3)
+**Unimplemented sections**: none
 
 > **Session 2 decision (slot)**: one portal slot is enough. Switching between the side and bottom presentations remounts the portaled widgets, and that is accepted: crossing 768px already closes the panel (§5.1), so the widgets remount on reopen either way. The only state at risk is an in-flight Generate request, and §5.6 keeps it safe by applying results through `ArticleContext.updateArticle`, which is not remounted.
 
@@ -63,9 +63,9 @@ Both return **422** (`ValidationError`) when the article has no content to analy
 **New behavior**
 
 1. Validate the input (unchanged) and load the article (404 if missing).
-2. **Vocabulary hint**: the distinct tag names already present in other articles' `ai_tags` (JSON arrays, parsed with `parseAiTags`, de-duplicated case-insensitively). These are sent to the model as "Existing tags", replacing the highlight `tags` table. This keeps article tags consistent with each other without touching highlight tags.
+2. **Vocabulary hint**: the distinct tag names already present in other articles' `ai_tags` (JSON arrays, parsed with `parseAiTags`, trimmed, de-duplicated case-insensitively). Only the `ai_tags` column is selected, never whole rows. The vocabulary is capped at the **200 most frequent** names so the prompt doesn't grow with the library. These are sent to the model as "Existing tags", replacing the highlight `tags` table. This keeps article tags consistent with each other without touching highlight tags.
 3. Call the model with `AUTO_TAG_PROMPT` (unchanged), and parse the reply with `parseTagsResponse` (unchanged).
-4. **Normalize** each suggestion to the existing spelling when it case-insensitively matches a name from step 2.
+4. **Normalize** each suggestion to the existing spelling when it case-insensitively matches a name from step 2. Suggestions are already trimmed, lower-cased and de-duplicated by `parseTagsResponse`, so "testing" and "Testing" end up as one "Testing".
 5. Write `articles.ai_tags = JSON.stringify(names)`. **No insert into, and no read from, the `tags` table.**
 6. Respond `200 { tags: string[] }`. The `created` field and the `{id, name, color}` objects are removed. This is a breaking change with no aliases. Nothing in the UI calls the route today, so only tests and docs are affected.
 
@@ -180,6 +180,8 @@ interface TagListProps {
 }
 ```
 
+As built: `<Field>` renders a `dt`/`dd` row (`data-testid="panel-field"`) inside the About section's `<dl>`; `<TextBlock>` has `data-testid="panel-text-block"`.
+
 `<TextBlock>` renders **plain text** through React (auto-escaped), with `whitespace-pre-line`. `SUMMARIZE_PROMPT` asks for plain sentences, so v1 needs no HTML path. **Rule**: if summaries are ever rendered as markdown or HTML, they must go through `renderMarkdown()` → `sanitizeArticleHtml()` (DOMPurify) before `dangerouslySetInnerHTML`. Never inject raw model output as HTML.
 
 ### 5.6 `<GenerateAction>` (`src/components/context-panel/generate-action.tsx`)
@@ -189,6 +191,7 @@ The empty state for the summary and tags sections.
 - Idle: a short muted hint and a "Generate" `Button` (`variant="outline" size="sm"`, `Sparkles` icon).
 - Pending: button disabled with a spinner and the label "Generating…". Navigating away during the request leaves the server work running; the result is cached on the article.
 - **The request outlives the widget.** The panel widgets can remount (the presentation switches at 768px, see the header note), so the request must not be tied to the widget's lifetime: don't abort it on unmount, and apply the result through `ArticleContext.updateArticle` (owned by the reader page, never remounted), after checking that the response's `articleId` still matches the current article.
+- **As built**: requests live in a module-scope store in `generate-action.tsx`, keyed by `${kind}:${articleId}` and read through `useSyncExternalStore`, so a remounted widget sees the running request (spinner kept, no second request), and another article always starts idle. Errors are cleared when you leave the article (`clearGenerateErrors` on `ReaderContextPanel` unmount); running requests are kept. The result goes through `updateArticle(updates, articleId)`: the optional `articleId` makes `ArticleProvider` apply the update only while it still holds that article (checked inside the state updater). A failed `fetch` (offline, server restart) and an empty tag suggestion both end in the inline error, so the spinner always stops.
 - Success: the parent updates the article through `ArticleContext.updateArticle({ aiSummary })` / `({ aiTags })`. The section re-renders with the content. No full page refresh.
 - Error: the error message inline in `text-destructive` with a Retry button.
 - Unavailable: if no Anthropic key is configured (`!getConfig('anthropic_api_key')`, passed from the server page as `aiAvailable`), show the hint "Add an Anthropic API key in Settings to generate" linking to `/settings`. No button.
@@ -212,7 +215,7 @@ The empty state for the summary and tags sections.
      - `readingTime()` already exists in `src/lib/text-utils.ts` (238 WPM, `max(1, round(words/238))`). Reuse it. Don't recompute.
 2. **Summary**: `<TextBlock value={article.aiSummary} emptyState={<GenerateAction kind="summary" />} />`
 3. **Tags**: `<TagList tags={parseAiTags(article.aiTags)} emptyState={<GenerateAction kind="tags" />} />`
-   - `parseAiTags(raw: string | null): string[]` goes in `src/lib/text-utils.ts`. It does `JSON.parse` in a try/catch, validates with `z.array(z.string())`, and returns `[]` (plus a logged warning) on malformed input.
+   - `parseAiTags(raw: string | null, onInvalid?: () => void): string[]` lives in `src/lib/text-utils.ts`. It does `JSON.parse` in a try/catch, checks for an array of strings (no zod, to keep it out of client bundles), and returns `[]` on malformed input. It does not import the logger: text-utils is also bundled for the client, where pino doesn't belong. Server callers (the tag route) pass `onInvalid` to log a warning.
 
 **Data plumbing**: `ReaderPage` already loads `source`. It passes `sourceName` and `aiAvailable` down. `ArticleContext` already holds the full article row (including `aiSummary`, `aiTags`, `savedAt`, `readAt`), so no new query is needed.
 

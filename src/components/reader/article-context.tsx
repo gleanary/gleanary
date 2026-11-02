@@ -5,7 +5,12 @@ import type { Article } from '@/types';
 
 interface ArticleContextValue {
   article: Article;
-  updateArticle: (updates: Partial<Article>) => void;
+  /**
+   * Merges `updates` into the article. With `articleId`, the update applies only while
+   * the provider still holds that article, so a late async result (e.g. a Generate
+   * request from the context panel) never writes into another article.
+   */
+  updateArticle: (updates: Partial<Article>, articleId?: number) => void;
   progressResetKey: number;
   triggerProgressReset: () => void;
 }
@@ -28,8 +33,10 @@ export function ArticleProvider({
   const [article, setArticle] = useState<Article>(initialArticle);
   const [progressResetKey, setProgressResetKey] = useState(0);
 
-  const updateArticle = (updates: Partial<Article>) => {
-    setArticle((prev) => ({ ...prev, ...updates }));
+  const updateArticle = (updates: Partial<Article>, articleId?: number) => {
+    setArticle((prev) =>
+      articleId !== undefined && prev.id !== articleId ? prev : { ...prev, ...updates },
+    );
   };
 
   const triggerProgressReset = () => setProgressResetKey((k) => k + 1);

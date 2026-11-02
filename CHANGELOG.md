@@ -10,6 +10,8 @@ All notable changes to this project will be documented in this file.
 
 - **Context panel on mobile** (module 22, session 2): the details panel opens as a bottom sheet below 768px; swipe down, tap outside or press X to close. With reduced motion it fades in place instead of sliding.
 
+- **Context panel details and Generate** (module 22, session 3): the Details tab shows Author, Site, Source, Published, Saved, Read and Length; an empty Summary or Tags offers a Generate action whose request keeps running if you leave the widget, and its result is applied only to the article it was started for. The article header now shows the title only. `POST /api/ai/tag` now suggests tags from the 200 most frequent tags of other articles' `ai_tags` (trimmed, case-insensitive, one entry per tag after normalization; response `{ tags: string[] }`) and no longer reads or writes highlight tags; malformed stored `ai_tags` are logged and ignored.
+
 - **CI builds and boots the production Docker image** (#101): a new `Docker image smoke test` job in `ci.yml` builds `docker/Dockerfile` for linux/amd64 (not pushed) on PRs that touch `package*.json`, `ci.yml`, `docker/**`, `next.config.*`, `.dockerignore` or the start/migrate scripts, migrates a fresh DB and asserts `/api/health` reports `db: connected`, so a native module missing its musl binary fails the PR instead of Deploy. It succeeds as a no-op otherwise, and deps-agent's gate now requires it.
 
 - **deps-agent reacts to `/deps` commands**: 👍 when it carries the command out, 😕 when it cannot parse or refuses it (its reply says why), like Dependabot acknowledges its own commands.

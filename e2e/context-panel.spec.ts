@@ -77,7 +77,12 @@ test.describe('Context panel (desktop side sheet)', () => {
     }
   });
 
-  async function createArticle(page: Page, title: string, contentHtml = LONG_HTML) {
+  async function createArticle(
+    page: Page,
+    title: string,
+    contentHtml = LONG_HTML,
+    fields: Record<string, unknown> = {},
+  ) {
     const res = await page.request.post('/api/articles', {
       data: {
         url: `https://example.com/e2e-context-panel-${Date.now()}-${Math.random()}`,
@@ -85,6 +90,7 @@ test.describe('Context panel (desktop side sheet)', () => {
         contentHtml,
         contentText: contentHtml.replace(/<[^>]+>/g, ' '),
         status: 'inbox',
+        ...fields,
       },
     });
     expect(res.ok()).toBe(true);
@@ -147,8 +153,12 @@ test.describe('Context panel (desktop side sheet)', () => {
   });
 
   test('stays open across client navigation and is closed after a reload', async ({ page }) => {
-    const first = await createArticle(page, `E2E Context Panel Nav A ${Date.now()}`);
-    const second = await createArticle(page, `E2E Context Panel Nav B ${Date.now()}`);
+    const first = await createArticle(page, `E2E Context Panel Nav A ${Date.now()}`, LONG_HTML, {
+      author: 'Nav Author A',
+    });
+    const second = await createArticle(page, `E2E Context Panel Nav B ${Date.now()}`, LONG_HTML, {
+      author: 'Nav Author B',
+    });
 
     await page.goto('/');
     await page.locator(`a[href="/reader/${first}"]`).click();
@@ -169,6 +179,10 @@ test.describe('Context panel (desktop side sheet)', () => {
     await expect(page.getByTestId('article-title')).toContainText('Nav B');
     await expectPanelOpen(page, true);
     await expect(panel(page)).toContainText('About');
+    // The new article's details, not the previous article's
+    const author = panel(page).getByTestId('panel-field').filter({ hasText: 'Author' });
+    await expect(author).toContainText('Nav Author B');
+    await expect(author).not.toContainText('Nav Author A');
 
     await page.reload();
     await expect(trigger(page)).toBeVisible({ timeout: 10_000 });
@@ -339,6 +353,65 @@ test.describe('Context panel (desktop side sheet)', () => {
     await expect(trigger(page)).toBeFocused();
     expect(new URL(page.url()).pathname).toBe(`/reader/${id}`);
   });
+
+  test('shows the article details, and the header keeps only the title', async ({ page }) => {
+    const id = await createArticle(page, 'E2E Context Panel Details', LONG_HTML, {
+      author: 'Panel Author',
+      siteName: 'Panel Site',
+    });
+    await openReader(page, id);
+    await expect(page.getByTestId('article-byline')).toHaveCount(0);
+    await expect(page.getByTestId('article-meta')).toHaveCount(0);
+
+    await trigger(page).click();
+    await expectPanelOpen(page, true);
+    const fields = panel(page).getByTestId('panel-field');
+    await expect(fields.filter({ hasText: 'Author' })).toContainText('Panel Author');
+    await expect(fields.filter({ hasText: 'Site' })).toContainText('Panel Site');
+    await expect(fields.filter({ hasText: 'Saved' })).not.toContainText('—');
+    await expect(fields.filter({ hasText: 'Length' })).toContainText(/[\d,]+ words · \d+ min read/);
+    await expect(panel(page).getByRole('heading', { name: 'Summary' })).toBeVisible();
+    await expect(panel(page).getByRole('heading', { name: 'Tags' })).toBeVisible();
+  });
+
+  test('Generate fills an empty summary without a reload', async ({ page }) => {
+    const id = await createArticle(page, 'E2E Context Panel Generate');
+    // Every AI route is stubbed at the network layer, so nothing in this test can reach
+    // Anthropic (CI's server runs with a dummy key, see playwright.config.ts)
+    await page.route('**/api/ai/**', async (route) => {
+      if (new URL(route.request().url()).pathname !== '/api/ai/summarize') {
+        await route.fulfill({ status: 503, json: { error: 'AI is stubbed in this E2E test' } });
+        return;
+      }
+      expect(route.request().postDataJSON()).toEqual({ articleId: id });
+      await route.fulfill({
+        json: { summary: 'A generated summary from the E2E stub.', cached: false },
+      });
+    });
+    await openReader(page, id);
+    await trigger(page).click();
+    await expectPanelOpen(page, true);
+
+    const summary = panel(page).locator('section', {
+      has: page.getByRole('heading', { name: 'Summary' }),
+    });
+    const settingsHint = summary.getByRole('link', { name: /add an anthropic api key/i });
+    const generate = summary.getByRole('button', { name: 'Generate' });
+    await expect(settingsHint.or(generate)).toBeVisible();
+    if (await settingsHint.isVisible()) {
+      // Generate is gated on a configured key, which the server under test may not have
+      await expect(settingsHint).toHaveAttribute('href', '/settings');
+      test.skip(true, 'No Anthropic API key configured on the reused dev server');
+    }
+
+    await page.evaluate(() => ((window as { __noReload?: boolean }).__noReload = true));
+    await generate.click();
+    await expect(summary.getByTestId('panel-text-block')).toHaveText(
+      'A generated summary from the E2E stub.',
+    );
+    await expect(generate).toHaveCount(0);
+    expect(await page.evaluate(() => (window as { __noReload?: boolean }).__noReload)).toBe(true);
+  });
 });
 
 test.describe(
@@ -438,6 +511,9 @@ test.describe(
       await openSheet(page);
       await expect(sheet(page)).toContainText('Details');
       await expect(sheet(page)).toContainText('About');
+      await expect(
+        sheetBody(page).getByTestId('panel-field').filter({ hasText: 'Length' }),
+      ).toContainText(/[\d,]+ words/);
       // Above the highlight popover (z-[70]) and the TTS player (z-20)
       await expect(sheet(page)).toHaveCSS('z-index', '80');
       // The side sheet does not push the content on mobile

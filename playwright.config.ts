@@ -98,6 +98,12 @@ export default defineConfig({
             AUTH_DISABLED: '',
           }
         : { AUTH_DISABLED: 'true' }),
+      // CI only: a dummy Anthropic key so the reader shows its Generate actions (the E2E
+      // stubs every /api/ai/** call, so the server never contacts Anthropic). Never set
+      // locally: on first boot migrateFromEnv() (src/lib/settings.ts) copies env keys into
+      // an empty settings table, and the DB value then wins over env for good. CI's DB is
+      // throwaway; a local dev DB would keep the dummy key.
+      ...(process.env.CI ? { ANTHROPIC_API_KEY: 'e2e-dummy-key' } : {}),
     },
   },
 });
