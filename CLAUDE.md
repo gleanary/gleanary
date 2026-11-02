@@ -230,7 +230,7 @@ export async function POST(req: NextRequest) {
   - Light mode: warm off-white `#FAFAF7` background, dark text `#1A1A1A`
   - Dark mode: deep gray `#1A1A1A` background, soft white `#E8E6E3` text
   - No pure white (`#FFF`) or pure black (`#000`) anywhere
-  - Sidebar collapses to icon while reading
+  - Sidebar is either open (280px) or hidden; it never collapses to icons
 
 ### Error Handling
 
@@ -335,6 +335,7 @@ npx playwright test <file> # Specific E2E
 | 19  | Global Search                            | `docs/modules/global-search.md`                    | Done        |
 | 20  | Robust Highlight Anchoring               | `docs/modules/highlight-anchoring.md`              | Done        |
 | 21  | Authentication                           | `docs/modules/auth.md`                             | Done        |
+| 22  | Context Panel                            | `docs/modules/context-panel.md`                    | Not started |
 | —   | Content Pipeline (cross-cutting)         | `docs/modules/content-pipeline.md`                 | Done        |
 
 Claude Code updates the status column as modules are completed.
@@ -437,7 +438,7 @@ docker compose -f docker/compose.yml up -d
 
 #### Reader view (reading comfort)
 
-- Max-width ~680px, centered. Body 18–20px / line-height 1.7. Sidebar collapses to icons while reading.
+- Max-width ~680px, centered. Body 18–20px / line-height 1.7. Sidebar is 280px or hidden (no icon rail).
 - No pure white (`#fff`) or pure black (`#000`) for surfaces or body text — use tokens / the reader colors above.
 
 #### Don't
