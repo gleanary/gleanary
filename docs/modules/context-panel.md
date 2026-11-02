@@ -5,7 +5,7 @@
 **Schema tables**: `articles`, `sources` (reads only — no schema change); `tags` is no longer written by `POST /api/ai/tag`
 **Unimplemented sections**: §5.3 bottom sheet (Session 2); §5.5, §5.6, §6, §4.1 (Session 3)
 
-> **Session 2 note**: the portal slot element must be shared between the side and bottom presentations (one slot reparented, or one slot styled for both). Otherwise switching presentation remounts the portaled widgets and drops their state (e.g. a Generate request in flight in Session 3). Accepting the remount is a valid alternative, since crossing 768px closes the panel anyway (§5.1). Tracked in `TECH_DEBT.md`.
+> **Session 2 decision (slot)**: one portal slot is enough. Switching between the side and bottom presentations remounts the portaled widgets, and that is accepted: crossing 768px already closes the panel (§5.1), so the widgets remount on reopen either way. The only state at risk is an in-flight Generate request, and §5.6 keeps it safe by applying results through `ArticleContext.updateArticle`, which is not remounted.
 
 ---
 
@@ -139,6 +139,7 @@ Rendered once by `AppShell`. It renders one of two presentations.
 
 **Bottom sheet (mobile)**
 
+- **Slot**: the context keeps a single `slotEl`, set by whichever presentation is mounted: the side sheet's body on desktop, the bottom sheet's body while it is open on mobile. No element is moved between containers; switching presentation remounts the portaled widgets, which is accepted (see the header note).
 - Built on the existing Radix `Dialog` primitive (`radix-ui`, already a dependency). That gives focus trap, Escape, backdrop-click and `aria-modal` for free. **No new dependency** (no `vaul`).
 - Sheet: `fixed inset-x-0 bottom-0`, `max-h-[85dvh]`, rounded top corners, a grab handle at the top, an X button in the header, and a scrollable body. Padding includes `env(safe-area-inset-bottom)`.
 - **Swipe to dismiss** uses pointer events on the handle and header. It also works on the body when the body's `scrollTop === 0` and the drag is downward. The sheet follows the finger (`translateY`). On release it closes if the drag is > 25% of the sheet height or the velocity is > 0.5 px/ms; otherwise it springs back.
@@ -185,6 +186,7 @@ The empty state for the summary and tags sections.
 
 - Idle: a short muted hint and a "Generate" `Button` (`variant="outline" size="sm"`, `Sparkles` icon).
 - Pending: button disabled with a spinner and the label "Generating…". Navigating away during the request leaves the server work running; the result is cached on the article.
+- **The request outlives the widget.** The panel widgets can remount (the presentation switches at 768px, see the header note), so the request must not be tied to the widget's lifetime: don't abort it on unmount, and apply the result through `ArticleContext.updateArticle` (owned by the reader page, never remounted), after checking that the response's `articleId` still matches the current article.
 - Success: the parent updates the article through `ArticleContext.updateArticle({ aiSummary })` / `({ aiTags })`. The section re-renders with the content. No full page refresh.
 - Error: the error message inline in `text-destructive` with a Retry button.
 - Unavailable: if no Anthropic key is configured (`!getConfig('anthropic_api_key')`, passed from the server page as `aiAvailable`), show the hint "Add an Anthropic API key in Settings to generate" linking to `/settings`. No button.
