@@ -102,6 +102,54 @@ runcmd:
     CRONEOF
     chmod +x /etc/cron.daily/gleanary-backup
 
+  # Container egress firewall (ADR-010 step 4). Containers may only open new
+  # outbound connections to public addresses on DNS, HTTP(S) and IMAPS. Applies
+  # to traffic leaving through the external interface only, so Caddy <-> app
+  # traffic and replies to inbound connections are untouched. Re-applied
+  # whenever Docker starts; `systemctl stop gleanary-egress` removes it.
+  - |
+    cat > /usr/local/sbin/gleanary-egress << 'EGRESSEOF'
+    #!/bin/sh
+    set -e
+    # Outbound TCP ports containers may use: DNS, HTTP, HTTPS, IMAPS (newsletters).
+    # Using IMAP on another port? Add it here.
+    TCP_PORTS=53,80,443,993
+    EXT=$(ip -4 route show default | awk '{print $5; exit}')
+    iptables -N DOCKER-USER 2>/dev/null || true
+    iptables -D DOCKER-USER -o "$EXT" -j GLEANARY-EGRESS 2>/dev/null || true
+    iptables -F GLEANARY-EGRESS 2>/dev/null || true
+    iptables -X GLEANARY-EGRESS 2>/dev/null || true
+    [ "$1" = stop ] && exit 0
+    iptables -N GLEANARY-EGRESS
+    iptables -A GLEANARY-EGRESS -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN
+    # Private ranges and cloud metadata: validateUrl() blocks these in app code,
+    # this blocks them for code that bypasses the app. Assumes the host's upstream
+    # DNS is public (OVH: 213.186.33.99); a private resolver would be cut off.
+    iptables -A GLEANARY-EGRESS -d 10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,169.254.0.0/16,100.64.0.0/10 -j REJECT --reject-with icmp-admin-prohibited
+    iptables -A GLEANARY-EGRESS -p udp --dport 53 -j RETURN
+    iptables -A GLEANARY-EGRESS -p tcp -m multiport --dports "$TCP_PORTS" -j RETURN
+    iptables -A GLEANARY-EGRESS -j REJECT --reject-with icmp-admin-prohibited
+    iptables -I DOCKER-USER -o "$EXT" -j GLEANARY-EGRESS
+    EGRESSEOF
+    chmod 755 /usr/local/sbin/gleanary-egress
+    cat > /etc/systemd/system/gleanary-egress.service << 'UNITEOF'
+    [Unit]
+    Description=Gleanary container egress firewall (ADR-010)
+    After=docker.service
+    PartOf=docker.service
+
+    [Service]
+    Type=oneshot
+    RemainAfterExit=yes
+    ExecStart=/usr/local/sbin/gleanary-egress start
+    ExecStop=/usr/local/sbin/gleanary-egress stop
+
+    [Install]
+    WantedBy=docker.service
+    UNITEOF
+    systemctl daemon-reload
+    systemctl enable --now gleanary-egress
+
   # Start the stack (only if image is specified)
   - |
     if [ -n "${github_image}" ]; then

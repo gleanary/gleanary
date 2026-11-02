@@ -114,7 +114,7 @@ the first ten) still gets through. A human approving a green PR would
 let the same release through, so the agent raises the bar rather than lowering it. The
 remaining defense is limiting what a payload can do once deployed (next section).
 
-## Runtime hardening (in progress, #43)
+## Runtime hardening (implemented, #43)
 
 Code inside the app process can read whatever the app can: `process.env` (including
 `SETTINGS_ENCRYPTION_KEY`) and the database with the encrypted provider keys. Hardening
@@ -141,21 +141,25 @@ reach the AI providers, and poll IMAP for newsletters), in order of risk:
    has no `VOLUME`, and compose bind-mounts `db`, `tts-cache` and `originals` one by one.
    Per-subdirectory mounts keep the live DB path unchanged and keep `backups/` and Caddy's
    certificates (also under `/opt/gleanary/data`) out of the app's reach.
-4. _(pending)_ **Egress limits that keep feed fetching working**: a host allowlist is impossible
-   (Gleanary fetches arbitrary URLs), but two host firewall rules on the container's network
-   (the `DOCKER-USER` iptables chain, provisioned through `infra/` cloud-init) are safe:
-   - allow outbound TCP only to ports 53, 80, 443 and the configured IMAP port (993 by
-     default). This blocks reverse shells, mining pools and SMTP on other ports;
-   - block private ranges and the cloud metadata address (`169.254.169.254`, `10.0.0.0/8`,
-     `172.16.0.0/12`, `192.168.0.0/16`), apart from the Docker network Caddy uses. The app's
-     `validateUrl()` already blocks these for URLs it fetches, but a payload bypasses app
-     code and would not bypass the host firewall.
+4. _(done: `gleanary-egress` in `infra/cloud-init.yml`)_ **Egress limits that keep feed fetching working**: a host allowlist is impossible
+   (Gleanary fetches arbitrary URLs), but two host firewall rules are safe. They live in a
+   `GLEANARY-EGRESS` chain jumped to from `DOCKER-USER` for traffic leaving through the
+   external interface only, so container-to-container traffic (Caddy to app) and replies to
+   inbound connections are never matched. They cover every container on the host by design:
+   - allow new outbound TCP only to ports 53, 80, 443 and 993 (IMAPS; another IMAP port is
+     added in the script), plus UDP 53. This blocks reverse shells, mining pools and SMTP;
+   - reject private ranges and the cloud metadata address (`10.0.0.0/8`, `172.16.0.0/12`,
+     `192.168.0.0/16`, `169.254.0.0/16`, `100.64.0.0/10`). The app's `validateUrl()` already
+     blocks these for URLs it fetches, but a payload bypasses app code and would not bypass
+     the host firewall. This needs a public upstream DNS resolver (OVH's is).
+
+   IPv4 only: the compose network has no IPv6, so containers have no IPv6 egress to filter.
 
    Exfiltration over HTTPS remains possible; these rules only close the cheap channels.
 
 5. _(done)_ **Smaller runtime image**: remove `npm`/`npx` from the runner stage (only `node` is
    needed at runtime) and pin the base image by digest.
-6. **Recovery**: keep provider-key rotation ready (the key-rotation tool is tracked in the
+6. _(open)_ **Recovery**: keep provider-key rotation ready (the key-rotation tool is tracked in the
    public issue tracker), so a suspected compromise ends with rotated keys, not just a revert.
 
 Steps 2 and 5 change `docker/Dockerfile` and `scripts/start.sh`. Steps 1 to 4 also change
@@ -167,7 +171,8 @@ ingestion, PDF import and TTS checked afterward. Tracked in
 (server compose, `docker/compose.yml`, CI's docker-smoke flags) are kept in sync by
 `__tests__/unit/container-hardening.test.ts`. Follow-up: the live server's compose file
 drifts from cloud-init after first boot (changes are applied by hand, architecture.md
-§8.7); having Deploy ship the compose file would remove that step.
+§8.7); having Deploy ship the compose file and the `gleanary-egress` script would remove
+that step.
 
 ## Cost and model choice
 

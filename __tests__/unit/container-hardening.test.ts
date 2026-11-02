@@ -14,14 +14,16 @@ const appService = (compose: string, source: string) => {
     .filter((line) => line && !line.startsWith('#'));
 };
 
-/** The compose file that cloud-init writes to the server (heredoc body). */
-const cloudInitCompose = (() => {
+/** Body of a `cat > … << 'TAG'` heredoc: a file cloud-init writes to the server. */
+const cloudInitHeredoc = (tag: string) => {
   const body = read('infra/cloud-init.yml').match(
-    /<< 'COMPOSEEOF'\n([\s\S]*?)\n\s*COMPOSEEOF/,
+    new RegExp(`<< '${tag}'\\n([\\s\\S]*?)\\n\\s*${tag}`),
   )?.[1];
-  if (!body) throw new Error('compose heredoc not found in infra/cloud-init.yml');
+  if (!body) throw new Error(`${tag} heredoc not found in infra/cloud-init.yml`);
   return body;
-})();
+};
+
+const cloudInitCompose = cloudInitHeredoc('COMPOSEEOF');
 
 const APP_SERVICES = [
   { name: 'infra/cloud-init.yml (server)', lines: appService(cloudInitCompose, 'cloud-init') },
@@ -72,5 +74,32 @@ describe('CI docker-smoke run', () => {
     '--security-opt no-new-privileges:true',
   ])('boots the image with %s', (flag) => {
     expect(ci).toContain(flag);
+  });
+});
+
+describe('cloud-init egress firewall', () => {
+  const cloudInit = read('infra/cloud-init.yml');
+  const script = cloudInitHeredoc('EGRESSEOF');
+
+  it('only lets containers open DNS, HTTP(S) and IMAPS connections', () => {
+    expect(script).toContain('TCP_PORTS=53,80,443,993');
+    expect(script).toContain('-p udp --dport 53 -j RETURN');
+    const catchAll = script.indexOf('-A GLEANARY-EGRESS -j REJECT');
+    expect(catchAll).toBeGreaterThan(script.indexOf('--dports'));
+  });
+
+  it('rejects private ranges and the cloud metadata address', () => {
+    for (const range of ['10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16', '169.254.0.0/16']) {
+      expect(script).toContain(range);
+    }
+  });
+
+  it('is installed as a unit re-applied whenever Docker starts', () => {
+    expect(cloudInit).toContain('WantedBy=docker.service');
+    expect(cloudInit).toContain('systemctl enable --now gleanary-egress');
+  });
+
+  it('leaves no ${ for templatefile to interpolate', () => {
+    expect(script).not.toContain('${');
   });
 });
