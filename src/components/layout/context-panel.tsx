@@ -3,9 +3,19 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { X } from 'lucide-react';
+import * as DialogPrimitive from 'radix-ui/dialog';
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
 import {
+  Dialog,
+  DialogClose,
+  DialogOverlay,
+  DialogPortal,
+  DialogTitle,
+} from '@/components/ui/dialog';
+import { useSheetDrag } from '@/hooks/use-sheet-drag';
+import {
+  CONTEXT_PANEL_SHEET_ID,
   CONTEXT_PANEL_WIDTH,
   useContextPanel,
   useContextPanelContent,
@@ -20,20 +30,46 @@ function focusMain(): void {
   main.focus({ preventScroll: true });
 }
 
+/** Returns focus to the panel trigger, or to `<main>` when the page has none. */
+function returnFocus(trigger: HTMLElement | null): void {
+  if (trigger) trigger.focus({ preventScroll: true });
+  else focusMain();
+}
+
+/** Shared close (X) button styling of both presentations. */
+const CLOSE_BUTTON_CLASS =
+  'text-sidebar-foreground/60 hover:text-sidebar-foreground hover:bg-transparent dark:hover:bg-transparent';
+
 /**
- * The context panel shell, rendered once by `AppShell`: a desktop push side sheet with a
- * header (registered title + close button) and a body slot that pages portal their tabs
- * into (see {@link ContextPanelPortal}). It stays mounted so the slot is stable; while
- * closed it is off-screen and `inert`, and it is hidden on pages without content and
- * below `md` (the mobile sheet comes in a later session).
- * @returns The panel `<aside>`
+ * The context panel shell, rendered once by `AppShell`, in one of two presentations, each
+ * with a header (registered title + close button) and a body slot that pages portal their
+ * tabs into (see {@link ContextPanelPortal}):
+ * - ≥ `md`: a non-modal push side sheet (`<aside>`), always mounted;
+ * - < `md`: a modal bottom sheet (Radix Dialog), only on pages with content.
+ * @returns The side sheet, plus the bottom sheet on mobile
  */
 export function ContextPanel() {
+  const { presentation, hasContent } = useContextPanel();
+  return (
+    <>
+      <ContextPanelSide />
+      {presentation === 'bottom' && hasContent && <ContextPanelSheet />}
+    </>
+  );
+}
+
+/**
+ * Desktop push side sheet. It stays mounted; while closed it is off-screen and `inert`,
+ * and it is hidden on pages without content and below `md`. Its body slot is mounted only
+ * on desktop, so it never competes with the bottom sheet's slot.
+ */
+function ContextPanelSide() {
   const {
     isVisible: isShown,
     close,
     contentTitle,
     isAvailable,
+    presentation,
     setSlotEl,
     focusRequestRef,
     triggerRef,
@@ -50,8 +86,7 @@ export function ContextPanel() {
       if (focusRequestRef.current) closeButtonRef.current?.focus({ preventScroll: true });
     } else if (!isShown && wasShown.current) {
       if (asideRef.current?.contains(document.activeElement)) {
-        if (triggerRef.current) triggerRef.current.focus({ preventScroll: true });
-        else focusMain();
+        returnFocus(triggerRef.current);
       }
     }
     focusRequestRef.current = false;
@@ -86,6 +121,8 @@ export function ContextPanel() {
         'border-sidebar-border fixed inset-y-0 right-0 z-40 flex flex-col border-l',
         'bg-sidebar text-sidebar-foreground',
         'transition-transform duration-250 ease-out',
+        // Reduced motion: no slide, in step with the content wrapper's instant margin
+        'motion-reduce:transition-none',
         isShown ? 'translate-x-0' : 'translate-x-full',
       )}
     >
@@ -99,13 +136,84 @@ export function ContextPanel() {
           size="icon-sm"
           onClick={close}
           aria-label="Close details panel"
-          className="text-sidebar-foreground/60 hover:text-sidebar-foreground hover:bg-transparent dark:hover:bg-transparent"
+          className={CLOSE_BUTTON_CLASS}
         >
           <X className="size-4" />
         </Button>
       </div>
-      <div ref={setSlotEl} className="flex-1 overflow-y-auto px-4 pb-4" />
+      {presentation === 'side' && (
+        <div ref={setSlotEl} className="flex-1 overflow-y-auto px-4 pb-4" />
+      )}
     </aside>
+  );
+}
+
+/**
+ * Mobile modal bottom sheet (Radix Dialog primitives: focus trap, Escape, backdrop tap,
+ * scroll lock, `aria-modal`). Above everything in the reader (`z-[80]`). Swipe down on the
+ * handle, the header, or the body when it is scrolled to the top to dismiss. Its body is
+ * the panel slot while open (Radix unmounts it when closed, so the slot is then null).
+ */
+function ContextPanelSheet() {
+  const { isSheetOpen, close, contentTitle, slotEl, setSlotEl, triggerRef } = useContextPanel();
+  const sheetRef = useRef<HTMLDivElement>(null);
+  // On mobile the side sheet mounts no slot, so `slotEl` is this sheet's body
+  const { handleProps } = useSheetDrag({ sheetRef, bodyEl: slotEl, onDismiss: close });
+
+  return (
+    <Dialog open={isSheetOpen} onOpenChange={(open) => !open && close()}>
+      <DialogPortal>
+        <DialogOverlay data-testid="context-panel-sheet-overlay" className="z-[80]" />
+        <DialogPrimitive.Content
+          ref={sheetRef}
+          id={CONTEXT_PANEL_SHEET_ID}
+          data-testid="context-panel-sheet"
+          aria-describedby={undefined}
+          // Focus goes back to the trigger (or <main>), not to whatever had it before
+          onCloseAutoFocus={(e) => {
+            e.preventDefault();
+            returnFocus(triggerRef.current);
+          }}
+          className={cn(
+            'border-sidebar-border fixed inset-x-0 bottom-0 z-[80] flex max-h-[85dvh] flex-col rounded-t-lg border-t outline-none',
+            'bg-sidebar text-sidebar-foreground pb-[env(safe-area-inset-bottom)]',
+            'data-[state=open]:animate-in data-[state=closed]:animate-out duration-250 ease-out',
+            // Reduced motion: an opacity fade in place of the slide
+            'motion-safe:data-[state=open]:slide-in-from-bottom motion-safe:data-[state=closed]:slide-out-to-bottom',
+            'motion-reduce:data-[state=open]:fade-in-0 motion-reduce:data-[state=closed]:fade-out-0',
+          )}
+        >
+          <div
+            data-testid="context-panel-sheet-handle"
+            className="flex touch-none justify-center pt-2 pb-1"
+            {...handleProps}
+          >
+            <div aria-hidden="true" className="bg-sidebar-foreground/20 h-1 w-10 rounded-full" />
+          </div>
+          <div
+            className="flex min-h-12 touch-none items-center justify-between gap-2 px-4 py-1"
+            {...handleProps}
+          >
+            <DialogTitle className="truncate text-sm">{contentTitle}</DialogTitle>
+            <DialogClose asChild>
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                aria-label="Close details panel"
+                className={CLOSE_BUTTON_CLASS}
+              >
+                <X className="size-4" />
+              </Button>
+            </DialogClose>
+          </div>
+          <div
+            ref={setSlotEl}
+            data-testid="context-panel-sheet-body"
+            className="flex-1 touch-pan-y overflow-y-auto overscroll-contain px-4 pb-4"
+          />
+        </DialogPrimitive.Content>
+      </DialogPortal>
+    </Dialog>
   );
 }
 

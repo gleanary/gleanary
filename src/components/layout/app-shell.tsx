@@ -24,7 +24,7 @@ const SWIPE_THRESHOLD = 80;
 function AppShellInner({ children, sidebarData }: AppShellProps) {
   const { isOpen, open, close, toggle } = useSidebar();
   const {
-    isAvailable: isPanelAvailable,
+    hasContent: hasPanelContent,
     isVisible: isPanelVisible,
     toggle: togglePanel,
     contentWrapperRef,
@@ -53,7 +53,8 @@ function AppShellInner({ children, sidebarData }: AppShellProps) {
       // Match the physical key: Shift turns e.key into '|' on QWERTY. Never moves focus,
       // so article scrolling keys keep working after opening the panel.
       if (e.code === 'Backslash' && (e.metaKey || e.ctrlKey) && e.shiftKey) {
-        if (isPanelAvailable) {
+        // Follows the presentation: side sheet on desktop, modal sheet on mobile
+        if (hasPanelContent) {
           e.preventDefault();
           togglePanel();
         }
@@ -81,7 +82,7 @@ function AppShellInner({ children, sidebarData }: AppShellProps) {
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [close, toggle, isPanelAvailable, togglePanel]);
+  }, [close, toggle, hasPanelContent, togglePanel]);
 
   // Swipe gestures for mobile
   useEffect(() => {
@@ -146,7 +147,7 @@ function AppShellInner({ children, sidebarData }: AppShellProps) {
       <div
         ref={contentWrapperRef}
         data-testid="content-wrapper"
-        className="min-h-screen transition-[margin-left,margin-right] duration-250 ease-out"
+        className="min-h-screen transition-[margin-left,margin-right] duration-250 ease-out motion-reduce:transition-none"
         style={{
           marginLeft: isOpen ? SIDEBAR_WIDTH : undefined,
           marginRight: isPanelVisible ? CONTEXT_PANEL_WIDTH : undefined,

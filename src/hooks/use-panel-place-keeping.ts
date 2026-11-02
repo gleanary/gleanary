@@ -15,6 +15,13 @@ const PANEL_RESTORE_MAX_MS = 1_500;
 /** Trailing programmatic scroll events after a panel restore stops are still ignored. */
 const PANEL_TRANSITION_SETTLE_MS = 200;
 
+/** Whether `el` has a zero computed `transition-duration` (e.g. `motion-reduce:transition-none`). */
+function hasNoTransition(el: Element): boolean {
+  return getComputedStyle(el)
+    .transitionDuration.split(',')
+    .every((duration) => parseFloat(duration) === 0);
+}
+
 /**
  * Keeps the reader's place when a side panel (context panel, sidebar) opens or closes
  * and the column width changes. Tracks the anchor at the viewport top while the reader
@@ -94,7 +101,9 @@ export function usePanelPlaceKeeping({
     isPanelTransitioningRef.current = true;
 
     const wrapper = contentWrapperRef?.current ?? null;
-    let transitionEnded = false;
+    // No margin transition (reduced motion): transitionend never fires, so the slide is
+    // already over and the quiet timer alone ends the restore
+    let transitionEnded = wrapper !== null && hasNoTransition(wrapper);
     let quietTimer: ReturnType<typeof setTimeout> | null = null;
     const restore = () => {
       const top = panelAnchorToScrollY(anchor);
@@ -121,6 +130,7 @@ export function usePanelPlaceKeeping({
     if (container) observer?.observe(container);
     observer?.observe(document.documentElement);
     wrapper?.addEventListener('transitionend', onTransitionEnd);
+    if (transitionEnded) armQuietTimer();
     const capTimer = setTimeout(stop, PANEL_RESTORE_MAX_MS);
     RESTORE_CANCEL_EVENTS.forEach((type) => window.addEventListener(type, stop, { passive: true }));
 

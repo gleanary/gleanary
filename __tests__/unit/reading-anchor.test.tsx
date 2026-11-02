@@ -11,7 +11,10 @@ import { getScrollableHeight } from '@/lib/scroll-progress';
 import type { Article } from '@/types';
 
 const { mockBack } = vi.hoisted(() => ({ mockBack: vi.fn() }));
-vi.mock('next/navigation', () => ({ useRouter: () => ({ back: mockBack }) }));
+vi.mock('next/navigation', () => ({
+  useRouter: () => ({ back: mockBack }),
+  usePathname: () => '/reader/1',
+}));
 
 const mockFetch = vi.fn();
 

@@ -71,6 +71,7 @@ export async function waitForMarks(page: Page, minCount = 1): Promise<void> {
  * spec deletes highlights, directly or via article deletion.
  */
 export const HIGHLIGHT_WRITER_LOCKS = {
+  contextPanelSheet: 'highlight-writer:context-panel-sheet',
   draftFlow: 'highlight-writer:draft-flow',
   globalSearch: 'highlight-writer:global-search',
   highlights: 'highlight-writer:highlights',

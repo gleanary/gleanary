@@ -133,8 +133,11 @@ export function TTSPlayer() {
     const handler = (e: KeyboardEvent) => {
       // Already handled earlier (e.g. Escape closing the context panel)
       if (e.defaultPrevented) return;
-      // Don't intercept when typing in inputs
       const target = e.target as HTMLElement;
+      // A dialog (the mobile context sheet, the delete confirmation) owns its keys: Radix
+      // dismisses on Escape only if the event is not already defaultPrevented
+      if (target.closest?.('[role="dialog"]')) return;
+      // Don't intercept when typing in inputs
       if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)
         return;
 
