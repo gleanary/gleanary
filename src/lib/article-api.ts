@@ -1,3 +1,4 @@
+import { z } from 'zod';
 import type { Article, AutoTagResponse, GenerateKind, Highlight, SummarizeResponse } from '@/types';
 
 /** Result of attempting to upload a PDF file */
@@ -187,11 +188,23 @@ interface GenerateConfig {
   emptyError: string;
 }
 
+const summaryResponseSchema: z.ZodType<Pick<SummarizeResponse, 'summary'>> = z.object({
+  summary: z.string(),
+});
+const tagsResponseSchema: z.ZodType<AutoTagResponse> = z.object({ tags: z.array(z.string()) });
+
+/** Parses a 200 response body, throwing when it has another shape (e.g. a server mid-deploy). */
+function parseResponse<T>(schema: z.ZodType<T>, data: unknown): T {
+  const parsed = schema.safeParse(data);
+  if (!parsed.success) throw new Error('Unexpected response from server');
+  return parsed.data;
+}
+
 const GENERATE_CONFIG: Record<GenerateKind, GenerateConfig> = {
   summary: {
     endpoint: '/api/ai/summarize',
     toUpdate: (data) => {
-      const { summary } = data as SummarizeResponse;
+      const { summary } = parseResponse(summaryResponseSchema, data);
       return summary ? { aiSummary: summary } : null;
     },
     emptyError: 'No summary was generated',
@@ -199,8 +212,8 @@ const GENERATE_CONFIG: Record<GenerateKind, GenerateConfig> = {
   tags: {
     endpoint: '/api/ai/tag',
     toUpdate: (data) => {
-      const { tags } = data as AutoTagResponse;
-      return tags?.length ? { aiTags: JSON.stringify(tags) } : null;
+      const { tags } = parseResponse(tagsResponseSchema, data);
+      return tags.length ? { aiTags: JSON.stringify(tags) } : null;
     },
     emptyError: 'No tags were suggested for this article',
   },
@@ -212,8 +225,8 @@ const GENERATE_CONFIG: Record<GenerateKind, GenerateConfig> = {
  * @param kind - Which AI field to generate
  * @param articleId - The article to generate it for
  * @returns The article update to apply (`aiSummary`, or `aiTags` as a JSON array string)
- * @throws Error with the API message on a non-OK response or a network failure, or when
- *   the response carries nothing to apply
+ * @throws Error with the API message on a non-OK response or a network failure, when the
+ *   response has an unexpected shape, or when it carries nothing to apply
  */
 export async function generateArticleAi(
   kind: GenerateKind,
@@ -229,7 +242,7 @@ export async function generateArticleAi(
   if (!res.ok) {
     throw new Error((data as { error?: string } | null)?.error || `Failed (${res.status})`);
   }
-  const update = data ? config.toUpdate(data) : null;
+  const update = config.toUpdate(data);
   if (!update) throw new Error(config.emptyError);
   return update;
 }
