@@ -162,6 +162,13 @@
       "when": 1792422858317,
       "tag": "0022_long_paibok",
       "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "6",
+      "when": 1793703908008,
+      "tag": "0023_drop_auto_tag_leftovers",
+      "breakpoints": true
     }
   ]
 }

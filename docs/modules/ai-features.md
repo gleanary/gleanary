@@ -50,7 +50,7 @@ The `cached` field indicates whether the result was returned from the database c
 
 ### POST /api/ai/tag
 
-Auto-tag an article based on its content. Article AI tags are their own vocabulary: the highlight `tags` table is never read or written (see `context-panel.md` §4.1).
+Auto-tag an article based on its content. Article AI tags are their own vocabulary: the highlight `tags` table is never read or written (see `context-panel.md` §4.1). Migration `0023_drop_auto_tag_leftovers` removed the leftovers of the earlier behavior that inserted every suggestion into `tags`: unlinked tags whose name (trimmed, case-insensitive) is also some article's AI tag.
 
 **Request:**
 
@@ -68,7 +68,7 @@ Auto-tag an article based on its content. Article AI tags are their own vocabula
 
 1. Validate input with Zod (articleId: positive integer)
 2. Fetch article from DB (404 if not found, 422 if it has no content)
-3. Build the vocabulary from the other articles' `ai_tags` (only that column is read; parsed with `parseAiTags`, malformed values logged and skipped). Names are trimmed and grouped case-insensitively (first spelling wins), and only the 200 most frequent are kept
+3. Build the vocabulary from the other articles' `ai_tags` with `getArticleTagVocabulary` (`src/lib/db-helpers.ts`): one SQLite `json_each` aggregate counts the names (only that column is read; malformed values are skipped without logging). Names are trimmed and grouped case-insensitively (first spelling wins; a JS pass also merges non-ASCII case variants), and only the 200 most frequent are kept (a name counts once per article), ties broken by first use
 4. Send article content + the vocabulary to Claude with the auto-tag system prompt
 5. Parse Claude's response as a JSON array of tag names (`parseTagsResponse` trims, lower-cases and de-duplicates)
 6. Replace each suggestion that matches the vocabulary case-insensitively with the existing spelling, so "testing" and "Testing" both become one "Testing"

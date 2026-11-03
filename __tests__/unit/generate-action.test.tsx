@@ -57,6 +57,14 @@ function ArticleProbe() {
   );
 }
 
+/** Counts renders of a `useArticle()` consumer that does not read Generate state. */
+let articleConsumerRenders = 0;
+function ArticleRenderCounter() {
+  useArticle();
+  articleConsumerRenders++;
+  return null;
+}
+
 function Harness({
   kind,
   articleId,
@@ -72,6 +80,7 @@ function Harness({
       <button onClick={() => setShown((s) => !s)}>toggle widget</button>
       {shown && <GenerateAction kind={kind} aiAvailable={aiAvailable} />}
       <ArticleProbe />
+      <ArticleRenderCounter />
     </ArticleProvider>
   );
 }
@@ -229,5 +238,20 @@ describe('GenerateAction', () => {
     expect(probe()).toEqual({ id: ARTICLE_ID, aiSummary: null, aiTags: null });
     expect(generateButton().hasAttribute('disabled')).toBe(false);
     expect(screen.queryByRole('alert')).toBeNull();
+  });
+
+  it('a pending request does not re-render useArticle() consumers', async () => {
+    renderAction();
+    const request = deferFetch();
+    const before = articleConsumerRenders;
+
+    fireEvent.click(generateButton());
+
+    expect(pendingButton()).toBeTruthy();
+    expect(articleConsumerRenders).toBe(before);
+    await request.resolve(jsonResponse(200, { summary: 'Landed.', cached: false }));
+    // The result changes the article, so article consumers render once more
+    expect(articleConsumerRenders).toBe(before + 1);
+    expect(probe().aiSummary).toBe('Landed.');
   });
 });

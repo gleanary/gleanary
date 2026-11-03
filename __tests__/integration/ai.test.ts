@@ -11,6 +11,7 @@ import { articles, tags } from '@/db/schema';
 import { resetClient } from '@/lib/ai';
 import { clearSettingsCache, deleteSetting, setSetting } from '@/lib/settings';
 import { expectActiveModel } from '../mocks/active-models';
+import { logger } from '@/lib/logger';
 import { POST as createArticle } from '@/app/api/articles/route';
 import { POST as createHighlight } from '@/app/api/highlights/route';
 import { POST as summarize } from '@/app/api/ai/summarize/route';
@@ -287,6 +288,33 @@ describe('AI Features API', () => {
       expect((await res.json()).tags).toEqual(['Testing']);
     });
 
+    it('skips malformed ai_tags without logging a warning', async () => {
+      await createTaggedArticle('tagged-ok', JSON.stringify(['Kept']));
+      await createTaggedArticle('tagged-malformed', 'not json');
+      const reply = mockTagReply(['kept']);
+      const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => logger);
+
+      const res = await autoTag(jsonReq('POST', '/api/ai/tag', { articleId }));
+      const events = warnSpy.mock.calls.map((c) => (c[0] as { event?: string })?.event);
+      warnSpy.mockRestore();
+
+      expect(res.status).toBe(200);
+      expect(vocabularyHint(reply.userMessage())).toEqual(['Kept']);
+      expect(events).not.toContain('ai_tags_malformed');
+    });
+
+    it('merges non-ASCII case variants into one vocabulary entry', async () => {
+      await createTaggedArticle('tagged-upper', JSON.stringify(['Économie']));
+      await createTaggedArticle('tagged-lower', JSON.stringify(['économie']));
+      const reply = mockTagReply(['ÉCONOMIE']);
+
+      const res = await autoTag(jsonReq('POST', '/api/ai/tag', { articleId }));
+
+      // First-seen spelling wins
+      expect(vocabularyHint(reply.userMessage())).toEqual(['Économie']);
+      expect((await res.json()).tags).toEqual(['Économie']);
+    });
+
     it('sends only the 200 most frequent article tags as the vocabulary hint', async () => {
       const many = Array.from({ length: 201 }, (_, i) => `tag-${i}`);
       await createTaggedArticle('tagged-many', JSON.stringify(many));
@@ -300,6 +328,17 @@ describe('AI Features API', () => {
       // tag-200 is used twice, so it ranks first; the last single-use tag is cut
       expect(hint[0]).toBe('tag-200');
       expect(hint).not.toContain('tag-199');
+    });
+
+    it('counts a tag once per article when ranking the vocabulary hint', async () => {
+      await createTaggedArticle('tagged-repeats', JSON.stringify(['Dup', 'Dup', 'dup']));
+      await createTaggedArticle('tagged-pop-a', JSON.stringify(['Pop']));
+      await createTaggedArticle('tagged-pop-b', JSON.stringify(['Pop']));
+      const reply = mockTagReply(['pop']);
+
+      await autoTag(jsonReq('POST', '/api/ai/tag', { articleId }));
+
+      expect(vocabularyHint(reply.userMessage())).toEqual(['Pop', 'Dup']);
     });
 
     it("leaves the article's own previous tags out of the vocabulary hint", async () => {

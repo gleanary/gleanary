@@ -3,7 +3,7 @@
 import Link from 'next/link';
 import { Loader2, RotateCcw, Sparkles } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { useArticle } from '@/components/reader/article-context';
+import { useArticleGenerate } from '@/components/reader/article-context';
 import type { GenerateKind } from '@/types';
 
 interface GenerateActionProps {
@@ -25,7 +25,8 @@ const BUTTON = {
 
 /**
  * Empty state of the summary and tags sections: a hint and a Generate button that fills
- * the section through `ArticleContext` (no page refresh). The request is owned by
+ * the section through `ArticleContext` (no page refresh), reading its request state from
+ * `useArticleGenerate()`. The request is owned by
  * `ArticleProvider`, so it survives this widget remounting. Pending disables
  * the button; an error shows inline with a Retry button. Without an Anthropic API key it
  * links to Settings instead.
@@ -34,7 +35,7 @@ const BUTTON = {
  * @returns The Generate empty state
  */
 export function GenerateAction({ kind, aiAvailable }: GenerateActionProps) {
-  const { generateRequests, generate } = useArticle();
+  const { generateRequests, generate } = useArticleGenerate();
   const request = generateRequests[kind];
 
   if (!aiAvailable) {

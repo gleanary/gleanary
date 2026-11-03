@@ -22,6 +22,8 @@ All notable changes to this project will be documented in this file.
 
 ### Changed
 
+- **Auto-tag follow-ups** (#131): migration `0023_drop_auto_tag_leftovers` deletes the unlinked highlight tags that the old `POST /api/ai/tag` created from article tag suggestions; the auto-tag vocabulary is now one SQLite `json_each` aggregate (`getArticleTagVocabulary` in `src/lib/db-helpers.ts`) that skips malformed `ai_tags` without logging; Generate state moved to its own `useArticleGenerate()` context so a pending request no longer re-renders every `useArticle()` consumer.
+
 - **Readwise importer integration tests share their DB helpers**: `__tests__/integration/readwise-importer.test.ts` reads the mocked test DB through one `getTestDb()` and looks up the imported article and highlight with `getArticle()` / `getHighlight()` instead of repeating the cast and query in each test. Test-only, no behavior change.
 
 - **Context panel Generate requests are owned by `ArticleProvider`**: request state and `generate()` come from `useArticle()`, the request lives in `generateArticleAi` (`src/lib/article-api.ts`), and `updateArticle` loses its optional `articleId` guard (the reader's providers are keyed per article). One behavior change: leaving an article while its Generate request runs drops that request's state, so coming back shows Generate again until the server-saved result appears on reload.

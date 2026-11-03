@@ -12,6 +12,7 @@ import {
   chatSessions,
 } from '@/db/schema';
 import { NotFoundError, ValidationError } from '@/lib/errors';
+import { normalizeTagName } from '@/lib/ai';
 import type {
   SourceType,
   ThesisDetailResponse,
@@ -321,4 +322,41 @@ export function articlesBySourceType(sourceType: SourceType) {
 export function articlesExcludingSourceType(sourceType: SourceType) {
   const sourceIds = db.select({ id: sources.id }).from(sources).where(eq(sources.type, sourceType));
   return or(notInArray(articles.sourceId, sourceIds), isNull(articles.sourceId))!;
+}
+
+/** Most frequent article tags sent as the auto-tag vocabulary hint, so the prompt stays bounded. */
+const ARTICLE_TAG_VOCABULARY_LIMIT = 200;
+
+/**
+ * Article tag names already used by other articles, keyed by trimmed lower case (first
+ * spelling wins) and limited to the {@link ARTICLE_TAG_VOCABULARY_LIMIT} most frequent
+ * (counted once per article), ties broken by first use. Article tags are their own vocabulary: the highlight `tags`
+ * table is not read. Malformed `ai_tags` values are skipped without logging.
+ * @param articleId - The article being tagged (its own previous tags are left out)
+ * @returns Map from lower-cased name to its existing spelling, most frequent first
+ */
+export function getArticleTagVocabulary(articleId: number): Map<string, string> {
+  // One aggregate over json_each instead of loading every article's ai_tags into JS.
+  // json_each errors on malformed JSON and a `WHERE json_valid(...)` filter is not
+  // guaranteed to run first, hence the CASE guard. With exactly one min() aggregate,
+  // SQLite takes the bare `name` column from the min row, so the first-seen spelling wins
+  // (first-seen = lowest article id, then array index).
+  const rows = db.all<{ name: string }>(sql`
+    SELECT trim(j.value) AS name, count(DISTINCT ${articles.id}) AS n, min(${articles.id} * 4294967296 + j.key) AS first_seen
+    FROM ${articles},
+      json_each(CASE WHEN json_valid(${articles.aiTags}) THEN ${articles.aiTags} ELSE '[]' END) AS j
+    WHERE ${articles.aiTags} IS NOT NULL AND ${articles.id} != ${articleId}
+      AND j.type = 'text' AND trim(j.value) != ''
+    GROUP BY lower(trim(j.value))
+    ORDER BY n DESC, first_seen
+    LIMIT ${ARTICLE_TAG_VOCABULARY_LIMIT}
+  `);
+  // SQLite lower() folds ASCII only and trim() strips spaces only: this pass merges
+  // non-ASCII case variants and other whitespace the same way as JS (first row wins)
+  const vocabulary = new Map<string, string>();
+  for (const { name } of rows) {
+    const key = normalizeTagName(name);
+    if (key && !vocabulary.has(key)) vocabulary.set(key, name.trim());
+  }
+  return vocabulary;
 }
