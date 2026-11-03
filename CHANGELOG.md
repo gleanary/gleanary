@@ -87,6 +87,7 @@ All notable changes to this project will be documented in this file.
 
 ### Fixed
 
+- **Generate response validation** (#135): the context panel's Generate action now checks the summary/tags response shape before applying it, so an unexpected response shows a retryable "Unexpected response from server" error instead of storing junk `aiTags`.
 - **Dates in the context panel and lists** (#131): a date-only Published date (`2024-01-15`) now shows the stored day in every timezone instead of one day early west of UTC, and Saved, Read and other DB timestamps are read as UTC (they were read as local time, and older Safari showed them raw). `formatDate`, `formatRelativeTime`, the stale-content lint, the Settings usage and audit tables, voice sample cards and the Readwise import share one `parseDbTimestamp` rule; the Readwise import no longer overwrites a newer local highlight edit with an older Reader copy on a server east of UTC. CI E2E now points the Anthropic SDK at a closed local port (`ANTHROPIC_BASE_URL`), so the dummy key no longer sends server-side requests (concept indexing on every save) to api.anthropic.com.
 - **Reader Escape**: Escape no longer also navigates back when it exits highlight edit mode.
 - **Reader position on sidebar toggle**: toggling the left sidebar in the reader now keeps your reading position.

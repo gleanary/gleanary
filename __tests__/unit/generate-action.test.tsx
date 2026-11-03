@@ -188,6 +188,54 @@ describe('GenerateAction', () => {
     expect(probe().aiTags).toBeNull();
   });
 
+  it('error: an empty summary is reported instead of silently resetting', async () => {
+    renderAction();
+    const request = deferFetch();
+
+    fireEvent.click(generateButton());
+    await request.resolve(jsonResponse(200, { summary: '', cached: false }));
+
+    expect(screen.getByRole('alert').textContent).toContain('No summary was generated');
+    expect(probe().aiSummary).toBeNull();
+  });
+
+  it('error: an unexpected tag response shape is rejected, not stored', async () => {
+    renderAction('tags');
+    const request = deferFetch();
+
+    fireEvent.click(generateButton());
+    await request.resolve(
+      jsonResponse(200, { tags: [{ id: 1, name: 'x', color: '#abc' }], created: [] }),
+    );
+
+    expect(screen.getByRole('alert').textContent).toContain('Unexpected response from server');
+    expect(screen.getByRole('button', { name: 'Retry' })).toBeTruthy();
+    expect(probe().aiTags).toBeNull();
+  });
+
+  it('error: an unexpected summary response shape is rejected, not stored', async () => {
+    renderAction();
+    const request = deferFetch();
+
+    fireEvent.click(generateButton());
+    await request.resolve(jsonResponse(200, { summary: 42, cached: true }));
+
+    expect(screen.getByRole('alert').textContent).toContain('Unexpected response from server');
+    expect(screen.getByRole('button', { name: 'Retry' })).toBeTruthy();
+    expect(probe().aiSummary).toBeNull();
+  });
+
+  it('error: a null body on a 200 is an unexpected response', async () => {
+    renderAction();
+    const request = deferFetch();
+
+    fireEvent.click(generateButton());
+    await request.resolve(jsonResponse(200, null));
+
+    expect(screen.getByRole('alert').textContent).toContain('Unexpected response from server');
+    expect(probe().aiSummary).toBeNull();
+  });
+
   it('unavailable: links to Settings and shows no button', () => {
     renderAction('summary', false);
 
