@@ -9,6 +9,15 @@ packages:
   - unattended-upgrades
   - sqlite3
 
+# unattended-upgrades installs kernel and libc fixes but never reboots by
+# default, so they never took effect (the server once ran a kernel 13 releases
+# behind the installed one). Reboot at 04:00 when an update needs it.
+write_files:
+  - path: /etc/apt/apt.conf.d/52-gleanary-auto-reboot
+    content: |
+      Unattended-Upgrade::Automatic-Reboot "true";
+      Unattended-Upgrade::Automatic-Reboot-Time "04:00";
+
 runcmd:
   # Enable Docker
   - systemctl enable --now docker
@@ -158,3 +167,10 @@ runcmd:
 
 # Security hardening
 ssh_pwauth: false
+
+# package_upgrade above installs the latest kernel, but the image's older one
+# keeps running until a reboot. Reboot once, after every other module ran.
+power_state:
+  mode: reboot
+  message: Rebooting into the kernel installed by package_upgrade
+  condition: test -f /var/run/reboot-required

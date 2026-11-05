@@ -630,13 +630,14 @@ OVH Public Cloud is OpenStack-based. The OpenStack provider manages the SSH key 
 
 **`infra/cloud-init.yml` is the source of truth.** On first boot it:
 
-1. Installs Docker + Compose v2, fail2ban, unattended-upgrades and sqlite3.
+1. Installs Docker + Compose v2, fail2ban, unattended-upgrades and sqlite3, and writes `/etc/apt/apt.conf.d/52-gleanary-auto-reboot` so unattended-upgrades reboots at 04:00 when an update needs it (by default it installs kernel and libc fixes but never reboots, so they never take effect).
 2. Creates `/opt/gleanary/data/{db,tts-cache,originals,backups,caddy}` and chowns the three app directories to uid 1001 (the image's `USER nextjs`).
 3. Writes `/opt/gleanary/.env` (chmod 600) with the app secrets — the bcrypt hash is single-quoted, the form Docker Compose `env_file` needs.
 4. Writes `/opt/gleanary/Caddyfile`: TLS + `reverse_proxy app:3000` only. **No `basic_auth` and no `header` block** — authentication and all security headers come from the app (§16.2, §16.7). A test (`__tests__/unit/caddyfile.test.ts`) keeps this Caddyfile and `docker/Caddyfile` free of security headers.
 5. Writes `/opt/gleanary/compose.yml` (app from GHCR + Caddy) and a daily SQLite `.backup` cron keeping 7 days. The app service bind-mounts `db`, `tts-cache` and `originals` under `/data` and runs with ADR-010's runtime hardening (read-only root, no capabilities, memory/pid limits; `container-hardening.test.ts` keeps it in sync with `docker/compose.yml` and CI). The backup cron covers the DB only; TTS cache and PDF originals persist on the host disk.
 6. Installs the container egress firewall: `/usr/local/sbin/gleanary-egress` plus a `gleanary-egress.service` unit re-applied whenever Docker starts. A `GLEANARY-EGRESS` chain, jumped to from `DOCKER-USER` for traffic leaving through the external interface, lets containers open new connections only to public addresses on TCP 53/80/443/993 and UDP 53; private ranges and the cloud metadata address are rejected (ADR-010 step 4). Caddy ↔ app traffic and replies to inbound connections are untouched. `systemctl stop gleanary-egress` removes the rules. Assumes a public upstream DNS resolver; a feed on a non-standard port (e.g. `:8080`) cannot be fetched.
 7. Starts the stack if `github_image` is set.
+8. Reboots once at the end of first boot (`power_state`, after every other module) if `package_upgrade` installed a kernel or libc that needs it, so the server never starts on the image's older kernel.
 
 ### 8.6 Docker Configuration
 
@@ -670,6 +671,12 @@ Applying a compose change to the existing server (cloud-init only runs at first 
   1. ssh ubuntu@<server-ip>, cd /opt/gleanary, back up compose.yml
   2. replace the changed service block with the one from infra/cloud-init.yml (image = ghcr.io/gleanary/gleanary:latest)
   3. create/chown any new host directory to 1001:1001, then docker compose up -d --wait
+
+Applying the auto-reboot setting to a server bootstrapped before it existed:
+  1. ssh ubuntu@<server-ip>
+  2. write /etc/apt/apt.conf.d/52-gleanary-auto-reboot with the two lines from infra/cloud-init.yml (write_files)
+  3. check: apt-config dump | grep Automatic-Reboot
+  4. if /var/run/reboot-required exists, reboot now; the app comes back by itself (restart: unless-stopped)
 
 Backup restore:
   1. scp server:/opt/gleanary/data/backups/gleanary-YYYYMMDD.db ./

@@ -22,6 +22,8 @@ All notable changes to this project will be documented in this file.
 
 ### Changed
 
+- **Server applies kernel and libc updates** (infra): cloud-init now configures unattended-upgrades to reboot at 04:00 when an update needs it, and reboots once at the end of first boot if `package_upgrade` installed a new kernel. Existing servers apply the setting by hand (architecture.md §8.7).
+
 - **Auto-tag follow-ups** (#131): migration `0023_drop_auto_tag_leftovers` deletes the unlinked highlight tags that the old `POST /api/ai/tag` created from article tag suggestions; the auto-tag vocabulary is now one SQLite `json_each` aggregate (`getArticleTagVocabulary` in `src/lib/db-helpers.ts`) that skips malformed `ai_tags` without logging; Generate state moved to its own `useArticleGenerate()` context so a pending request no longer re-renders every `useArticle()` consumer.
 
 - **Readwise importer integration tests share their DB helpers**: `__tests__/integration/readwise-importer.test.ts` reads the mocked test DB through one `getTestDb()` and looks up the imported article and highlight with `getArticle()` / `getHighlight()` instead of repeating the cast and query in each test. Test-only, no behavior change.
