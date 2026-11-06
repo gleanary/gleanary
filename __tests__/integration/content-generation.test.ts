@@ -31,13 +31,13 @@ import { ExternalServiceError } from '@/lib/errors';
 import {
   drafts,
   theses,
-  articles,
   highlights,
   thesisHighlights,
   thesisResearch,
   voiceProfile,
   voiceSamples,
 } from '@/db/schema';
+import { insertTestArticle } from './setup';
 import type { Thesis, VoiceSample, ThesisResearch, ThesisHighlightRole } from '@/types';
 
 // --- Helpers ---
@@ -375,14 +375,12 @@ async function seed(
 ): Promise<SeededDraft> {
   const db = dbMock.mock.db!;
 
-  const [article] = db
-    .insert(articles)
-    .values({
+  const [article] = [
+    insertTestArticle(db, {
       url: `https://example.com/a-${Math.random()}`,
       title: 'Seed article',
-    })
-    .returning()
-    .all();
+    }),
+  ];
   const articleId = article!.id;
 
   const [thesis] = db

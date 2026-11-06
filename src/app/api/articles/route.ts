@@ -5,7 +5,11 @@ import { articles } from '@/db/schema';
 import { createArticleSchema, listArticlesSchema } from '@/lib/validators';
 import { logger } from '@/lib/logger';
 import { withRoute } from '@/lib/api-error-handler';
-import { articlesBySourceType, articlesExcludingSourceType } from '@/lib/db-helpers';
+import {
+  articlesBySourceType,
+  articlesExcludingSourceType,
+  resolveArticleSourceId,
+} from '@/lib/db-helpers';
 import { computeWordCount } from '@/lib/text-utils';
 
 /**
@@ -96,13 +100,15 @@ export const GET = withRoute('GET /api/articles', async (req: NextRequest) => {
 });
 
 /**
- * POST /api/articles — Create a new article.
+ * POST /api/articles — Create a new article. Without `sourceId` it goes to the
+ * `web_save` singleton source.
  * @param req - NextRequest with JSON body matching createArticleSchema
- * @returns Created article with 201 status
+ * @returns Created article with 201 status; 422 if `sourceId` is unknown or soft-deleted
  */
 export const POST = withRoute('POST /api/articles', async (req: NextRequest) => {
   const body = await req.json();
   const data = createArticleSchema.parse(body);
+  const sourceId = resolveArticleSourceId(data.sourceId);
 
   // Compute word count from contentText if not provided
   const wordCount = data.wordCount ?? computeWordCount(data.contentText ?? '');
@@ -119,7 +125,7 @@ export const POST = withRoute('POST /api/articles', async (req: NextRequest) => 
       siteName: data.siteName,
       imageUrl: data.imageUrl,
       wordCount,
-      sourceId: data.sourceId,
+      sourceId,
       publishedAt: data.publishedAt,
       status: data.status,
     })

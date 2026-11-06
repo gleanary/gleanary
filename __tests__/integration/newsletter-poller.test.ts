@@ -54,6 +54,7 @@ vi.mock('mailparser', () => ({
   simpleParser: (...args: unknown[]) => mockSimpleParser(...args),
 }));
 
+import { eq } from 'drizzle-orm';
 import { createTestDb } from './setup';
 import { db } from '@/db';
 import { sources, articles } from '@/db/schema';
@@ -96,7 +97,11 @@ describe('newsletter-poller', () => {
 
     await pollNewsletters();
 
-    const savedSources = (db as ReturnType<typeof createTestDb>['db']).select().from(sources).all();
+    const savedSources = (db as ReturnType<typeof createTestDb>['db'])
+      .select()
+      .from(sources)
+      .where(eq(sources.type, 'newsletter'))
+      .all();
     expect(savedSources).toHaveLength(1);
     expect(savedSources[0]!.type).toBe('newsletter');
     expect(savedSources[0]!.name).toBe('Ben Thompson');
@@ -238,7 +243,11 @@ describe('newsletter-poller', () => {
 
     await pollNewsletters();
 
-    const savedSources = (db as ReturnType<typeof createTestDb>['db']).select().from(sources).all();
+    const savedSources = (db as ReturnType<typeof createTestDb>['db'])
+      .select()
+      .from(sources)
+      .where(eq(sources.type, 'newsletter'))
+      .all();
     expect(savedSources).toHaveLength(1);
   });
 

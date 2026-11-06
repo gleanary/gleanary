@@ -36,7 +36,7 @@ function makeArticle(fields: Partial<Article>): Article {
     id: 1,
     author: 'Jane Doe',
     siteName: 'Example Blog',
-    sourceId: null,
+    sourceId: 1,
     publishedAt: '2024-01-15T12:00:00Z',
     savedAt: '2024-02-20 12:00:00',
     readAt: null,
@@ -86,11 +86,16 @@ describe('ReaderContextPanel', () => {
     expect(field('Length')).toBe('1,190 words · 5 min read');
   });
 
-  it('skips Source and Read when they do not apply', () => {
+  it('skips Read until the article is read', () => {
     renderPanel();
 
-    expect(field('Source')).toBeNull();
     expect(field('Read')).toBeNull();
+  });
+
+  it('shows Source for every article, web saves included', () => {
+    renderPanel({}, { sourceName: 'Web saves' });
+
+    expect(field('Source')).toBe('Web saves');
   });
 
   it('shows Source when the article has one, and Read once it is stamped', () => {

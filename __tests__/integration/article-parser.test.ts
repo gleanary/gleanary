@@ -291,23 +291,25 @@ describe('POST /api/articles/parse', () => {
 
   it('links article to sourceId when provided', async () => {
     const { POST: createSource } = await import('@/app/api/sources/route');
-    await createSource(
-      jsonReq('POST', '/api/sources', {
-        type: 'browser_extension',
-        name: 'Test Extension',
-      }),
-    );
+    const { source } = await (
+      await createSource(
+        jsonReq('POST', '/api/sources', {
+          type: 'browser_extension',
+          name: 'Test Extension',
+        }),
+      )
+    ).json();
 
     const res = await parseArticle(
       jsonReq('POST', '/api/articles/parse', {
         url: 'https://example.com/blog/2024/web-architecture',
-        sourceId: 1,
+        sourceId: source.id,
       }),
     );
     expect(res.status).toBe(201);
 
     const body = await res.json();
-    expect(body.article.sourceId).toBe(1);
+    expect(body.article.sourceId).toBe(source.id);
   });
 
   it('respects custom status', async () => {

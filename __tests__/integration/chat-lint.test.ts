@@ -8,7 +8,8 @@ const dbMock = await vi.hoisted(async () => (await import('./setup')).createDbMo
 vi.mock('@/db', () => dbMock.mock);
 
 import { resetClient } from '@/lib/ai';
-import { articles, highlights, theses } from '@/db/schema';
+import { highlights, theses } from '@/db/schema';
+import { insertTestArticle } from './setup';
 import { POST as lintPost } from '@/app/api/chat/lint/route';
 
 /**
@@ -86,16 +87,12 @@ async function parseSSE(response: Response): Promise<Array<{ event: string; data
 function seedMinimalKb(db: ReturnType<typeof dbMock.setup>['db']) {
   const articleIds: number[] = [];
   for (let i = 0; i < 3; i++) {
-    const a = db
-      .insert(articles)
-      .values({
-        url: `https://example.com/a${i}`,
-        title: `Article ${i}`,
-        status: 'reading',
-        aiIndex: 'TOPICS: regulatory capture, finance\nENTITIES: sec',
-      })
-      .returning()
-      .get()!;
+    const a = insertTestArticle(db, {
+      url: `https://example.com/a${i}`,
+      title: `Article ${i}`,
+      status: 'reading',
+      aiIndex: 'TOPICS: regulatory capture, finance\nENTITIES: sec',
+    });
     articleIds.push(a.id);
   }
   for (let i = 0; i < 5; i++) {
@@ -138,7 +135,7 @@ describe('POST /api/chat/lint', () => {
     it('emits empty + done events when the KB has <3 articles', async () => {
       // Only 1 article
       const db = dbMock.mock.db!;
-      db.insert(articles).values({ url: 'https://example.com/solo', title: 'Solo' }).run();
+      insertTestArticle(db, { url: 'https://example.com/solo', title: 'Solo' });
 
       const res = await lintPost(jsonReq({ check: 'stale' }));
       expect(res.status).toBe(200);
@@ -168,14 +165,12 @@ describe('POST /api/chat/lint', () => {
         .run();
 
       // Insert a stale reading article
-      db.insert(articles)
-        .values({
-          url: 'https://example.com/stuck',
-          title: 'Stuck article',
-          status: 'reading',
-          updatedAt: sql`datetime('now', '-20 days')`,
-        })
-        .run();
+      insertTestArticle(db, {
+        url: 'https://example.com/stuck',
+        title: 'Stuck article',
+        status: 'reading',
+        updatedAt: sql`datetime('now', '-20 days')`,
+      });
 
       // Insert an overdue mature highlight
       db.insert(highlights)
@@ -241,15 +236,11 @@ describe('POST /api/chat/lint', () => {
       const db = dbMock.mock.db!;
       const articleIds: number[] = [];
       for (let i = 0; i < 4; i++) {
-        const a = db
-          .insert(articles)
-          .values({
-            url: `https://example.com/cluster-${i}`,
-            title: `Cluster article ${i}`,
-            aiIndex: `TOPICS: regulatory capture, finance\nENTITIES: fed`,
-          })
-          .returning()
-          .get()!;
+        const a = insertTestArticle(db, {
+          url: `https://example.com/cluster-${i}`,
+          title: `Cluster article ${i}`,
+          aiIndex: `TOPICS: regulatory capture, finance\nENTITIES: fed`,
+        });
         articleIds.push(a.id);
       }
       for (let i = 0; i < 12; i++) {

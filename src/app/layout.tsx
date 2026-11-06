@@ -1,8 +1,9 @@
 import type { Metadata, Viewport } from 'next';
 import { headers } from 'next/headers';
-import { eq, sql } from 'drizzle-orm';
+import { sql } from 'drizzle-orm';
 import { db } from '@/db';
-import { articles, sources } from '@/db/schema';
+import { articles } from '@/db/schema';
+import { listSidebarFeeds } from '@/lib/db-helpers';
 import { LOGIN_PAGE_HEADER } from '@/lib/auth';
 import { countDueHighlights } from '@/lib/spaced-repetition';
 import { logger } from '@/lib/logger';
@@ -52,11 +53,7 @@ function getSidebarData(): SidebarData {
       .from(articles)
       .get();
 
-    const feeds = db
-      .select({ id: sources.id, name: sources.name, iconUrl: sources.iconUrl })
-      .from(sources)
-      .where(eq(sources.type, 'rss_feed'))
-      .all();
+    const feeds = listSidebarFeeds();
 
     return {
       counts: {

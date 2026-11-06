@@ -7,7 +7,8 @@ const dbMock = await vi.hoisted(async () => (await import('./setup')).createDbMo
 vi.mock('@/db', () => dbMock.mock);
 
 import { resetClient } from '@/lib/ai';
-import { articles, chatSessions, chatMessages, theses, highlights, tags } from '@/db/schema';
+import { chatSessions, chatMessages, theses, highlights, tags } from '@/db/schema';
+import { insertTestArticle } from './setup';
 
 // Import route handlers
 import { POST as createSession } from '@/app/api/chat/route';
@@ -115,16 +116,12 @@ describe('Chat Filing API', () => {
     resetClient();
 
     // Insert a test article
-    const article = db
-      .insert(articles)
-      .values({
-        url: 'https://example.com/test',
-        title: 'Test Article',
-        contentText: 'Test content about testing patterns.',
-        excerpt: 'Testing overview',
-      })
-      .returning()
-      .get()!;
+    const article = insertTestArticle(db, {
+      url: 'https://example.com/test',
+      title: 'Test Article',
+      contentText: 'Test content about testing patterns.',
+      excerpt: 'Testing overview',
+    });
 
     // Insert a test highlight
     const highlight = db

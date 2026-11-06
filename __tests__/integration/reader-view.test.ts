@@ -6,6 +6,7 @@ vi.mock('@/db', () => dbMock.mock);
 
 import { db } from '@/db';
 import { articles, sources } from '@/db/schema';
+import { insertTestArticle } from './setup';
 import { eq } from 'drizzle-orm';
 
 describe('reader-view data layer', () => {
@@ -15,16 +16,14 @@ describe('reader-view data layer', () => {
 
   describe('article fetching for reader', () => {
     it('fetches article with content_html for rendering', () => {
-      db.insert(articles)
-        .values({
-          url: 'https://example.com/article',
-          title: 'Test Article',
-          contentHtml: '<p>Article content</p>',
-          contentText: 'Article content',
-          wordCount: 100,
-          status: 'inbox',
-        })
-        .run();
+      insertTestArticle(db, {
+        url: 'https://example.com/article',
+        title: 'Test Article',
+        contentHtml: '<p>Article content</p>',
+        contentText: 'Article content',
+        wordCount: 100,
+        status: 'inbox',
+      });
 
       const [article] = db.select().from(articles).where(eq(articles.id, 1)).all();
 
@@ -35,12 +34,10 @@ describe('reader-view data layer', () => {
     });
 
     it('returns article with null content_html gracefully', () => {
-      db.insert(articles)
-        .values({
-          url: 'https://example.com/no-content',
-          title: 'No Content Article',
-        })
-        .run();
+      insertTestArticle(db, {
+        url: 'https://example.com/no-content',
+        title: 'No Content Article',
+      });
 
       const [article] = db.select().from(articles).where(eq(articles.id, 1)).all();
 
@@ -56,14 +53,12 @@ describe('reader-view data layer', () => {
 
   describe('reading progress updates', () => {
     it('updates reading progress via PATCH fields', () => {
-      db.insert(articles)
-        .values({
-          url: 'https://example.com/article',
-          title: 'Test Article',
-          readingProgress: 0,
-          status: 'inbox',
-        })
-        .run();
+      insertTestArticle(db, {
+        url: 'https://example.com/article',
+        title: 'Test Article',
+        readingProgress: 0,
+        status: 'inbox',
+      });
 
       db.update(articles).set({ readingProgress: 0.42 }).where(eq(articles.id, 1)).run();
 
@@ -72,13 +67,11 @@ describe('reader-view data layer', () => {
     });
 
     it('updates status from inbox to reading', () => {
-      db.insert(articles)
-        .values({
-          url: 'https://example.com/article',
-          title: 'Test Article',
-          status: 'inbox',
-        })
-        .run();
+      insertTestArticle(db, {
+        url: 'https://example.com/article',
+        title: 'Test Article',
+        status: 'inbox',
+      });
 
       db.update(articles).set({ status: 'reading' }).where(eq(articles.id, 1)).run();
 
@@ -87,13 +80,11 @@ describe('reader-view data layer', () => {
     });
 
     it('toggles favorite', () => {
-      db.insert(articles)
-        .values({
-          url: 'https://example.com/article',
-          title: 'Test Article',
-          isFavorite: false,
-        })
-        .run();
+      insertTestArticle(db, {
+        url: 'https://example.com/article',
+        title: 'Test Article',
+        isFavorite: false,
+      });
 
       db.update(articles).set({ isFavorite: true }).where(eq(articles.id, 1)).run();
 
@@ -102,13 +93,11 @@ describe('reader-view data layer', () => {
     });
 
     it('archives an article', () => {
-      db.insert(articles)
-        .values({
-          url: 'https://example.com/article',
-          title: 'Test Article',
-          status: 'reading',
-        })
-        .run();
+      insertTestArticle(db, {
+        url: 'https://example.com/article',
+        title: 'Test Article',
+        status: 'reading',
+      });
 
       db.update(articles).set({ status: 'archived' }).where(eq(articles.id, 1)).run();
 
@@ -117,13 +106,11 @@ describe('reader-view data layer', () => {
     });
 
     it('unarchives an article back to inbox', () => {
-      db.insert(articles)
-        .values({
-          url: 'https://example.com/article',
-          title: 'Test Article',
-          status: 'archived',
-        })
-        .run();
+      insertTestArticle(db, {
+        url: 'https://example.com/article',
+        title: 'Test Article',
+        status: 'archived',
+      });
 
       db.update(articles).set({ status: 'inbox' }).where(eq(articles.id, 1)).run();
 
@@ -132,13 +119,11 @@ describe('reader-view data layer', () => {
     });
 
     it('toggles between archived and inbox states', () => {
-      db.insert(articles)
-        .values({
-          url: 'https://example.com/article',
-          title: 'Test Article',
-          status: 'inbox',
-        })
-        .run();
+      insertTestArticle(db, {
+        url: 'https://example.com/article',
+        title: 'Test Article',
+        status: 'inbox',
+      });
 
       // Archive
       db.update(articles).set({ status: 'archived' }).where(eq(articles.id, 1)).run();
@@ -154,26 +139,26 @@ describe('reader-view data layer', () => {
 
   describe('article with source', () => {
     it('includes source association for display', () => {
-      db.insert(sources)
+      const sourceId = db
+        .insert(sources)
         .values({
           type: 'rss_feed',
           name: 'Tech Blog',
           feedUrl: 'https://techblog.com/feed.xml',
         })
-        .run();
+        .returning()
+        .get()!.id;
 
-      db.insert(articles)
-        .values({
-          url: 'https://techblog.com/article',
-          title: 'Tech Article',
-          siteName: 'Tech Blog',
-          sourceId: 1,
-          status: 'inbox',
-        })
-        .run();
+      insertTestArticle(db, {
+        url: 'https://techblog.com/article',
+        title: 'Tech Article',
+        siteName: 'Tech Blog',
+        sourceId,
+        status: 'inbox',
+      });
 
       const [article] = db.select().from(articles).where(eq(articles.id, 1)).all();
-      expect(article!.sourceId).toBe(1);
+      expect(article!.sourceId).toBe(sourceId);
       expect(article!.siteName).toBe('Tech Blog');
     });
   });

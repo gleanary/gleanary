@@ -91,16 +91,18 @@ Create a new article (from browser extension, RSS, or manual save).
   siteName?: string;
   imageUrl?: string;
   wordCount?: number;
-  sourceId?: number;
+  sourceId?: number;              // default: the `web_save` singleton source ("Web saves")
   publishedAt?: string;           // ISO 8601
   status?: "inbox" | "reading" | "archived";  // default: "inbox"
 }
 ```
 
+Every article has a source (`articles.source_id` is NOT NULL, `ON DELETE restrict`). Without `sourceId`, the article goes to the `web_save` singleton, created on demand. A given `sourceId` must refer to an existing source that is not soft-deleted, otherwise the request is a `422`. `POST /api/articles/parse` applies the same rule, after its URL-duplicate `409` check and before any fetch.
+
 > The DB status enum also contains `pending_review` (`src/db/schema.ts`), set only by newsletter ingestion for unknown senders — the public API neither accepts it as input nor returns such rows (see `GET /api/articles` below and `docs/modules/newsletter-ingestion.md`).
 
 **Response**: `201` with `{ article: Article }`.
-**Errors**: `422` (validation), `409` (duplicate URL).
+**Errors**: `422` (validation, unknown or soft-deleted `sourceId`), `409` (duplicate URL).
 
 #### `GET /api/articles`
 
@@ -257,7 +259,7 @@ Add or replace tags on multiple highlights. Missing highlight IDs are silently s
 
 #### `GET /api/sources`
 
-List all sources.
+List all sources that are not soft-deleted. A fresh database already holds the `web_save` singleton.
 
 **Response**: `200` with `{ sources: Source[] }`.
 
@@ -269,7 +271,7 @@ Add a new source (typically an RSS feed).
 
 ```typescript
 {
-  type: "rss_feed" | "browser_extension" | "remarkable" | "manual";
+  type: "rss_feed" | "browser_extension" | "remarkable" | "manual" | "newsletter";
   name: string;                   // required
   feedUrl?: string;               // required if type is rss_feed
   iconUrl?: string;
@@ -278,15 +280,21 @@ Add a new source (typically an RSS feed).
 }
 ```
 
-**Response**: `201` with created source.
-**Errors**: `422`.
+The singleton types (`SINGLETON_SOURCE_TYPES` in `src/types/index.ts`: `web_save`, `upload`, `readwise`) are rejected with `422`: the app creates them on demand (`getOrCreateSingletonSource`), and the `sources_singleton_type_idx` partial unique index allows one row per singleton type. `newsletter` is rejected too (`422`): newsletter senders are created only by the newsletter poller, and a newsletter source could never be deleted afterwards.
+
+**Feed restore.** For `type: "rss_feed"`, if a soft-deleted `rss_feed` source has exactly the same `feed_url` (the most recent `deleted_at` if several), that row is restored instead of inserting a new one: `deleted_at` is cleared, `name`, `icon_url`, `category` and `poll_interval` are overwritten with the request's values (an omitted `iconUrl`/`category` clears it), and `etag`, `last_modified` and `last_polled` are kept. A live source with the same `feed_url` does not block creation (duplicates are allowed).
+
+**Response**: `201` with `{ source: Source }`, or `200` with `{ source: Source, restored: true }` for a restored feed (`CreateSourceResponse`).
+**Errors**: `422` (validation, singleton or newsletter type).
 
 #### `DELETE /api/sources/[id]`
 
-Remove a source. Articles from this source remain (sourceId set to null).
+Soft-delete a source: `deleted_at` is set and the row stays. Its articles keep pointing at it (the reader still shows its name and icon). A soft-deleted source is hidden from `GET /api/sources` and the sidebar feed list, skipped by the feed poller, and is a `404` for `POST /api/feeds/poll` and `PATCH /api/newsletters/[id]` (`getSourceOrThrow`).
+
+Singleton and newsletter sources (`UNDELETABLE_SOURCE_TYPES`) can't be deleted: `422` with `Built-in sources can't be deleted` (singleton) or `Newsletter senders can't be deleted; block them instead` (newsletter, whatever its pending/approved/blocked state), and the row is unchanged.
 
 **Response**: `200` with `{ deleted: true }`.
-**Errors**: `404`.
+**Errors**: `404` (unknown or already soft-deleted), `422` (undeletable type).
 
 ### Tags
 

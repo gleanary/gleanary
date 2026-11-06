@@ -183,7 +183,7 @@ export async function pollFeed(source: Source): Promise<PollResult> {
 }
 
 /**
- * Polls all RSS feed sources that are due for polling.
+ * Polls all RSS feed sources that are due for polling (soft-deleted feeds are skipped).
  * A feed is "due" when lastPolled is null or lastPolled + pollInterval minutes ≤ now.
  * @returns Array of poll results, one per feed polled
  */
@@ -197,6 +197,7 @@ export async function pollAllFeeds(): Promise<PollResult[]> {
     .where(
       and(
         eq(sources.type, 'rss_feed'),
+        isNull(sources.deletedAt),
         or(
           isNull(sources.lastPolled),
           sql`datetime(${sources.lastPolled}, '+' || ${sources.pollInterval} || ' minutes') <= datetime(${now.toISOString()})`,

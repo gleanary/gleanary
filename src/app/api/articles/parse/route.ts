@@ -15,13 +15,16 @@ import { recordPageBasedUsage } from '@/lib/ai-usage';
 import { EncryptedPdfError, ValidationError } from '@/lib/errors';
 import { logger } from '@/lib/logger';
 import { handleApiError } from '@/lib/api-error-handler';
+import { resolveArticleSourceId } from '@/lib/db-helpers';
 
 /**
  * POST /api/articles/parse — Parse a URL (or provided HTML) and save as an article.
  * For URL imports, pre-fetches to detect PDFs before falling back to Defuddle/Jina.
  * Idempotent: returns 409 with `existingId` if the URL or content hash already exists.
+ * Without `sourceId` the article goes to the `web_save` singleton source.
  * @param req - NextRequest with JSON body matching parseArticleSchema
- * @returns Created article with 201 status, or 409 if duplicate
+ * @returns Created article with 201 status, 409 if duplicate, or 422 if `sourceId` is
+ *   unknown or soft-deleted
  */
 export async function POST(req: NextRequest) {
   try {
@@ -37,6 +40,9 @@ export async function POST(req: NextRequest) {
     if (existing) {
       return NextResponse.json({ existingId: existing.id }, { status: 409 });
     }
+
+    // Resolved before any fetch or insert: the PDF branch inserts before OCR runs
+    const sourceId = resolveArticleSourceId(data.sourceId);
 
     if (data.html) {
       const parsed = await parseArticleFromHtml(data.html, data.url);
@@ -55,7 +61,7 @@ export async function POST(req: NextRequest) {
           imageUrl: parsed.imageUrl,
           wordCount: parsed.wordCount,
           publishedAt: parsed.publishedAt,
-          sourceId: data.sourceId,
+          sourceId,
           status: data.status,
         })
         .returning()
@@ -140,7 +146,7 @@ export async function POST(req: NextRequest) {
           extractionTier: 'failed',
           originalFilePath: getPdfPath(hash),
           contentHash: hash,
-          sourceId: data.sourceId,
+          sourceId,
           status: data.status,
         })
         .returning()
@@ -227,7 +233,7 @@ export async function POST(req: NextRequest) {
         imageUrl: parsed.imageUrl,
         wordCount: parsed.wordCount,
         publishedAt: parsed.publishedAt,
-        sourceId: data.sourceId,
+        sourceId,
         status: data.status,
       })
       .returning()

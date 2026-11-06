@@ -1,10 +1,13 @@
 import Database from 'better-sqlite3';
-import { drizzle } from 'drizzle-orm/better-sqlite3';
+import { drizzle, type BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
+import { eq } from 'drizzle-orm';
 import fs from 'fs';
 import path from 'path';
 import * as schema from '@/db/schema';
 import { initFts } from '@/db/fts';
 import { runMigrations } from '../../scripts/migrate-runner.mjs';
+import type { SQLiteInsertValue } from 'drizzle-orm/sqlite-core';
+import type { Article } from '@/types';
 
 const MIGRATIONS_DIR = path.resolve(__dirname, '..', '..', 'drizzle');
 
@@ -24,6 +27,42 @@ export function createTestDb() {
   runMigrations(sqlite, MIGRATIONS_DIR, { log: silentLog });
   initFts(sqlite);
   return { db, sqlite };
+}
+
+type TestDb = BetterSQLite3Database<typeof schema>;
+
+/**
+ * Looks up the `web_save` singleton source that migration 0024 creates in every DB.
+ * Looked up by type: never assume its id.
+ * @param db - Drizzle instance on a fully migrated test DB
+ * @returns The id of the `web_save` source
+ */
+export function webSaveSourceId(db: TestDb): number {
+  const row = db
+    .select({ id: schema.sources.id })
+    .from(schema.sources)
+    .where(eq(schema.sources.type, 'web_save'))
+    .get();
+  if (!row) throw new Error('webSaveSourceId: no web_save source (is migration 0024 applied?)');
+  return row.id;
+}
+
+/**
+ * Inserts one article for a test. `sourceId` defaults to the `web_save` singleton,
+ * since `articles.source_id` is NOT NULL.
+ * @param db - Drizzle instance on a fully migrated test DB
+ * @param values - Article columns; `sourceId` is optional
+ * @returns The inserted article row
+ */
+export function insertTestArticle(
+  db: TestDb,
+  values: Omit<SQLiteInsertValue<typeof schema.articles>, 'sourceId'> & { sourceId?: number },
+): Article {
+  return db
+    .insert(schema.articles)
+    .values({ ...values, sourceId: values.sourceId ?? webSaveSourceId(db) })
+    .returning()
+    .get()!;
 }
 
 /**

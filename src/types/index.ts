@@ -96,8 +96,52 @@ export const SOURCE_TYPES = [
   'newsletter',
   'readwise',
   'upload',
+  'web_save',
 ] as const;
 export type SourceType = (typeof SOURCE_TYPES)[number];
+
+/**
+ * Source types with exactly one row each, created on demand by
+ * `getOrCreateSingletonSource`. Can't be created through `POST /api/sources`.
+ * Repeated literally in the `sources_singleton_type_idx` WHERE clause
+ * (src/db/schema.ts) and migration 0024's backfill: keep them in sync.
+ */
+export const SINGLETON_SOURCE_TYPES = ['web_save', 'upload', 'readwise'] as const;
+export type SingletonSourceType = (typeof SINGLETON_SOURCE_TYPES)[number];
+
+/** Source types `DELETE /api/sources/[id]` refuses (422): singletons and newsletter senders. */
+export const UNDELETABLE_SOURCE_TYPES = [...SINGLETON_SOURCE_TYPES, 'newsletter'] as const;
+export type UndeletableSourceType = (typeof UNDELETABLE_SOURCE_TYPES)[number];
+
+/**
+ * Whether a source type is a singleton.
+ * @param type - Source type
+ * @returns True for a type in SINGLETON_SOURCE_TYPES
+ */
+export function isSingletonSourceType(type: SourceType): type is SingletonSourceType {
+  return (SINGLETON_SOURCE_TYPES as readonly SourceType[]).includes(type);
+}
+
+/**
+ * Whether `DELETE /api/sources/[id]` refuses a source type.
+ * @param type - Source type
+ * @returns True for a type in UNDELETABLE_SOURCE_TYPES
+ */
+export function isUndeletableSourceType(type: SourceType): type is UndeletableSourceType {
+  return (UNDELETABLE_SOURCE_TYPES as readonly SourceType[]).includes(type);
+}
+
+/** Response of `POST /api/sources`: 201 for a new source, 200 with `restored` for a restored feed. */
+export interface CreateSourceResponse {
+  source: Source;
+  /** Present when a soft-deleted feed with the same `feed_url` was restored instead. */
+  restored?: true;
+}
+
+/** Response of `DELETE /api/sources/[id]` (a soft delete). */
+export interface DeleteSourceResponse {
+  deleted: true;
+}
 
 export const EXTRACTION_TIERS = ['pdfjs', 'jina', 'mistral', 'failed'] as const;
 export type ExtractionTier = (typeof EXTRACTION_TIERS)[number];

@@ -33,7 +33,8 @@ vi.mock('@/lib/ai', async (importOriginal) => {
 });
 vi.mock('@/lib/ai-usage', () => ({ recordPageBasedUsage: vi.fn() }));
 
-import { createTestDb } from './setup';
+import { eq } from 'drizzle-orm';
+import { createTestDb, insertTestArticle } from './setup';
 import { articles, sources } from '@/db/schema';
 import { preflightPdf } from '@/lib/pdf-preflight';
 import { processPdfWithMistral } from '@/lib/pdf-processor';
@@ -121,9 +122,6 @@ describe('POST /api/upload', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     testDb = dbMock.setup();
-    // Pre-insert the upload source so the route's module-level _uploadSourceId cache
-    // (set during the first test) stays valid across fresh DBs (all get id=1).
-    testDb.db.insert(sources).values({ type: 'upload', name: 'Uploaded files' }).run();
     mockStorePdf.mockResolvedValue('a'.repeat(64));
     mockPreflightPdf.mockResolvedValue(GOOD_PREFLIGHT);
     mockProcessPdfWithMistral.mockResolvedValue(GOOD_MISTRAL);
@@ -143,12 +141,34 @@ describe('POST /api/upload', () => {
     expect(rows).toHaveLength(1);
   });
 
+  it('assigns the upload singleton of the current DB, never a stale id from another DB', async () => {
+    // First upload creates the upload source in this fresh DB
+    const first = await (await uploadPdf(multipartReq(pdfBuf(), 'paper.pdf'))).json();
+    const firstUpload = testDb.db.select().from(sources).where(eq(sources.type, 'upload')).get()!;
+    expect(first.article.sourceId).toBe(firstUpload.id);
+
+    // A second fresh DB where the upload source lands on a different id
+    testDb = dbMock.setup();
+    testDb.db.insert(sources).values({ type: 'manual', name: 'Shift ids' }).run();
+    const upload = testDb.db
+      .insert(sources)
+      .values({ type: 'upload', name: 'Uploaded files' })
+      .returning()
+      .get()!;
+    expect(upload.id).not.toBe(firstUpload.id);
+
+    const res = await uploadPdf(multipartReq(pdfBuf(), 'paper.pdf'));
+    expect(res.status).toBe(201);
+    const { article } = await res.json();
+    expect(article.sourceId).toBe(upload.id);
+    expect(testDb.db.select().from(sources).where(eq(sources.type, 'upload')).all()).toHaveLength(
+      1,
+    );
+  });
+
   it('returns 409 with existingId for duplicate content hash before any processing', async () => {
     const hash = createHash('sha256').update(pdfBuf()).digest('hex');
-    testDb.db
-      .insert(articles)
-      .values({ url: `upload://${hash}`, title: 'Existing', contentHash: hash })
-      .run();
+    insertTestArticle(testDb.db, { url: `upload://${hash}`, title: 'Existing', contentHash: hash });
     const res = await uploadPdf(multipartReq(pdfBuf(), 'paper.pdf'));
     expect(res.status).toBe(409);
     const body = await res.json();
@@ -294,24 +314,19 @@ describe('GET /api/articles/[id]/original', () => {
   const VALID_HASH = 'a'.repeat(64);
 
   function insertWithPdf(): number {
-    return testDb.db
-      .insert(articles)
-      .values({
-        url: `upload://${VALID_HASH}`,
-        title: 'Test PDF',
-        originalFilePath: `/data/originals/${VALID_HASH}.pdf`,
-        contentHash: VALID_HASH,
-      })
-      .returning({ id: articles.id })
-      .get()!.id;
+    return insertTestArticle(testDb.db, {
+      url: `upload://${VALID_HASH}`,
+      title: 'Test PDF',
+      originalFilePath: `/data/originals/${VALID_HASH}.pdf`,
+      contentHash: VALID_HASH,
+    }).id;
   }
 
   function insertWithoutPdf(): number {
-    return testDb.db
-      .insert(articles)
-      .values({ url: 'https://example.com/article', title: 'Web Article' })
-      .returning({ id: articles.id })
-      .get()!.id;
+    return insertTestArticle(testDb.db, {
+      url: 'https://example.com/article',
+      title: 'Web Article',
+    }).id;
   }
 
   function ctx(id: number) {
@@ -461,10 +476,7 @@ describe('POST /api/articles/parse — PDF branch', () => {
   });
 
   it('returns 409 with existingId when URL already in DB', async () => {
-    testDb.db
-      .insert(articles)
-      .values({ url: 'https://example.com/paper.pdf', title: 'Existing' })
-      .run();
+    insertTestArticle(testDb.db, { url: 'https://example.com/paper.pdf', title: 'Existing' });
     const req = jsonReq('http://localhost/api/articles/parse', {
       url: 'https://example.com/paper.pdf',
     });
@@ -476,10 +488,11 @@ describe('POST /api/articles/parse — PDF branch', () => {
 
   it('returns 409 when same PDF was previously uploaded (cross-flow dedup)', async () => {
     const hash = createHash('sha256').update(PDF_URL_BUFFER).digest('hex');
-    testDb.db
-      .insert(articles)
-      .values({ url: `upload://${hash}`, title: 'Previously uploaded', contentHash: hash })
-      .run();
+    insertTestArticle(testDb.db, {
+      url: `upload://${hash}`,
+      title: 'Previously uploaded',
+      contentHash: hash,
+    });
     const req = jsonReq('http://localhost/api/articles/parse', {
       url: 'https://example.com/paper.pdf',
     });
@@ -493,12 +506,9 @@ describe('POST /api/articles/parse — PDF branch', () => {
 // ── GET /api/articles — PDF fields ────────────────────────────────────────────
 
 describe('GET /api/articles — PDF list fields', () => {
-  let testDb: ReturnType<typeof createTestDb>;
-
   beforeEach(() => {
     vi.clearAllMocks();
-    testDb = dbMock.setup();
-    testDb.db.insert(sources).values({ type: 'upload', name: 'Uploaded files' }).run();
+    dbMock.setup();
     mockPreflightPdf.mockResolvedValue(GOOD_PREFLIGHT);
     mockProcessPdfWithMistral.mockResolvedValue(GOOD_MISTRAL);
     mockStorePdf.mockResolvedValue('a'.repeat(64));

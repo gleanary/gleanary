@@ -63,7 +63,7 @@ export default async function ReaderPage({ params, searchParams }: ReaderPagePro
   if (!article) notFound();
 
   const articleHighlights = getHighlights(article.id);
-  const source = article.sourceId != null ? getSource(article.sourceId) : null;
+  const source = getSource(article.sourceId);
   const isPdf = !!article.originalFilePath;
   const isNewsletter = !isPdf && source?.type === 'newsletter' && !!article.contentOriginalHtml;
   const showOpenOriginal = !article.url.startsWith('newsletter://');
@@ -115,7 +115,7 @@ export default async function ReaderPage({ params, searchParams }: ReaderPagePro
                   />
                 ) : isNewsletter ? (
                   <NewsletterOriginalView
-                    sourceId={article.sourceId!}
+                    sourceId={article.sourceId}
                     contentHtml={article.contentHtml ?? ''}
                     contentOriginalHtml={article.contentOriginalHtml!}
                     articleId={article.id}

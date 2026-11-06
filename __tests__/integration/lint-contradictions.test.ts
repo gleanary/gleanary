@@ -17,7 +17,8 @@ import {
   LINT_CONTRADICTIONS_NOTES_PROMPT,
   LINT_CONTRADICTIONS_TENSION_PROMPT,
 } from '@/lib/ai';
-import { articles, highlights, theses, thesisHighlights } from '@/db/schema';
+import { highlights, theses, thesisHighlights } from '@/db/schema';
+import { insertTestArticle } from './setup';
 import { runContradictions } from '@/lib/lint/contradictions';
 import type { LintContext } from '@/lib/lint/types';
 
@@ -52,7 +53,7 @@ describe('runContradictions', () => {
 
   /** Seeds an article and returns its id. */
   function seedArticle(url = 'https://example.com/a'): number {
-    return db.insert(articles).values({ url, title: 'Source Article' }).returning().get()!.id;
+    return insertTestArticle(db, { url, title: 'Source Article' }).id;
   }
 
   it('skips pass A entirely when fewer than 2 annotated highlights exist (no AI call)', async () => {

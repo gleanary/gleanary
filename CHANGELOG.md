@@ -6,6 +6,8 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
+- **Every article has a source** (article enrichment, session 2): web saves go to a new `web_save` singleton source and `articles.source_id` is NOT NULL (migration 0024 backfills NULL/dangling sources and merges duplicate singletons); deleting a source is now a soft delete (re-adding a deleted feed URL restores it), singleton and newsletter sources can't be deleted or created through `/api/sources` (422), and an unknown `sourceId` on article save is a 422.
+
 - **Safe migration runner and FTS trigger self-heal** (article enrichment, session 1): `scripts/migrate-runner.mjs` is now the only migration runner (CLI, `npm run db:migrate`, tests); it applies each file atomically with foreign keys off, so a table rebuild no longer cascade-deletes child rows and a failing file rolls back whole. `initFts()` recreates missing FTS sync triggers and reindexes that table (`fts_triggers_restored`).
 
 - **Context panel shell** (module 22, session 1): desktop push side sheet toggled from the reader toolbar or Cmd/Ctrl+Shift+\, one side panel at a time, keeps your place while toggling.
