@@ -1,43 +1,18 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import Database from 'better-sqlite3';
 import { drizzle } from 'drizzle-orm/better-sqlite3';
-import { migrate } from 'drizzle-orm/better-sqlite3/migrator';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
 
 import * as schema from '@/db/schema';
 import { articles, highlights, highlightTags, tags } from '@/db/schema';
+import { runMigrations } from '../../scripts/migrate-runner.mjs';
+import { migrationsBefore, silentLog } from './setup';
 
 const ROOT = path.resolve(__dirname, '..', '..');
 const DRIZZLE = path.join(ROOT, 'drizzle');
 const MIGRATION = '0023_drop_auto_tag_leftovers';
-
-interface Journal {
-  entries: { idx: number; tag: string }[];
-}
-
-/**
- * Copies the migrations folder into `dir`, keeping only the journal entries before
- * `tag`, so the real drizzle migrator builds the schema as it was just before it.
- */
-function migrationsBefore(dir: string, tag: string): string {
-  const journal = JSON.parse(
-    fs.readFileSync(path.join(DRIZZLE, 'meta', '_journal.json'), 'utf-8'),
-  ) as Journal;
-  const cut = journal.entries.findIndex((e) => e.tag === tag);
-  expect(cut).toBeGreaterThan(0);
-  const entries = journal.entries.slice(0, cut);
-  fs.mkdirSync(path.join(dir, 'meta'), { recursive: true });
-  fs.writeFileSync(
-    path.join(dir, 'meta', '_journal.json'),
-    JSON.stringify({ ...journal, entries }),
-  );
-  for (const { tag: t } of entries) {
-    fs.copyFileSync(path.join(DRIZZLE, `${t}.sql`), path.join(dir, `${t}.sql`));
-  }
-  return dir;
-}
 
 describe(`migration ${MIGRATION}`, () => {
   let dir: string;
@@ -56,7 +31,7 @@ describe(`migration ${MIGRATION}`, () => {
 
   it('deletes unlinked tags named like an article AI tag and keeps the rest', () => {
     const db = drizzle(sqlite, { schema });
-    migrate(db, { migrationsFolder: migrationsBefore(dir, MIGRATION) });
+    runMigrations(sqlite, migrationsBefore(dir, MIGRATION), { log: silentLog });
 
     const [tagged] = db
       .insert(articles)

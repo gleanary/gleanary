@@ -28,7 +28,7 @@ COPY --from=builder /app/public ./public
 COPY --from=builder /app/.next/standalone ./
 COPY --from=builder /app/.next/static ./.next/static
 COPY --from=builder /app/drizzle ./drizzle
-COPY --from=builder --chmod=755 /app/scripts/migrate.mjs /app/scripts/start.sh ./scripts/
+COPY --from=builder --chmod=755 /app/scripts/migrate.mjs /app/scripts/migrate-runner.mjs /app/scripts/start.sh ./scripts/
 
 # Writable by the app user: Next's image cache and /data. No VOLUME: compose
 # bind-mounts each data subdirectory (no orphaned anonymous volume).

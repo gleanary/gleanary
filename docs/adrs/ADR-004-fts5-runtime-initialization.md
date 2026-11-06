@@ -32,3 +32,4 @@ Use runtime initialization (`src/db/fts.ts`) rather than Drizzle migration files
 - Adding a new column to an FTS table requires updating `initFts()`, not creating a new migration.
 - `initFts()` is called once at server startup (via `src/db/index.ts`), before any queries. It is a no-op when the tables are already in the correct state.
 - All four FTS tables follow this pattern: `articles_fts`, `highlights_fts`, `theses_fts`, `chat_messages_fts`.
+- Sync triggers self-heal (2026-11): `initFts()` recreates any missing trigger on every call and rebuilds that table's index, logging `fts_triggers_restored`, so a table rebuild that drops them does not leave search stale.

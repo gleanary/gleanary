@@ -6,6 +6,8 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
+- **Safe migration runner and FTS trigger self-heal** (article enrichment, session 1): `scripts/migrate-runner.mjs` is now the only migration runner (CLI, `npm run db:migrate`, tests); it applies each file atomically with foreign keys off, so a table rebuild no longer cascade-deletes child rows and a failing file rolls back whole. `initFts()` recreates missing FTS sync triggers and reindexes that table (`fts_triggers_restored`).
+
 - **Context panel shell** (module 22, session 1): desktop push side sheet toggled from the reader toolbar or Cmd/Ctrl+Shift+\, one side panel at a time, keeps your place while toggling.
 
 - **Context panel on mobile** (module 22, session 2): the details panel opens as a bottom sheet below 768px; swipe down, tap outside or press X to close. With reduced motion it fades in place instead of sliding.
