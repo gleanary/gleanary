@@ -35,7 +35,7 @@ fi
 DB_PATH="$PROJECT_DIR/data/gleanary.db"
 if [ ! -f "$DB_PATH" ]; then
   mkdir -p "$PROJECT_DIR/data"
-  cd "$PROJECT_DIR" && npx drizzle-kit migrate 2>&1
+  cd "$PROJECT_DIR" && node scripts/migrate.mjs 2>&1
 fi
 
 exit 0

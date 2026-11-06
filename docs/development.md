@@ -25,9 +25,11 @@ npm run test         # Unit + integration tests (Vitest)
 npx playwright test  # E2E tests
 
 npm run db:generate  # Generate migrations after schema changes
-npm run db:migrate   # Apply migrations
+npm run db:migrate   # Apply migrations (runs scripts/migrate.mjs)
 npm run db:studio    # Visual DB browser
 ```
+
+`npm run db:migrate` runs `scripts/migrate.mjs`, the only migration runner (the app's `predev`/`prestart` hooks and the test setup use the same code). Never run `drizzle-kit migrate` or `drizzle-kit push`.
 
 ## E2E tests and authentication
 

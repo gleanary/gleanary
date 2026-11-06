@@ -64,6 +64,12 @@ CREATE VIRTUAL TABLE IF NOT EXISTS drafts_fts USING fts5(
 
 All five tables have corresponding AFTER INSERT/DELETE/UPDATE sync triggers. See `src/db/fts.ts` for the full trigger definitions.
 
+**Trigger self-heal.** The expected trigger names live in `FTS_TRIGGERS`. Every `initFts()` call creates all triggers with `CREATE TRIGGER IF NOT EXISTS`; if a table's `_fts` index already existed but one of its triggers was missing (a table rebuild drops them), the index is rebuilt from the content table (`INSERT INTO <t>_fts(<t>_fts) VALUES('rebuild')`) and `fts_triggers_restored` is logged with the table. A fresh DB logs nothing.
+
+## Migrations
+
+`scripts/migrate-runner.mjs` (`runMigrations`) is the only migration runner: `scripts/migrate.mjs` (`npm run db:migrate`, `predev`, `prestart`) and `createTestDb()` both call it. It applies each pending file in its own transaction with foreign keys off (restored to the caller's mode afterwards), so a table rebuild cannot cascade-delete child rows and a failing file is rolled back whole, with an error naming it. All pending files are checked before any runs: a statement starting with transaction control (`BEGIN`, `COMMIT`, `END`, `ROLLBACK`, `SAVEPOINT`, `RELEASE`) rejects the run, `PRAGMA foreign_keys` statements are dropped, and each `--> statement-breakpoint` chunk must hold one statement. A migration that introduces a foreign key violation is rolled back; violations that already existed are logged once (`migration_fk_preexisting`) and left as is. The runner throws if the connection holds an open transaction. Tracking rows keep the hash format (sha256 of the file, journal `when`). Never run `drizzle-kit migrate` or `drizzle-kit push`.
+
 ## API Contract
 
 ### Articles

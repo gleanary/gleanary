@@ -729,7 +729,7 @@ The five CI jobs run in parallel (E2E does not wait for the others); deploy is a
 - **`e2e`** — production build (`npm run build`) served by `next start`, then the full Playwright suite. Two load-bearing details:
   - **Real-auth mode**: the Playwright config derives `SETTINGS_AUTH_HASH` from `E2E_AUTH_PASSWORD` (plus a fixed `SETTINGS_ENCRYPTION_KEY`) for the spawned server, so the whole suite runs against the built-in auth gate, including the login journey.
   - Playwright browsers are cached (`actions/cache` keyed on `package-lock.json`); the HTML report and traces upload as artifacts whenever the run isn't cancelled.
-- **`docker-smoke`** (`Docker image smoke test`) — CI runs on glibc, but production is the Alpine (musl) image Deploy builds only after the merge. On PRs whose diff touches `ci.yml` itself, `package*.json`, `.dockerignore`, `next.config.*`, `docker/**`, `scripts/migrate.mjs` or `scripts/start.sh`, the job builds `docker/Dockerfile` for linux/amd64 (loaded, not pushed; reads the Deploy build cache), runs it with a fresh DB on an anonymous `/data` volume under the server's hardening (`start.sh` migrates, then starts `server.js`) waits up to 90 s for the image's `HEALTHCHECK` to report healthy, then asserts `/api/health` reports `db: connected`. The arch must match Deploy's because Next's output tracing keeps only the build machine's native binaries. Otherwise (and on pushes to `main`) the job succeeds without building: deps-agent's gate requires it by name (§9.5), so it must never be skipped.
+- **`docker-smoke`** (`Docker image smoke test`) — CI runs on glibc, but production is the Alpine (musl) image Deploy builds only after the merge. On PRs whose diff touches `ci.yml` itself, `package*.json`, `.dockerignore`, `next.config.*`, `docker/**`, `scripts/migrate.mjs`, `scripts/migrate-runner.mjs` or `scripts/start.sh`, the job builds `docker/Dockerfile` for linux/amd64 (loaded, not pushed; reads the Deploy build cache), runs it with a fresh DB on an anonymous `/data` volume under the server's hardening (`start.sh` migrates, then starts `server.js`) waits up to 90 s for the image's `HEALTHCHECK` to report healthy, then asserts `/api/health` reports `db: connected`. The arch must match Deploy's because Next's output tracing keeps only the build machine's native binaries. Otherwise (and on pushes to `main`) the job succeeds without building: deps-agent's gate requires it by name (§9.5), so it must never be skipped.
 
 **`deploy.yml`** — a separate, owner-specific workflow triggered by `workflow_run` when CI completes successfully on `main`. It runs only when the repository variable `DEPLOY_ENABLED == 'true'` (forks never set it) **and** the CI run was a `push` from this repository (`workflow_run.event == 'push'` and `head_repository == github.repository`), so a fork PR whose branch is named `main` cannot trigger it. The job uses the `production` environment (deployable from `main` only), checks out exactly the commit CI tested (`workflow_run.head_sha`), never runs two deploys at once (`concurrency: deploy-production`) and times out after 20 minutes. Steps: Docker build → push `ghcr.io/<repo>:latest` → SSH to the server as `ubuntu` → `docker compose pull && up -d --wait --wait-timeout 90`, which blocks on the image's `HEALTHCHECK` (`/api/health`, unauthenticated, probed from inside the container). A container that never turns healthy fails the run, and old images are pruned only after a healthy check, so the previous image stays available for a manual rollback. Deploy logs are public on the public repo; secrets are masked.
 
@@ -1012,13 +1012,17 @@ These test API routes against a real SQLite database (in-memory or temp file). S
 // __tests__/integration/setup.ts
 import { drizzle } from 'drizzle-orm/better-sqlite3';
 import Database from 'better-sqlite3';
-import { migrate } from 'drizzle-orm/better-sqlite3/migrator';
 import * as schema from '@/db/schema';
+import { initFts } from '@/db/fts';
+// The same runner production uses (scripts/migrate.mjs); never drizzle's migrate()
+import { runMigrations } from '../../scripts/migrate-runner.mjs';
 
 export function createTestDb() {
   const sqlite = new Database(':memory:');
+  sqlite.pragma('foreign_keys = ON');
   const db = drizzle(sqlite, { schema });
-  migrate(db, { migrationsFolder: './drizzle' });
+  runMigrations(sqlite, MIGRATIONS_DIR, { log: silentLog });
+  initFts(sqlite);
   return { db, sqlite };
 }
 ```

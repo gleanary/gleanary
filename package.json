@@ -28,7 +28,7 @@
     "test:coverage": "vitest run --coverage",
     "test:watch": "vitest",
     "db:generate": "drizzle-kit generate",
-    "db:migrate": "drizzle-kit migrate",
+    "db:migrate": "node scripts/migrate.mjs",
     "db:studio": "drizzle-kit studio"
   },
   "dependencies": {

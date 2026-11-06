@@ -205,7 +205,7 @@ export async function POST(req: NextRequest) {
 
 - **Schema is in `src/db/schema.ts`**: single file, Drizzle ORM
 - **Never raw SQL in API routes**: always use Drizzle query builder
-- **Migrations**: `npm run db:generate` after schema changes, commit migration files
+- **Migrations**: `npm run db:generate` after schema changes, commit migration files. `npm run db:migrate` runs `scripts/migrate.mjs`, the only migration runner (atomic per file, foreign keys off during the run). Never run `drizzle-kit migrate` or `drizzle-kit push`.
 - **FTS5**: maintain sync triggers for full-text search tables
 
 ### Logging
@@ -363,7 +363,7 @@ npx playwright test            # E2E tests (required pre-commit)
 
 # Database
 npm run db:generate            # Generate migrations after schema change
-npm run db:migrate             # Apply migrations
+npm run db:migrate             # Apply migrations (node scripts/migrate.mjs; never drizzle-kit migrate/push)
 npm run db:studio              # Visual DB browser
 
 # Infrastructure

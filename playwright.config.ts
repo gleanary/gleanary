@@ -78,7 +78,7 @@ export default defineConfig({
   ],
   webServer: {
     // CI tests the production bundle: ci.yml runs `npm run build` before Playwright.
-    // Both scripts migrate first via their pre-script (idempotent, drizzle-kit-compatible).
+    // Both scripts migrate first via their pre-script (scripts/migrate.mjs, idempotent).
     command: process.env.CI ? 'npm run start' : 'npm run dev',
     // Surface migrate.mjs progress and next dev logs (Playwright default swallows stdout)
     stdout: 'pipe',
