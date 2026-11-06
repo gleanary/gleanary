@@ -6,9 +6,10 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 
-import { ARTICLES_FTS_COLUMNS } from '@/db/fts';
+import { ARTICLES_FTS_COLUMNS, FTS_TRIGGERS, initFts } from '@/db/fts';
+import { SINGLETON_SOURCE_TYPES } from '@/types';
 import { runMigrations } from '../../scripts/migrate-runner.mjs';
-import { silentLog } from './setup';
+import { migrationsBefore, silentLog } from './setup';
 
 const ROOT = path.resolve(__dirname, '..', '..');
 const MIGRATE = path.join(ROOT, 'scripts', 'migrate.mjs');
@@ -514,5 +515,181 @@ describe('one migration runner everywhere (parity)', () => {
     const hook = fs.readFileSync(path.join(ROOT, '.claude', 'hooks', 'session-start.sh'), 'utf-8');
     expect(hook).not.toContain('drizzle-kit ' + 'migrate');
     expect(hook).toContain('node scripts/migrate.mjs');
+  });
+});
+
+describe('migration 0024: every article has a source', () => {
+  const TAG = JOURNAL.entries.find((e) => e.tag.startsWith('0024_'))?.tag ?? '0024_missing';
+  let dir: string;
+  let sqlite: Database.Database;
+
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gleanary-0024-'));
+    sqlite = new Database(':memory:');
+    sqlite.pragma('foreign_keys = ON');
+  });
+
+  afterEach(() => {
+    sqlite.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  function insertRow(sql: string, ...params: unknown[]): number {
+    return Number(sqlite.prepare(sql).run(...params).lastInsertRowid);
+  }
+
+  function sourceIdOf(articleId: number): number | null {
+    return (
+      sqlite.prepare('SELECT source_id FROM articles WHERE id = ?').get(articleId) as {
+        source_id: number | null;
+      }
+    ).source_id;
+  }
+
+  function articleTriggers(): string[] {
+    return (
+      sqlite
+        .prepare(
+          `SELECT name FROM sqlite_master WHERE type = 'trigger' AND tbl_name = 'articles' ORDER BY name`,
+        )
+        .all() as { name: string }[]
+    ).map((r) => r.name);
+  }
+
+  function ftsArticleIds(query: string): number[] {
+    return (
+      sqlite.prepare('SELECT rowid FROM articles_fts WHERE articles_fts MATCH ?').all(query) as {
+        rowid: number;
+      }[]
+    ).map((r) => r.rowid);
+  }
+
+  function count(table: string): number {
+    return (sqlite.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get() as { n: number }).n;
+  }
+
+  it('backfills sources, merges duplicate singletons and rebuilds articles safely', () => {
+    // Build the DB as it was just before migration A, with FTS triggers live (as in production)
+    runMigrations(sqlite, migrationsBefore(dir, TAG), { log: silentLog });
+    initFts(sqlite);
+    expect(articleTriggers()).toEqual([...FTS_TRIGGERS.articles].sort());
+
+    const feed = insertRow(
+      `INSERT INTO sources (type, name, feed_url) VALUES ('rss_feed', 'Feed', 'https://x.test/feed')`,
+    );
+    const uploadA = insertRow(`INSERT INTO sources (type, name) VALUES ('upload', 'Uploads A')`);
+    const uploadB = insertRow(`INSERT INTO sources (type, name) VALUES ('upload', 'Uploads B')`);
+    const addArticle = (slug: string, sourceId: number | null) =>
+      insertRow(
+        'INSERT INTO articles (url, title, content_text, source_id) VALUES (?, ?, ?, ?)',
+        `https://x.test/${slug}`,
+        `Title ${slug}`,
+        `body of ${slug}`,
+        sourceId,
+      );
+    const onFeed = addArticle('zebrafeed', feed);
+    const onUploadA = addArticle('uploada', uploadA);
+    const onUploadB = addArticle('uploadb', uploadB);
+    const noSource = addArticle('nosource', null);
+    sqlite.pragma('foreign_keys = OFF');
+    const dangling = addArticle('dangling', 9999);
+    sqlite.pragma('foreign_keys = ON');
+    for (const articleId of [onFeed, onUploadA, onUploadB, noSource, dangling]) {
+      insertRow(`INSERT INTO highlights (article_id, text) VALUES (?, 'hl')`, articleId);
+    }
+    const highlightsBefore = count('highlights');
+
+    runMigrations(sqlite, DRIZZLE, { log: silentLog });
+
+    // The rebuild dropped the FTS triggers; data and highlights survived
+    expect(articleTriggers()).toEqual([]);
+    expect(count('highlights')).toBe(highlightsBefore);
+    expect(count('articles')).toBe(5);
+
+    const columns = sqlite.pragma('table_info(articles)') as { name: string; notnull: number }[];
+    expect(columns.find((c) => c.name === 'source_id')!.notnull).toBe(1);
+
+    const webSave = sqlite
+      .prepare(`SELECT id, name FROM sources WHERE type = 'web_save'`)
+      .all() as {
+      id: number;
+      name: string;
+    }[];
+    expect(webSave).toEqual([{ id: expect.any(Number), name: 'Web saves' }]);
+    expect(sourceIdOf(noSource)).toBe(webSave[0]!.id);
+    expect(sourceIdOf(dangling)).toBe(webSave[0]!.id);
+    expect(sourceIdOf(onFeed)).toBe(feed);
+
+    const uploads = sqlite.prepare(`SELECT id FROM sources WHERE type = 'upload'`).all();
+    expect(uploads).toEqual([{ id: uploadA }]);
+    expect(sourceIdOf(onUploadA)).toBe(uploadA);
+    expect(sourceIdOf(onUploadB)).toBe(uploadA);
+
+    expect(sqlite.pragma('foreign_key_check')).toEqual([]);
+
+    // The partial unique index blocks a second singleton, but not a second feed
+    const indexSql = (
+      sqlite
+        .prepare(`SELECT sql FROM sqlite_master WHERE name = 'sources_singleton_type_idx'`)
+        .get() as { sql: string }
+    ).sql;
+    expect(indexSql).toMatch(/^CREATE UNIQUE INDEX/);
+    expect(indexSql).toMatch(/WHERE/);
+    expect(() =>
+      sqlite.prepare(`INSERT INTO sources (type, name) VALUES ('upload', 'Second')`).run(),
+    ).toThrow(/UNIQUE constraint failed: sources\.type/);
+    expect(() =>
+      sqlite.prepare(`INSERT INTO sources (type, name) VALUES ('web_save', 'Second')`).run(),
+    ).toThrow(/UNIQUE constraint failed: sources\.type/);
+    expect(() =>
+      sqlite
+        .prepare(
+          `INSERT INTO sources (type, name, feed_url) VALUES ('rss_feed', 'Feed 2', 'https://y.test/feed')`,
+        )
+        .run(),
+    ).not.toThrow();
+
+    // ON DELETE restrict: a source with articles can't be hard-deleted any more
+    expect(() => sqlite.prepare('DELETE FROM sources WHERE id = ?').run(feed)).toThrow(
+      /FOREIGN KEY constraint failed/,
+    );
+
+    // FTS self-heal at the next start restores the triggers and the index
+    initFts(sqlite);
+    expect(articleTriggers()).toEqual([...FTS_TRIGGERS.articles].sort());
+    expect(ftsArticleIds('zebrafeed')).toEqual([onFeed]);
+    const fresh = addArticle('freshafter', webSave[0]!.id);
+    expect(ftsArticleIds('freshafter')).toEqual([fresh]);
+  });
+
+  it('repeats SINGLETON_SOURCE_TYPES exactly in every type list of its SQL', () => {
+    const migrationSql = readSql(TAG);
+    const lists = [...migrationSql.matchAll(/type\s+IN\s*\(([^)]*)\)/gi)].map((m) =>
+      m[1]!
+        .split(',')
+        .map((v) => v.trim().replace(/^'|'$/g, ''))
+        .sort(),
+    );
+
+    // 4 in the backfill (merge UPDATE x2, DELETE x2) + 1 in the index WHERE clause
+    expect(lists.length).toBeGreaterThanOrEqual(5);
+    for (const list of lists) expect(list).toEqual([...SINGLETON_SOURCE_TYPES].sort());
+    expect(migrationSql).toMatch(
+      /CREATE UNIQUE INDEX `sources_singleton_type_idx` ON `sources` \(`type`\) WHERE type IN \(/,
+    );
+  });
+
+  it('repeats SINGLETON_SOURCE_TYPES exactly in the schema.ts index where-clause', () => {
+    const schemaSrc = fs.readFileSync(path.join(ROOT, 'src', 'db', 'schema.ts'), 'utf-8');
+    const match = schemaSrc.match(
+      /uniqueIndex\('sources_singleton_type_idx'\)[\s\S]*?type IN \(([^)]*)\)/,
+    );
+
+    expect(match).not.toBeNull();
+    const list = match![1]!
+      .split(',')
+      .map((v) => v.trim().replace(/^'|'$/g, ''))
+      .sort();
+    expect(list).toEqual([...SINGLETON_SOURCE_TYPES].sort());
   });
 });

@@ -9,7 +9,8 @@ vi.mock('@/db', () => dbMock.mock);
 
 import { resetClient } from '@/lib/ai';
 import { eq } from 'drizzle-orm';
-import { articles, chatMessages, chatSessions } from '@/db/schema';
+import { chatMessages, chatSessions } from '@/db/schema';
+import { insertTestArticle } from './setup';
 import { DEFAULT_CHAT_MODEL } from '@/lib/models';
 
 // Import route handlers
@@ -122,18 +123,14 @@ describe('Chat API', () => {
     resetClient();
 
     // Insert a test article for retrieval
-    const result = db
-      .insert(articles)
-      .values({
-        url: 'https://example.com/test',
-        title: 'Test Article About Testing Patterns',
-        contentText: 'This article covers unit testing and integration testing patterns.',
-        excerpt: 'Testing patterns overview',
-        aiIndex:
-          'TOPICS: testing, unit tests, integration tests\nENTITIES: vitest, jest\nRELATED CONCEPTS: TDD, BDD',
-      })
-      .returning()
-      .get()!;
+    const result = insertTestArticle(db, {
+      url: 'https://example.com/test',
+      title: 'Test Article About Testing Patterns',
+      contentText: 'This article covers unit testing and integration testing patterns.',
+      excerpt: 'Testing patterns overview',
+      aiIndex:
+        'TOPICS: testing, unit tests, integration tests\nENTITIES: vitest, jest\nRELATED CONCEPTS: TDD, BDD',
+    });
     testArticleId = result.id;
   });
 

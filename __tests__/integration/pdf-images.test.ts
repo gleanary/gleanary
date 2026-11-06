@@ -9,7 +9,7 @@ vi.mock('@/lib/pdf-storage', async (importOriginal) => {
   return { ...actual, readPdfImage: vi.fn() };
 });
 
-import { articles } from '@/db/schema';
+import { insertTestArticle } from './setup';
 import { readPdfImage } from '@/lib/pdf-storage';
 import { GET as getImage } from '@/app/api/articles/[id]/images/[name]/route';
 
@@ -31,16 +31,12 @@ describe('GET /api/articles/[id]/images/[name]', () => {
     mockReadPdfImage.mockReset();
 
     // Insert a PDF article with contentHash
-    const row = db
-      .insert(articles)
-      .values({
-        url: 'https://example.com/pdf-image-test',
-        title: 'PDF Image Test',
-        originalFilePath: `/data/originals/${CONTENT_HASH}.pdf`,
-        contentHash: CONTENT_HASH,
-      })
-      .returning()
-      .get();
+    const row = insertTestArticle(db, {
+      url: 'https://example.com/pdf-image-test',
+      title: 'PDF Image Test',
+      originalFilePath: `/data/originals/${CONTENT_HASH}.pdf`,
+      contentHash: CONTENT_HASH,
+    });
     articleId = row.id;
   });
 
@@ -123,11 +119,10 @@ describe('GET /api/articles/[id]/images/[name]', () => {
 
   it('returns 404 for non-PDF article (no contentHash)', async () => {
     const db = dbMock.mock.db!;
-    const nonPdfRow = db
-      .insert(articles)
-      .values({ url: 'https://example.com/non-pdf', title: 'Non-PDF' })
-      .returning()
-      .get();
+    const nonPdfRow = insertTestArticle(db, {
+      url: 'https://example.com/non-pdf',
+      title: 'Non-PDF',
+    });
 
     const req = new NextRequest(
       `http://localhost:3000/api/articles/${nonPdfRow.id}/images/img-0.jpeg`,

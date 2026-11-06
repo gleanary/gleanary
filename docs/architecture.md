@@ -97,7 +97,7 @@ External input:
 │     sources       │       │      articles         │       │   highlights    │
 ├──────────────────┤       ├──────────────────────┤       ├────────────────┤
 │ id               │       │ id                   │       │ id             │
-│ type (enum)      │──┐    │ source_id (FK)        │──┐    │ article_id (FK)│
+│ type (enum)      │──┐    │ source_id (FK, NN)    │──┐    │ article_id (FK)│
 │ name             │  │    │ external_id           │  │    │ thesis_id (FK) │
 │ feed_url         │  │    │ url                   │  │    │ external_id    │
 │ icon_url         │  └───▶│ title                 │  └───▶│ text           │
@@ -110,8 +110,8 @@ External input:
 │ is_blocked       │       │ word_count            │       │ last_reviewed  │
 │ last_received_at │       │ page_count            │       │ review_count   │
 │ created_at       │       │ reading_progress      │       │ review_interval│
-└──────────────────┘       │ status (enum)         │       └────────────────┘
-                           │ is_favorite           │       ┌────────────────┐
+│ deleted_at       │       │ status (enum)         │       └────────────────┘
+└──────────────────┘       │ is_favorite           │       ┌────────────────┐
   sources.type enum:       │ ai_summary            │       │ highlight_tags  │
   - rss_feed               │ ai_tags               │       ├────────────────┤
   - browser_extension      │ ai_index              │       │ highlight_id   │
@@ -119,7 +119,8 @@ External input:
   - manual                 │ original_file_path    │       └────────────────┘
   - newsletter             │ content_markdown      │
   - readwise               │ ai_cleaned_at         │       ┌──────────────┐
-  - upload                 │ extraction_tier (enum)│       │    tags       │
+  - upload                 │ extraction_tier (enum)│
+  - web_save               │                       │       │    tags       │
                            │ content_hash          │
                            │ tts_paragraph         │       ├──────────────┤
                            │ tts_time_offset       │       │ id           │
@@ -156,7 +157,8 @@ External input:
         picker is future work; the API accepts only 'yellow' today.
 
   FK on-delete behaviors (Drizzle `references(..., { onDelete })`):
-  - articles.source_id → sources.id: SET NULL (articles survive source removal)
+  - articles.source_id → sources.id: RESTRICT, NOT NULL (every article has a source;
+    sources are soft-deleted via deleted_at, never removed)
   - highlights.article_id → articles.id: CASCADE
   - highlights.thesis_id → theses.id: SET NULL
   - highlight_tags.highlight_id / .tag_id: CASCADE (both sides)
@@ -181,6 +183,13 @@ External input:
              highlights(article_id, last_reviewed, review_interval),
              highlight_tags(tag_id), chat_messages(session_id),
              voice_samples(profile_id), thesis_research(thesis_id).
+  Migration: 0024_every_article_has_a_source.sql adds 'web_save' to sources.type,
+             sources.deleted_at (soft delete), the partial unique index
+             sources_singleton_type_idx ON sources(type) WHERE type IN
+             ('web_save','upload','readwise') (one row per SINGLETON_SOURCE_TYPES type),
+             and rebuilds articles with source_id NOT NULL ON DELETE restrict, after
+             merging duplicate singletons and pointing NULL/dangling source_id at the
+             'web_save' source. See docs/modules/article-enrichment.md §3.3, §4.1.
   Backfill existing rows: npx tsx scripts/backfill-content-markdown.ts
   Backfill highlight anchors (run only after the dual v1/v2 reader ships — Module 20 session 2):
              npx tsx scripts/backfill-highlight-anchors.ts
@@ -1034,7 +1043,7 @@ export function createTestDb() {
 | **Articles API**        | `articles.test.ts`            | CRUD, filter/pagination, cascade deletes, status transitions, reading progress                                                                   |
 | **Highlights API**      | `highlights.test.ts`          | Create with tags, update note/color/tags, delete with cascade                                                                                    |
 | **Highlight Library**   | `highlight-library.test.ts`   | Enhanced GET with context, bulk-delete, bulk-tag (add/replace modes), date range filters                                                         |
-| **Sources API**         | `sources.test.ts`             | CRUD, RSS feed sources, cascade behavior on delete                                                                                               |
+| **Sources API**         | `sources.test.ts`             | CRUD, RSS feed sources, soft delete and feed restore                                                                                             |
 | **Tags API**            | `tags.test.ts`                | CRUD, update name/color, delete with cascade, duplicate name 409                                                                                 |
 | **Global Search**       | `global-search.test.ts`       | Grouped FTS5 search across articles/highlights/theses/drafts, type/status/source/date filters, palette mode, pagination, drafts_fts trigger sync |
 | **Article Parser**      | `article-parser.test.ts`      | POST /api/articles/parse → fetch + parse + store; duplicate URL 409; HTML fallback                                                               |

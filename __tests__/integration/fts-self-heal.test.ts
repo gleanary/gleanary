@@ -33,7 +33,10 @@ function triggerExists(name: string): boolean {
 function insertArticle(title: string): number {
   return Number(
     sqlite
-      .prepare('INSERT INTO articles (url, title) VALUES (?, ?)')
+      .prepare(
+        `INSERT INTO articles (url, title, source_id)
+         VALUES (?, ?, (SELECT id FROM sources WHERE type = 'web_save'))`,
+      )
       .run(`https://x.test/${title}`, title).lastInsertRowid,
   );
 }

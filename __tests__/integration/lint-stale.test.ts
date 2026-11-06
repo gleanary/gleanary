@@ -4,7 +4,8 @@ import { sql } from 'drizzle-orm';
 const dbMock = await vi.hoisted(async () => (await import('./setup')).createDbMock());
 vi.mock('@/db', () => dbMock.mock);
 
-import { articles, highlights, theses } from '@/db/schema';
+import { highlights, theses } from '@/db/schema';
+import { insertTestArticle } from './setup';
 import { runStale } from '@/lib/lint/stale';
 import type { LintContext } from '@/lib/lint/types';
 import { collect } from './lint-test-utils';
@@ -90,23 +91,17 @@ describe('runStale', () => {
 
   describe('stale articles', () => {
     it('surfaces articles in reading status not updated in 14+ days', async () => {
-      ctx.db
-        .insert(articles)
-        .values({
-          url: 'https://example.com/stuck',
-          title: 'Stuck mid-read',
-          status: 'reading',
-          updatedAt: sql`datetime('now', '-20 days')`,
-        })
-        .run();
-      ctx.db
-        .insert(articles)
-        .values({
-          url: 'https://example.com/fresh',
-          title: 'Freshly opened',
-          status: 'reading',
-        })
-        .run();
+      insertTestArticle(ctx.db, {
+        url: 'https://example.com/stuck',
+        title: 'Stuck mid-read',
+        status: 'reading',
+        updatedAt: sql`datetime('now', '-20 days')`,
+      });
+      insertTestArticle(ctx.db, {
+        url: 'https://example.com/fresh',
+        title: 'Freshly opened',
+        status: 'reading',
+      });
 
       const suggestions = await collect(runStale(ctx));
       const articleStale = suggestions.filter((s) =>
@@ -117,24 +112,18 @@ describe('runStale', () => {
     });
 
     it('ignores non-reading articles', async () => {
-      ctx.db
-        .insert(articles)
-        .values({
-          url: 'https://example.com/archived',
-          title: 'Archived old',
-          status: 'archived',
-          updatedAt: sql`datetime('now', '-90 days')`,
-        })
-        .run();
-      ctx.db
-        .insert(articles)
-        .values({
-          url: 'https://example.com/inbox',
-          title: 'Inbox old',
-          status: 'inbox',
-          updatedAt: sql`datetime('now', '-90 days')`,
-        })
-        .run();
+      insertTestArticle(ctx.db, {
+        url: 'https://example.com/archived',
+        title: 'Archived old',
+        status: 'archived',
+        updatedAt: sql`datetime('now', '-90 days')`,
+      });
+      insertTestArticle(ctx.db, {
+        url: 'https://example.com/inbox',
+        title: 'Inbox old',
+        status: 'inbox',
+        updatedAt: sql`datetime('now', '-90 days')`,
+      });
 
       const suggestions = await collect(runStale(ctx));
       const articleStale = suggestions.filter((s) =>
@@ -148,11 +137,10 @@ describe('runStale', () => {
     let articleId: number;
 
     beforeEach(() => {
-      const a = ctx.db
-        .insert(articles)
-        .values({ url: 'https://example.com/hl', title: 'Highlights source' })
-        .returning()
-        .get()!;
+      const a = insertTestArticle(ctx.db, {
+        url: 'https://example.com/hl',
+        title: 'Highlights source',
+      });
       articleId = a.id;
     });
 

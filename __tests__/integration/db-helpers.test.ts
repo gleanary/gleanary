@@ -20,6 +20,9 @@ import {
   autoAdvanceThesisOnResearch,
   articlesBySourceType,
   articlesExcludingSourceType,
+  getOrCreateSingletonSource,
+  resolveArticleSourceId,
+  listSidebarFeeds,
 } from '@/lib/db-helpers';
 import { NotFoundError, ValidationError } from '@/lib/errors';
 import {
@@ -32,6 +35,8 @@ import {
   chatSessions,
   drafts,
 } from '@/db/schema';
+import { eq } from 'drizzle-orm';
+import { insertTestArticle, webSaveSourceId } from './setup';
 import type { ChatMessage, ThesisStatus } from '@/types';
 
 function db() {
@@ -44,12 +49,11 @@ let urlCounter = 0;
 
 function seedArticle(overrides: Partial<typeof articles.$inferInsert> = {}) {
   urlCounter += 1;
-  const [row] = db()
-    .insert(articles)
-    .values({ url: `https://example.com/a-${urlCounter}`, title: 'Seed article', ...overrides })
-    .returning()
-    .all();
-  return row!;
+  return insertTestArticle(db(), {
+    url: `https://example.com/a-${urlCounter}`,
+    title: 'Seed article',
+    ...overrides,
+  });
 }
 
 function seedSource(overrides: Partial<typeof sources.$inferInsert> = {}) {
@@ -113,6 +117,12 @@ describe('get*OrThrow helpers', () => {
 
     expect(getSourceOrThrow(source.id).name).toBe('My feed');
     expect(() => getSourceOrThrow(999)).toThrow(NotFoundError);
+  });
+
+  it('getSourceOrThrow throws NotFoundError for a soft-deleted source', () => {
+    const source = seedSource({ deletedAt: '2026-11-01 00:00:00' });
+
+    expect(() => getSourceOrThrow(source.id)).toThrow(NotFoundError);
   });
 
   it('getThesisOrThrow returns the row when found and throws NotFoundError otherwise', () => {
@@ -412,7 +422,8 @@ describe('articlesBySourceType / articlesExcludingSourceType', () => {
     const newsletter = seedSource({ type: 'newsletter' });
     seedArticle({ sourceId: rss.id, title: 'From RSS' });
     seedArticle({ sourceId: newsletter.id, title: 'From newsletter' });
-    seedArticle({ title: 'No source' });
+    // Every article has a source: a plain web save sits on the web_save singleton
+    seedArticle({ sourceId: webSaveSourceId(db()), title: 'Web save' });
   });
 
   it('articlesBySourceType matches only articles whose source has the given type', () => {
@@ -421,13 +432,86 @@ describe('articlesBySourceType / articlesExcludingSourceType', () => {
     expect(rows.map((a) => a.title)).toEqual(['From RSS']);
   });
 
-  it('articlesExcludingSourceType keeps other source types and NULL-source articles', () => {
+  it('articlesExcludingSourceType keeps other source types, web saves included', () => {
     const rows = db()
       .select()
       .from(articles)
       .where(articlesExcludingSourceType('newsletter'))
       .all();
 
-    expect(rows.map((a) => a.title).sort()).toEqual(['From RSS', 'No source']);
+    expect(rows.map((a) => a.title).sort()).toEqual(['From RSS', 'Web save']);
+  });
+
+  it('articlesBySourceType still matches articles of a soft-deleted source', () => {
+    const feed = seedSource({ type: 'rss_feed', deletedAt: '2026-11-01 00:00:00' });
+    seedArticle({ sourceId: feed.id, title: 'From deleted feed' });
+
+    const rows = db().select().from(articles).where(articlesBySourceType('rss_feed')).all();
+
+    expect(rows.map((a) => a.title).sort()).toEqual(['From RSS', 'From deleted feed']);
+  });
+});
+
+// =============================================================================
+// Source resolution (every article has a source)
+// =============================================================================
+
+describe('getOrCreateSingletonSource', () => {
+  it('returns the same id on repeated calls and never creates a second row', () => {
+    const first = getOrCreateSingletonSource('web_save', 'Web saves');
+    const second = getOrCreateSingletonSource('web_save', 'Web saves');
+
+    expect(second).toBe(first);
+    expect(first).toBe(webSaveSourceId(db()));
+    expect(db().select().from(sources).where(eq(sources.type, 'web_save')).all()).toHaveLength(1);
+  });
+
+  it('creates a missing singleton with the given name, then reuses it', () => {
+    const id = getOrCreateSingletonSource('readwise', 'Readwise Import');
+
+    const row = db().select().from(sources).where(eq(sources.id, id)).get()!;
+    expect(row.type).toBe('readwise');
+    expect(row.name).toBe('Readwise Import');
+    expect(getOrCreateSingletonSource('readwise', 'Readwise Import')).toBe(id);
+  });
+
+  it('rejects a second singleton row of the same type at the DB level', () => {
+    expect(() => seedSource({ type: 'web_save', name: 'Second web saves' })).toThrow(
+      /UNIQUE constraint failed: sources\.type/,
+    );
+  });
+});
+
+describe('resolveArticleSourceId', () => {
+  it('defaults to the web_save singleton when no sourceId is given', () => {
+    expect(resolveArticleSourceId()).toBe(webSaveSourceId(db()));
+  });
+
+  it('returns an existing, non-deleted source id unchanged', () => {
+    const feed = seedSource();
+    expect(resolveArticleSourceId(feed.id)).toBe(feed.id);
+  });
+
+  it('throws ValidationError for an unknown or soft-deleted source', () => {
+    const deleted = seedSource({ deletedAt: '2026-11-01 00:00:00' });
+
+    expect(() => resolveArticleSourceId(9999)).toThrow(ValidationError);
+    expect(() => resolveArticleSourceId(deleted.id)).toThrow(ValidationError);
+  });
+});
+
+describe('listSidebarFeeds', () => {
+  it('lists live RSS feeds only, without soft-deleted feeds or other types', () => {
+    const live = seedSource({
+      type: 'rss_feed',
+      name: 'Live feed',
+      iconUrl: 'https://x.test/i.png',
+    });
+    seedSource({ type: 'rss_feed', name: 'Deleted feed', deletedAt: '2026-11-01 00:00:00' });
+    seedSource({ type: 'manual', name: 'Manual' });
+
+    expect(listSidebarFeeds()).toEqual([
+      { id: live.id, name: 'Live feed', iconUrl: 'https://x.test/i.png' },
+    ]);
   });
 });

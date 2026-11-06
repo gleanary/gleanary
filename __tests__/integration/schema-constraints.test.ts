@@ -19,8 +19,12 @@ beforeEach(() => {
 /** Seed one article + highlight + tag and return their ids. */
 function seedArticleAndTag(): { articleId: number; tagId: number; highlightId: number } {
   const articleId = Number(
-    sqlite.prepare(`INSERT INTO articles (url, title) VALUES ('https://x.test/a', 'A')`).run()
-      .lastInsertRowid,
+    sqlite
+      .prepare(
+        `INSERT INTO articles (url, title, source_id)
+         VALUES ('https://x.test/a', 'A', (SELECT id FROM sources WHERE type = 'web_save'))`,
+      )
+      .run().lastInsertRowid,
   );
   const highlightId = Number(
     sqlite.prepare(`INSERT INTO highlights (article_id, text) VALUES (?, 'hl')`).run(articleId)

@@ -47,7 +47,7 @@ export function ReaderContextPanel({ sourceName, aiAvailable }: ReaderContextPan
             <dl className="flex flex-col gap-1.5">
               <Field label="Author" value={article.author} />
               <Field label="Site" value={article.siteName} />
-              {article.sourceId != null && <Field label="Source" value={sourceName} />}
+              <Field label="Source" value={sourceName} />
               <Field
                 label="Published"
                 value={article.publishedAt ? formatDate(article.publishedAt) : null}

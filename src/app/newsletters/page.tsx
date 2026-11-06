@@ -42,9 +42,7 @@ export default function NewslettersPage() {
       .orderBy(desc(articles.savedAt))
       .all();
     for (const a of pendingArticles) {
-      if (a.sourceId != null) {
-        (recentSubjects[a.sourceId] ??= []).push(a.title);
-      }
+      (recentSubjects[a.sourceId] ??= []).push(a.title);
     }
   }
 

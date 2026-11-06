@@ -1,5 +1,5 @@
 import 'server-only';
-import { and, desc, eq, inArray, isNull, notInArray, or, sql } from 'drizzle-orm';
+import { and, desc, eq, inArray, isNull, notInArray, sql } from 'drizzle-orm';
 import { db } from '@/db';
 import {
   articles,
@@ -14,6 +14,7 @@ import {
 import { NotFoundError, ValidationError } from '@/lib/errors';
 import { normalizeTagName } from '@/lib/ai';
 import type {
+  SingletonSourceType,
   SourceType,
   ThesisDetailResponse,
   ThesisHighlightRole,
@@ -78,18 +79,77 @@ export function assertHighlightsExist(ids: number[]): void {
   }
 }
 
+/** Where-clause matching sources that are not soft-deleted (`deleted_at IS NULL`). */
+export const liveSource = isNull(sources.deletedAt);
+
 /**
- * Fetches a source by ID or throws NotFoundError.
+ * Fetches a live (not soft-deleted) source by ID or throws NotFoundError.
  * @param id - Source ID
  * @returns The full source row
- * @throws NotFoundError if the source does not exist
+ * @throws NotFoundError if the source does not exist or is soft-deleted
  */
 export function getSourceOrThrow(id: number) {
-  const source = db.select().from(sources).where(eq(sources.id, id)).get();
+  const source = db
+    .select()
+    .from(sources)
+    .where(and(eq(sources.id, id), liveSource))
+    .get();
   if (!source) {
     throw new NotFoundError('Source', id);
   }
   return source;
+}
+
+/**
+ * Returns the id of the single source of a singleton type, creating it if missing.
+ * The `sources_singleton_type_idx` partial unique index makes a concurrent creation
+ * fail, in which case the row the other writer inserted is selected instead.
+ * @param type - Singleton source type (see SINGLETON_SOURCE_TYPES)
+ * @param name - Display name used when the source is created
+ * @returns The singleton source id
+ */
+export function getOrCreateSingletonSource(type: SingletonSourceType, name: string): number {
+  const select = () =>
+    db.select({ id: sources.id }).from(sources).where(eq(sources.type, type)).get()?.id;
+  const existing = select();
+  if (existing !== undefined) return existing;
+  try {
+    return db.insert(sources).values({ type, name }).returning({ id: sources.id }).get()!.id;
+  } catch (err) {
+    const raced = select();
+    if (raced === undefined) throw err;
+    return raced;
+  }
+}
+
+/**
+ * Resolves the source of a new article: the `web_save` singleton when none is given,
+ * otherwise the given source, which must exist and not be soft-deleted.
+ * @param sourceId - Optional source id from the request body
+ * @returns The source id to store on the article
+ * @throws ValidationError if `sourceId` is unknown or soft-deleted (422)
+ */
+export function resolveArticleSourceId(sourceId?: number): number {
+  if (sourceId === undefined) return getOrCreateSingletonSource('web_save', 'Web saves');
+  try {
+    return getSourceOrThrow(sourceId).id;
+  } catch (err) {
+    if (err instanceof NotFoundError)
+      throw new ValidationError(`Source ${sourceId} does not exist`);
+    throw err;
+  }
+}
+
+/**
+ * Lists the live RSS feeds shown in the sidebar navigation (soft-deleted feeds omitted).
+ * @returns Feed id, name and icon URL, in insertion order
+ */
+export function listSidebarFeeds() {
+  return db
+    .select({ id: sources.id, name: sources.name, iconUrl: sources.iconUrl })
+    .from(sources)
+    .where(and(eq(sources.type, 'rss_feed'), liveSource))
+    .all();
 }
 
 /**
@@ -321,7 +381,7 @@ export function articlesBySourceType(sourceType: SourceType) {
  */
 export function articlesExcludingSourceType(sourceType: SourceType) {
   const sourceIds = db.select({ id: sources.id }).from(sources).where(eq(sources.type, sourceType));
-  return or(notInArray(articles.sourceId, sourceIds), isNull(articles.sourceId))!;
+  return notInArray(articles.sourceId, sourceIds);
 }
 
 /** Most frequent article tags sent as the auto-tag vocabulary hint, so the prompt stays bounded. */

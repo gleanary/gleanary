@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { NextRequest, NextResponse } from 'next/server';
 import { eq, sql } from 'drizzle-orm';
 import { db } from '@/db';
-import { articles, sources } from '@/db/schema';
+import { articles } from '@/db/schema';
 import { validatePdfMagicBytes, storePdf, getPdfPath, deletePdf } from '@/lib/pdf-storage';
 import { preflightPdf, type PdfPreflightResult } from '@/lib/pdf-preflight';
 import { processPdfWithMistral, MAX_PDF_PAGES } from '@/lib/pdf-processor';
@@ -13,35 +13,7 @@ import { EncryptedPdfError, ValidationError } from '@/lib/errors';
 import { handleApiError } from '@/lib/api-error-handler';
 import { uploadFormSchema } from '@/lib/validators';
 import { logger } from '@/lib/logger';
-
-let _uploadSourceId: number | undefined;
-
-async function getOrCreateUploadSource(): Promise<number> {
-  if (_uploadSourceId !== undefined) return _uploadSourceId;
-  const existing = db
-    .select({ id: sources.id })
-    .from(sources)
-    .where(eq(sources.type, 'upload'))
-    .get();
-  if (existing) {
-    _uploadSourceId = existing.id;
-    return _uploadSourceId;
-  }
-  try {
-    _uploadSourceId = db
-      .insert(sources)
-      .values({ type: 'upload', name: 'Uploaded files' })
-      .returning({ id: sources.id })
-      .get()!.id;
-  } catch {
-    _uploadSourceId = db
-      .select({ id: sources.id })
-      .from(sources)
-      .where(eq(sources.type, 'upload'))
-      .get()!.id;
-  }
-  return _uploadSourceId;
-}
+import { getOrCreateSingletonSource } from '@/lib/db-helpers';
 
 /**
  * POST /api/upload — Upload a PDF file and save it as an article.
@@ -102,7 +74,7 @@ export async function POST(req: NextRequest) {
       throw err;
     }
 
-    const sourceId = await getOrCreateUploadSource();
+    const sourceId = getOrCreateSingletonSource('upload', 'Uploaded files');
     const title =
       data.title || metadata.title || sanitizeTitle(fileField.name) || 'Untitled Document';
 

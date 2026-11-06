@@ -1,7 +1,7 @@
 import 'server-only';
 import { eq, inArray, or } from 'drizzle-orm';
 import { db } from '@/db';
-import { articles, highlights, sources, tags } from '@/db/schema';
+import { articles, highlights, tags } from '@/db/schema';
 import { getSetting, setSetting } from '@/lib/settings';
 import { linkHighlightTags, replaceHighlightTags } from '@/lib/highlight-utils';
 import { sanitizeArticleHtml } from '@/lib/sanitize';
@@ -9,6 +9,7 @@ import { postProcessHtml } from '@/lib/html-post-processor';
 import { convertHtmlToMarkdown } from '@/lib/html-to-markdown';
 import { stripHtml, computeWordCount, truncate, parseDbTimestamp } from '@/lib/text-utils';
 import { logger } from '@/lib/logger';
+import { getOrCreateSingletonSource } from '@/lib/db-helpers';
 import { ExternalServiceError } from '@/lib/errors';
 
 // --- Readwise Reader API types ---
@@ -127,24 +128,11 @@ async function fetchReaderPage(
 }
 
 /**
- * Returns the ID of the Readwise source, creating it if it doesn't exist.
+ * Returns the ID of the Readwise singleton source, creating it if it doesn't exist.
+ * @returns The `readwise` source id
  */
 export function getOrCreateReadwiseSource(): number {
-  const existing = db
-    .select({ id: sources.id })
-    .from(sources)
-    .where(eq(sources.type, 'readwise'))
-    .get();
-
-  if (existing) return existing.id;
-
-  const created = db
-    .insert(sources)
-    .values({ type: 'readwise', name: 'Readwise Import' })
-    .returning({ id: sources.id })
-    .get()!;
-
-  return created.id;
+  return getOrCreateSingletonSource('readwise', 'Readwise Import');
 }
 
 /**

@@ -3,34 +3,47 @@ import { sql } from 'drizzle-orm';
 
 // --- Sources ---
 
-export const sources = sqliteTable('sources', {
-  id: integer('id').primaryKey({ autoIncrement: true }),
-  type: text('type', {
-    enum: [
-      'rss_feed',
-      'browser_extension',
-      'remarkable',
-      'manual',
-      'newsletter',
-      'readwise',
-      'upload',
-    ],
-  }).notNull(),
-  name: text('name').notNull(),
-  feedUrl: text('feed_url'),
-  iconUrl: text('icon_url'),
-  category: text('category'),
-  pollInterval: integer('poll_interval').default(30),
-  lastPolled: text('last_polled'),
-  etag: text('etag'),
-  lastModified: text('last_modified'),
-  senderAddress: text('sender_address'),
-  isBlocked: integer('is_blocked', { mode: 'boolean' }),
-  lastReceivedAt: text('last_received_at'),
-  createdAt: text('created_at')
-    .notNull()
-    .default(sql`(datetime('now'))`),
-});
+export const sources = sqliteTable(
+  'sources',
+  {
+    id: integer('id').primaryKey({ autoIncrement: true }),
+    type: text('type', {
+      enum: [
+        'rss_feed',
+        'browser_extension',
+        'remarkable',
+        'manual',
+        'newsletter',
+        'readwise',
+        'upload',
+        'web_save',
+      ],
+    }).notNull(),
+    name: text('name').notNull(),
+    feedUrl: text('feed_url'),
+    iconUrl: text('icon_url'),
+    category: text('category'),
+    pollInterval: integer('poll_interval').default(30),
+    lastPolled: text('last_polled'),
+    etag: text('etag'),
+    lastModified: text('last_modified'),
+    senderAddress: text('sender_address'),
+    isBlocked: integer('is_blocked', { mode: 'boolean' }),
+    lastReceivedAt: text('last_received_at'),
+    /** Soft delete: set by DELETE /api/sources/[id]; never set on singleton or newsletter sources. */
+    deletedAt: text('deleted_at'),
+    createdAt: text('created_at')
+      .notNull()
+      .default(sql`(datetime('now'))`),
+  },
+  (t) => [
+    // One row per singleton type. The literal list mirrors SINGLETON_SOURCE_TYPES
+    // (src/types/index.ts); SQL can't import it, so keep both in sync.
+    uniqueIndex('sources_singleton_type_idx')
+      .on(t.type)
+      .where(sql`type IN ('web_save','upload','readwise')`),
+  ],
+);
 
 // --- Articles ---
 
@@ -38,7 +51,9 @@ export const articles = sqliteTable(
   'articles',
   {
     id: integer('id').primaryKey({ autoIncrement: true }),
-    sourceId: integer('source_id').references(() => sources.id, { onDelete: 'set null' }),
+    sourceId: integer('source_id')
+      .notNull()
+      .references(() => sources.id, { onDelete: 'restrict' }),
     externalId: text('external_id').unique(),
     url: text('url').notNull().unique(),
     title: text('title').notNull(),

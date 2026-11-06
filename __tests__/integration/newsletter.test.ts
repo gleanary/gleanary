@@ -201,27 +201,28 @@ describe('Newsletter API routes', () => {
   describe('PATCH /api/newsletters/[id]', () => {
     it('approves a pending sender and moves articles to inbox', async () => {
       // Create pending source with a pending_review article
-      (db as ReturnType<typeof createTestDb>['db'])
+      const sourceId = (db as ReturnType<typeof createTestDb>['db'])
         .insert(sources)
         .values({
           type: 'newsletter',
           name: 'Pending Newsletter',
           senderAddress: 'pending@example.com',
         })
-        .run();
+        .returning()
+        .get()!.id;
 
       (db as ReturnType<typeof createTestDb>['db'])
         .insert(articles)
         .values({
           url: 'newsletter://test',
           title: 'Pending Article',
-          sourceId: 1,
+          sourceId,
           status: 'pending_review',
         })
         .run();
 
-      const req = createRequest('PATCH', '/api/newsletters/1', { isBlocked: false });
-      const res = await PATCH(req, { params: Promise.resolve({ id: '1' }) });
+      const req = createRequest('PATCH', `/api/newsletters/${sourceId}`, { isBlocked: false });
+      const res = await PATCH(req, { params: Promise.resolve({ id: String(sourceId) }) });
       const data = await res.json();
 
       expect(res.status).toBe(200);
@@ -237,27 +238,28 @@ describe('Newsletter API routes', () => {
 
     it('blocks a pending sender and deletes their articles', async () => {
       // Create pending source with an article
-      (db as ReturnType<typeof createTestDb>['db'])
+      const sourceId = (db as ReturnType<typeof createTestDb>['db'])
         .insert(sources)
         .values({
           type: 'newsletter',
           name: 'Spam Newsletter',
           senderAddress: 'spam@example.com',
         })
-        .run();
+        .returning()
+        .get()!.id;
 
       (db as ReturnType<typeof createTestDb>['db'])
         .insert(articles)
         .values({
           url: 'newsletter://spam',
           title: 'Spam Article',
-          sourceId: 1,
+          sourceId,
           status: 'pending_review',
         })
         .run();
 
-      const req = createRequest('PATCH', '/api/newsletters/1', { isBlocked: true });
-      const res = await PATCH(req, { params: Promise.resolve({ id: '1' }) });
+      const req = createRequest('PATCH', `/api/newsletters/${sourceId}`, { isBlocked: true });
+      const res = await PATCH(req, { params: Promise.resolve({ id: String(sourceId) }) });
       const data = await res.json();
 
       expect(res.status).toBe(200);
@@ -272,7 +274,7 @@ describe('Newsletter API routes', () => {
     });
 
     it('blocks an approved newsletter source', async () => {
-      (db as ReturnType<typeof createTestDb>['db'])
+      const sourceId = (db as ReturnType<typeof createTestDb>['db'])
         .insert(sources)
         .values({
           type: 'newsletter',
@@ -280,10 +282,11 @@ describe('Newsletter API routes', () => {
           senderAddress: 'test@example.com',
           isBlocked: false,
         })
-        .run();
+        .returning()
+        .get()!.id;
 
-      const req = createRequest('PATCH', '/api/newsletters/1', { isBlocked: true });
-      const res = await PATCH(req, { params: Promise.resolve({ id: '1' }) });
+      const req = createRequest('PATCH', `/api/newsletters/${sourceId}`, { isBlocked: true });
+      const res = await PATCH(req, { params: Promise.resolve({ id: String(sourceId) }) });
       const data = await res.json();
 
       expect(res.status).toBe(200);
@@ -291,7 +294,7 @@ describe('Newsletter API routes', () => {
     });
 
     it('unblocks a blocked newsletter source', async () => {
-      (db as ReturnType<typeof createTestDb>['db'])
+      const sourceId = (db as ReturnType<typeof createTestDb>['db'])
         .insert(sources)
         .values({
           type: 'newsletter',
@@ -299,10 +302,11 @@ describe('Newsletter API routes', () => {
           senderAddress: 'test@example.com',
           isBlocked: true,
         })
-        .run();
+        .returning()
+        .get()!.id;
 
-      const req = createRequest('PATCH', '/api/newsletters/1', { isBlocked: false });
-      const res = await PATCH(req, { params: Promise.resolve({ id: '1' }) });
+      const req = createRequest('PATCH', `/api/newsletters/${sourceId}`, { isBlocked: false });
+      const res = await PATCH(req, { params: Promise.resolve({ id: String(sourceId) }) });
       const data = await res.json();
 
       expect(res.status).toBe(200);
@@ -317,33 +321,35 @@ describe('Newsletter API routes', () => {
     });
 
     it('returns 422 for invalid body', async () => {
-      (db as ReturnType<typeof createTestDb>['db'])
+      const sourceId = (db as ReturnType<typeof createTestDb>['db'])
         .insert(sources)
         .values({
           type: 'newsletter',
           name: 'Test Newsletter',
           senderAddress: 'test@example.com',
         })
-        .run();
+        .returning()
+        .get()!.id;
 
-      const req = createRequest('PATCH', '/api/newsletters/1', { invalid: 'field' });
-      const res = await PATCH(req, { params: Promise.resolve({ id: '1' }) });
+      const req = createRequest('PATCH', `/api/newsletters/${sourceId}`, { invalid: 'field' });
+      const res = await PATCH(req, { params: Promise.resolve({ id: String(sourceId) }) });
 
       expect(res.status).toBe(422);
     });
 
     it('returns 422 when trying to patch a non-newsletter source', async () => {
-      (db as ReturnType<typeof createTestDb>['db'])
+      const sourceId = (db as ReturnType<typeof createTestDb>['db'])
         .insert(sources)
         .values({
           type: 'rss_feed',
           name: 'RSS Feed',
           feedUrl: 'https://example.com/feed.xml',
         })
-        .run();
+        .returning()
+        .get()!.id;
 
-      const req = createRequest('PATCH', '/api/newsletters/1', { isBlocked: true });
-      const res = await PATCH(req, { params: Promise.resolve({ id: '1' }) });
+      const req = createRequest('PATCH', `/api/newsletters/${sourceId}`, { isBlocked: true });
+      const res = await PATCH(req, { params: Promise.resolve({ id: String(sourceId) }) });
 
       expect(res.status).toBe(422);
     });

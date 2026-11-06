@@ -33,6 +33,11 @@ describe(`migration ${MIGRATION}`, () => {
     const db = drizzle(sqlite, { schema });
     runMigrations(sqlite, migrationsBefore(dir, MIGRATION), { log: silentLog });
 
+    // No web_save singleton exists at this point of the chain: seed a source explicitly
+    const sourceId = Number(
+      sqlite.prepare(`INSERT INTO sources (type, name) VALUES ('manual', 'Seed')`).run()
+        .lastInsertRowid,
+    );
     const [tagged] = db
       .insert(articles)
       .values([
@@ -40,9 +45,15 @@ describe(`migration ${MIGRATION}`, () => {
           url: 'https://example.com/tagged',
           title: 'Tagged',
           aiTags: JSON.stringify(['AI', ' Rust ', 'Kept-Linked']),
+          sourceId,
         },
-        { url: 'https://example.com/malformed', title: 'Malformed', aiTags: 'not json' },
-        { url: 'https://example.com/untagged', title: 'Untagged', aiTags: null },
+        {
+          url: 'https://example.com/malformed',
+          title: 'Malformed',
+          aiTags: 'not json',
+          sourceId,
+        },
+        { url: 'https://example.com/untagged', title: 'Untagged', aiTags: null, sourceId },
       ])
       .returning({ id: articles.id })
       .all();

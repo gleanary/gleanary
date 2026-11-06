@@ -3,6 +3,7 @@ import {
   HIGHLIGHT_COLORS,
   ANCHOR_STATUSES,
   SOURCE_TYPES,
+  UNDELETABLE_SOURCE_TYPES,
   SETTING_KEYS,
   APPEARANCE_MODES,
   THESIS_STATUSES,
@@ -222,10 +223,14 @@ export const bulkTagHighlightsSchema = z.object({
 
 // --- Sources ---
 
-/** Validates POST /api/sources request body */
+/**
+ * Validates POST /api/sources request body. Built-in types (UNDELETABLE_SOURCE_TYPES:
+ * the singletons plus newsletter senders) are created by the app, never through the
+ * API, since DELETE could never remove them.
+ */
 export const createSourceSchema = z
   .object({
-    type: sourceTypeEnum,
+    type: sourceTypeEnum.exclude(UNDELETABLE_SOURCE_TYPES),
     name: z.string().min(1).max(500),
     feedUrl: z.string().url().optional(),
     iconUrl: safeImageUrl,
