@@ -64,13 +64,13 @@ describe('computeCost', () => {
       cacheWriteTokens: 1_000_000,
       webSearchCount: 0,
     };
-    expect(computeCost(row)).toBeCloseTo(3.0 + 15.0 + 0.3 + 3.75, 6);
+    expect(computeCost(row)).toBeCloseTo(2.0 + 10.0 + 0.2 + 2.5, 6);
     expect(warnSpy).not.toHaveBeenCalled();
     expect(MODEL_PRICING['claude-sonnet-5']).toEqual({
-      input: 3.0,
-      output: 15.0,
-      cacheRead: 0.3,
-      cacheWrite: 3.75,
+      input: 2.0,
+      output: 10.0,
+      cacheRead: 0.2,
+      cacheWrite: 2.5,
     });
     warnSpy.mockRestore();
   });

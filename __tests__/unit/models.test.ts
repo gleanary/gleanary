@@ -105,12 +105,12 @@ describe('DEFAULT_FEATURE_MODEL', () => {
 });
 
 describe('claude-sonnet-5 registry entry', () => {
-  it('prices Sonnet 5 at the standard rate card', () => {
+  it('prices Sonnet 5 at its $2/$10 rate card', () => {
     expect(CLAUDE_PRICING['claude-sonnet-5']).toEqual({
-      input: 3.0,
-      output: 15.0,
-      cacheRead: 0.3,
-      cacheWrite: 3.75,
+      input: 2.0,
+      output: 10.0,
+      cacheRead: 0.2,
+      cacheWrite: 2.5,
     });
   });
 
