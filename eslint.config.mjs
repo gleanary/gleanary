@@ -12,6 +12,10 @@ const eslintConfig = defineConfig([
     'next-env.d.ts',
     'drizzle/**',
     'playwright-report/**',
+    // Local-only trees: vitest coverage output and git worktrees under .claude/ (each a
+    // full checkout with its own node_modules), neither of which exists in CI.
+    'coverage/**',
+    '.claude/**',
   ]),
   {
     rules: {

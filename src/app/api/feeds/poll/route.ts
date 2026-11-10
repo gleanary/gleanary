@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { pollBodySchema } from '@/lib/validators';
+import { pollBodySchema, readOptionalJsonBody } from '@/lib/validators';
 import { pollFeed, pollAllFeeds } from '@/lib/feed-poller';
 import { logger } from '@/lib/logger';
 import { withRoute } from '@/lib/api-error-handler';
@@ -14,11 +14,10 @@ import { getSourceOrThrow } from '@/lib/db-helpers';
  * @returns Poll results
  */
 export const POST = withRoute('POST /api/feeds/poll', async (req: NextRequest) => {
-  // Parse body: empty body means poll-all
-  const text = await req.text();
-  const body = text ? pollBodySchema.parse(JSON.parse(text)) : undefined;
+  // An empty body means poll-all
+  const body = pollBodySchema.parse(await readOptionalJsonBody(req));
 
-  if (body?.sourceId) {
+  if (body.sourceId) {
     // Poll a specific feed
     const source = getSourceOrThrow(body.sourceId);
 

@@ -91,6 +91,30 @@ export function migrationsBefore(dir: string, tag: string): string {
 }
 
 /**
+ * Inserts one row with raw SQL. For tests that build a DB at an older migration (via
+ * `migrationsBefore`): the Drizzle tables describe the current schema, so an insert through
+ * them would include columns the old DB does not have yet. `table` and the keys are test
+ * literals, never input.
+ * @param sqlite - Raw connection to the test DB
+ * @param table - Table name
+ * @param row - Column name → value
+ * @returns The inserted row id
+ */
+export function insertRawRow(
+  sqlite: Database.Database,
+  table: string,
+  row: Record<string, string | number | null>,
+): number {
+  const columns = Object.keys(row);
+  const placeholders = columns.map(() => '?').join(', ');
+  return Number(
+    sqlite
+      .prepare(`INSERT INTO ${table} (${columns.join(', ')}) VALUES (${placeholders})`)
+      .run(...columns.map((column) => row[column])).lastInsertRowid,
+  );
+}
+
+/**
  * Vitest mock factory for `@/db`. Use with `vi.hoisted` + `vi.mock`.
  * Returns getters that resolve to the latest test DB set via `setTestDb`.
  */

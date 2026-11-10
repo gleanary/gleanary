@@ -16,3 +16,6 @@ next-env.d.ts
 # Parser parity corpus: deliberately malformed raw HTML (uppercase tags, unclosed
 # <p>/<td>, missing <tbody>); formatting it would invalidate the jsdom 29 baselines.
 __tests__/mocks/fixtures/html-corpus/*.html
+# Local-only trees (not in CI): git worktrees under .claude/ and scratch files
+.claude/worktrees
+.local

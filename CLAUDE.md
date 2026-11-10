@@ -336,6 +336,7 @@ npx playwright test <file> # Specific E2E
 | 20  | Robust Highlight Anchoring               | `docs/modules/highlight-anchoring.md`              | Done        |
 | 21  | Authentication                           | `docs/modules/auth.md`                             | Done        |
 | 22  | Context Panel                            | `docs/modules/context-panel.md`                    | Done        |
+| 23  | Article Enrichment                       | `docs/modules/article-enrichment.md`               | Partial     |
 | —   | Content Pipeline (cross-cutting)         | `docs/modules/content-pipeline.md`                 | Done        |
 
 Claude Code updates the status column as modules are completed.

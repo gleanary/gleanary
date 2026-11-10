@@ -1,9 +1,12 @@
 import { describe, it, expect } from 'vitest';
 import {
+  CHARS_PER_TOKEN,
   CLAUDE_PRICING,
   ANTHROPIC_MODELS,
   DEFAULT_CHAT_MODEL,
+  DEFAULT_ENRICH_MODEL,
   DEFAULT_FEATURE_MODEL,
+  ENRICH_MODEL_IDS,
   DRAFT_MODEL_IDS,
   DEFAULT_DRAFT_MODEL,
   DRAFT_MODELS,
@@ -101,6 +104,33 @@ describe('DEFAULT_FEATURE_MODEL', () => {
 
   it('is priced through the production cost path', () => {
     expect(isPriced(DEFAULT_FEATURE_MODEL)).toBe(true);
+  });
+});
+
+describe('DEFAULT_ENRICH_MODEL and ENRICH_MODEL_IDS', () => {
+  it('is Sonnet 5, active, priced and eligible for enrichment', () => {
+    expect(DEFAULT_ENRICH_MODEL).toBe('claude-sonnet-5');
+    expectActiveModel(DEFAULT_ENRICH_MODEL);
+    expect(isPriced(DEFAULT_ENRICH_MODEL)).toBe(true);
+    expect(ENRICH_MODEL_IDS).toContain(DEFAULT_ENRICH_MODEL);
+  });
+
+  it('is a separate constant from DEFAULT_FEATURE_MODEL', () => {
+    expect(DEFAULT_FEATURE_MODEL).toBe('claude-sonnet-4-6');
+  });
+
+  it('keeps only chat-selectable models that accept forced tool use, by API id', () => {
+    expect(ENRICH_MODEL_IDS.length).toBeGreaterThan(0);
+    const chatIds = ANTHROPIC_MODELS.map((m) => m.id);
+    for (const id of ENRICH_MODEL_IDS) {
+      expect(chatIds, `enrich model ${id}`).toContain(id);
+      expect(isPriced(id), `pricing for ${id}`).toBe(true);
+    }
+    expect(ENRICH_MODEL_IDS).toContain('claude-haiku-4-5-20251001');
+  });
+
+  it('exports the chars-per-token ratio used by the enrichment budget', () => {
+    expect(CHARS_PER_TOKEN).toBe(4);
   });
 });
 

@@ -17,6 +17,7 @@ import type {
   voiceSamples,
   drafts,
   aiUsage,
+  aiBatches,
 } from '@/db/schema';
 
 // --- Select types (reading from DB) ---
@@ -50,6 +51,8 @@ export type VoiceSample = InferSelectModel<typeof voiceSamples>;
 export type NewVoiceSample = InferInsertModel<typeof voiceSamples>;
 export type AiUsage = InferSelectModel<typeof aiUsage>;
 export type NewAiUsage = InferInsertModel<typeof aiUsage>;
+export type AiBatch = InferSelectModel<typeof aiBatches>;
+export type NewAiBatch = InferInsertModel<typeof aiBatches>;
 
 // --- AI Usage types ---
 
@@ -73,6 +76,8 @@ export const AI_USAGE_FEATURES = [
   'lint_gaps',
   'thesis_suggest',
   'highlight_suggest',
+  'article_enrich',
+  'article_enrich_batch',
 ] as const;
 export type AiUsageFeature = (typeof AI_USAGE_FEATURES)[number];
 
@@ -142,6 +147,117 @@ export interface CreateSourceResponse {
 export interface DeleteSourceResponse {
   deleted: true;
 }
+
+// --- Article enrichment (docs/modules/article-enrichment.md) ---
+
+/**
+ * Enrichment lifecycle of an article (§2.1). Keep in sync with the `enrich_status` enum in
+ * src/db/schema.ts (a literal copy: the schema imports nothing from here).
+ */
+export const ENRICH_STATUSES = ['none', 'queued', 'running', 'batched', 'done', 'failed'] as const;
+export type EnrichStatus = (typeof ENRICH_STATUSES)[number];
+
+/** Per-source enrichment policy: at ingestion, when opened, or in a discounted batch (D1). */
+export const ENRICH_MODES = ['auto', 'lazy', 'batch'] as const;
+export type EnrichMode = (typeof ENRICH_MODES)[number];
+
+/**
+ * Source types with a policy row in Settings (`enrich_mode_<type>`, `enrich_model_<type>`).
+ * `manual`, `browser_extension` and `remarkable` have none and resolve to the defaults.
+ */
+export const ENRICH_POLICY_SOURCE_TYPES = [
+  'web_save',
+  'rss_feed',
+  'newsletter',
+  'readwise',
+  'upload',
+] as const satisfies readonly SourceType[];
+export type EnrichPolicySourceType = (typeof ENRICH_POLICY_SOURCE_TYPES)[number];
+
+/**
+ * Whether a source type has its own enrichment policy settings.
+ * @param type - Source type
+ * @returns True for a type in ENRICH_POLICY_SOURCE_TYPES
+ */
+export function hasEnrichPolicy(type: SourceType): type is EnrichPolicySourceType {
+  return (ENRICH_POLICY_SOURCE_TYPES as readonly SourceType[]).includes(type);
+}
+
+/** The `summary` object of the `record_enrichment` tool, after validation (§2.3). */
+export interface EnrichmentSummaryPayload {
+  bottom_line: string;
+  key_points: string[];
+  whats_new?: string | undefined;
+  caveats?: string | undefined;
+  read_in_full_if?: string | undefined;
+}
+
+/** The `index` object of the `record_enrichment` tool, after validation (§2.3). */
+export interface EnrichmentIndexPayload {
+  topics: string[];
+  entities: string[];
+  arguments_for?: string[] | undefined;
+  arguments_against?: string[] | undefined;
+  related_concepts?: string[] | undefined;
+}
+
+/** The validated `record_enrichment` tool input. */
+export interface EnrichmentPayload {
+  summary: EnrichmentSummaryPayload;
+  tags: string[];
+  index: EnrichmentIndexPayload;
+}
+
+/** A client tool definition as sent in `tools` (structurally an Anthropic `Tool`). */
+export interface EnrichToolDefinition {
+  name: string;
+  description: string;
+  input_schema: {
+    type: 'object';
+    required: string[];
+    properties: Record<string, unknown>;
+  };
+}
+
+/**
+ * The request of the combined enrichment call, shared by the live path and the batch path.
+ * Structurally an Anthropic `MessageCreateParamsNonStreaming` with a forced tool choice.
+ */
+export interface EnrichRequestParams {
+  model: string;
+  max_tokens: number;
+  system: string;
+  messages: Array<{ role: 'user'; content: string }>;
+  tools: EnrichToolDefinition[];
+  tool_choice: { type: 'tool'; name: string };
+  thinking: { type: 'disabled' };
+}
+
+/** Result of `callClaudeTool`: the forced tool's input, or null when the response has none. */
+export interface ToolCallResult {
+  input: unknown;
+  stopReason: string | null;
+}
+
+/** The `article` object of `POST /api/articles/[id]/enrich` (§5). */
+export interface EnrichedArticleView {
+  id: number;
+  aiSummary: string | null;
+  /** Parsed from `ai_tags`. */
+  aiTags: string[];
+  enrichStatus: EnrichStatus;
+  enrichedAt: string | null;
+  enrichTruncated: boolean;
+}
+
+/** Result of `enrichArticle`; `cached` is true when a `done` article was returned without a call. */
+export interface EnrichResult {
+  article: EnrichedArticleView;
+  cached: boolean;
+}
+
+/** Response of `POST /api/articles/[id]/enrich`. */
+export type EnrichArticleResponse = EnrichResult;
 
 export const EXTRACTION_TIERS = ['pdfjs', 'jina', 'mistral', 'failed'] as const;
 export type ExtractionTier = (typeof EXTRACTION_TIERS)[number];
@@ -276,6 +392,23 @@ export const SETTING_KEYS = [
   'imap_poll_interval',
   'monthly_budget_usd',
   'reformat_provider',
+  // Article enrichment (docs/modules/article-enrichment.md §4.4)
+  'enrich_default_model',
+  'enrich_language',
+  'enrich_mode_web_save',
+  'enrich_mode_rss_feed',
+  'enrich_mode_newsletter',
+  'enrich_mode_readwise',
+  'enrich_mode_upload',
+  'enrich_model_web_save',
+  'enrich_model_rss_feed',
+  'enrich_model_newsletter',
+  'enrich_model_readwise',
+  'enrich_model_upload',
+  'enrich_batch_min_articles',
+  'enrich_batch_max_age_days',
+  'enrich_bulk_threshold',
+  'enrich_max_input_tokens',
 ] as const;
 export type SettingKey = (typeof SETTING_KEYS)[number];
 

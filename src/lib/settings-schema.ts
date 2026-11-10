@@ -1,4 +1,6 @@
-import type { SettingKey } from '@/types';
+import { ENRICH_POLICY_SOURCE_TYPES, type EnrichPolicySourceType, type SettingKey } from '@/types';
+import { DEFAULT_ENRICH_MODEL } from '@/lib/models';
+import { ENRICH_MODE_DEFAULTS } from '@/lib/enrichment-core';
 
 export type { SettingKey };
 
@@ -10,6 +12,26 @@ export interface SettingMeta {
   defaultValue: string | null;
   section: 'ai' | 'reading' | 'feeds' | 'appearance';
 }
+
+/** A plain (unencrypted, no env var) setting of the AI section. */
+function aiSetting(defaultValue: string | null): SettingMeta {
+  return { envVar: null, encrypted: false, defaultValue, section: 'ai' };
+}
+
+/**
+ * Per-source enrichment settings, one mode and one model row per policy source type
+ * (docs/modules/article-enrichment.md §4.4). '' on a model row means "inherit
+ * enrich_default_model".
+ */
+const enrichPerSourceSettings = Object.fromEntries(
+  ENRICH_POLICY_SOURCE_TYPES.flatMap((type) => [
+    [`enrich_mode_${type}`, aiSetting(ENRICH_MODE_DEFAULTS[type])],
+    [`enrich_model_${type}`, aiSetting('')],
+  ]),
+) as Record<
+  `enrich_mode_${EnrichPolicySourceType}` | `enrich_model_${EnrichPolicySourceType}`,
+  SettingMeta
+>;
 
 export const SETTINGS_SCHEMA: Record<SettingKey, SettingMeta> = {
   inworld_api_key: {
@@ -87,6 +109,15 @@ export const SETTINGS_SCHEMA: Record<SettingKey, SettingMeta> = {
     defaultValue: 'mistral',
     section: 'ai',
   },
+  // Article enrichment (docs/modules/article-enrichment.md §4.4). Per-source keys are rows,
+  // not a JSON blob.
+  enrich_default_model: aiSetting(DEFAULT_ENRICH_MODEL),
+  enrich_language: aiSetting('en'),
+  ...enrichPerSourceSettings,
+  enrich_batch_min_articles: aiSetting('20'),
+  enrich_batch_max_age_days: aiSetting('1'),
+  enrich_bulk_threshold: aiSetting('25'),
+  enrich_max_input_tokens: aiSetting('150000'),
 };
 
 /** Set of keys that are encrypted */
