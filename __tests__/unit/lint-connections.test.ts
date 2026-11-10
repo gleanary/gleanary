@@ -1,5 +1,31 @@
 import { describe, it, expect } from 'vitest';
-import { clusterHighlightsByTopics } from '@/lib/lint/connections';
+import { clusterHighlightsByTopics, extractTerms } from '@/lib/lint/connections';
+
+describe('extractTerms', () => {
+  it('reads the TOPICS and ENTITIES lines as comma-separated terms', () => {
+    expect(
+      extractTerms(
+        'TOPICS: Regulatory Capture, central banking\nENTITIES: Fed, ECB\nARGUMENTS FOR: x',
+      ),
+    ).toEqual(['regulatory capture', 'central banking', 'fed', 'ecb']);
+  });
+
+  it('gives no terms for an empty TOPICS line and does not capture the ENTITIES line as topics', () => {
+    const index =
+      'TOPICS: \nENTITIES: alpha corp, beta inc\nARGUMENTS FOR: \nARGUMENTS AGAINST: \nRELATED CONCEPTS: ';
+    expect(extractTerms(index)).toEqual(['alpha corp', 'beta inc']);
+  });
+
+  it('gives no terms for an empty ENTITIES line and does not capture the ARGUMENTS FOR line', () => {
+    const index =
+      'TOPICS: alpha\nENTITIES: \nARGUMENTS FOR: strong claim here\nARGUMENTS AGAINST: \nRELATED CONCEPTS: ';
+    expect(extractTerms(index)).toEqual(['alpha']);
+  });
+
+  it('returns nothing for a missing index', () => {
+    expect(extractTerms(null)).toEqual([]);
+  });
+});
 
 /**
  * Pure-logic tests for the topic-clustering helper used by the connections

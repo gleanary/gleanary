@@ -22,6 +22,14 @@ export class DuplicateError extends Error {
   }
 }
 
+/** Thrown when the resource's current state refuses the operation (409, not a duplicate) */
+export class ConflictError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'ConflictError';
+  }
+}
+
 /** Thrown when an external service call fails (fetch, Claude API, etc.) */
 export class ExternalServiceError extends Error {
   /** HTTP status code to return to the client. Defaults to 503. */

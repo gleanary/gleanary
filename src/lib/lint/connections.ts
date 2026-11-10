@@ -136,15 +136,21 @@ export function clusterHighlightsByTopics(items: ClusterableHighlight[]): TopicC
   return merged.slice(0, MAX_CLUSTERS);
 }
 
-/** Extract lowercase, trimmed terms from the TOPICS and ENTITIES lines of an aiIndex string. */
-function extractTerms(aiIndex: string | null): string[] {
+/**
+ * Extracts lowercase, trimmed terms from the TOPICS and ENTITIES lines of an aiIndex string.
+ * The header regexes allow only spaces and tabs after the colon (never `\s`, which would let
+ * an empty `TOPICS: ` line capture the whole next line as topics).
+ * @param aiIndex - The article's stored concept index, or null
+ * @returns Terms of 3–50 chars, topics first
+ */
+export function extractTerms(aiIndex: string | null): string[] {
   if (!aiIndex) return [];
   const terms: string[] = [];
-  const topicsMatch = aiIndex.match(/^topics:\s*(.+)$/im);
+  const topicsMatch = aiIndex.match(/^topics:[ \t]*(.+)$/im);
   if (topicsMatch) {
     terms.push(...splitTerms(topicsMatch[1]!));
   }
-  const entitiesMatch = aiIndex.match(/^entities:\s*(.+)$/im);
+  const entitiesMatch = aiIndex.match(/^entities:[ \t]*(.+)$/im);
   if (entitiesMatch) {
     terms.push(...splitTerms(entitiesMatch[1]!));
   }

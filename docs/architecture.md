@@ -131,6 +131,11 @@ External input:
                            │ updated_at            │
                            │ reading_anchor_block  │
                            │ reading_anchor_offset │
+                           │ enrich_status (enum)  │
+                           │ enrich_attempts       │
+                           │ enriched_at           │
+                           │ enrich_truncated      │
+                           │ enrich_batch_id       │
                            └──────────────────────┘
 
   extraction_tier enum:
@@ -144,6 +149,15 @@ External input:
   - reading            (started but not finished)
   - archived           (finished/dismissed; stamped readAt on first archive)
   - pending_review     (newsletter from unknown sender)
+
+  article.enrich_status enum (docs/modules/article-enrichment.md §2.1; keep in sync with
+        ENRICH_STATUSES in src/types/index.ts):
+  - none       (not enriched; new lazy/batch articles, auto articles before the hook runs)
+  - queued     (in the in-process live queue)
+  - running    (a live call is in flight)
+  - batched    (part of a submitted Anthropic batch; enrich_batch_id is set)
+  - done       (summary, tags and index written; enriched_at NULL on legacy rows)
+  - failed     (last attempt failed; enrich_attempts counts, the sweep stops at 3)
 
   highlight.anchor_status enum:
   - anchored   (text-quote anchor resolves to a range in current content; default)
@@ -190,6 +204,11 @@ External input:
              and rebuilds articles with source_id NOT NULL ON DELETE restrict, after
              merging duplicate singletons and pointing NULL/dangling source_id at the
              'web_save' source. See docs/modules/article-enrichment.md §3.3, §4.1.
+  Migration: 0025_enrichment_state.sql adds enrich_status (default 'none'), enrich_attempts,
+             enriched_at, enrich_truncated and enrich_batch_id (loose ref to ai_batches.id,
+             no FK) plus articles_enrich_status_idx to articles (additive, no rebuild),
+             creates ai_batches, and marks rows with a non-blank ai_summary as
+             enrich_status 'done'. See docs/modules/article-enrichment.md §4.2–§4.3.
   Backfill existing rows: npx tsx scripts/backfill-content-markdown.ts
   Backfill highlight anchors (run only after the dual v1/v2 reader ships — Module 20 session 2):
              npx tsx scripts/backfill-highlight-anchors.ts
@@ -326,7 +345,7 @@ External input:
 ├──────────────────┤
 │ id               │
 │ user_id          │  always 1 (single-user)
-│ feature (enum)   │  closed enum — see AiUsageFeature in src/types/index.ts (includes 'ai_clean_pdf' added Session 6)
+│ feature (enum)   │  closed enum — see AiUsageFeature in src/types/index.ts (includes 'ai_clean_pdf' added Session 6, 'article_enrich' / 'article_enrich_batch' added by article enrichment)
 │ model            │  full model ID e.g. 'claude-sonnet-4-6'
 │ status (enum)    │  success | error
 │ error_kind       │  rate_limit | timeout | api_error | network | null
@@ -348,6 +367,31 @@ External input:
     Token-based models: input/output/cache tokens × MODEL_PRICING.
     Page-based models (Mistral OCR): pages_processed × PAGE_BASED_PRICING.
   Migration: 0015_little_fenris.sql; pages_processed added in 0018_damp_champions.sql.
+```
+
+### AI Batches Table
+
+```
+┌────────────────────┐
+│     ai_batches      │
+├────────────────────┤
+│ id                 │
+│ anthropic_batch_id │  unique; the Anthropic Message Batches id
+│ purpose (enum)     │  article_enrich
+│ status (enum)      │  in_progress | ended | processed | failed
+│ request_count      │
+│ succeeded_count    │
+│ errored_count      │  errored + expired + canceled
+│ submitted_at       │
+│ ended_at           │
+│ processed_at       │
+│ error              │
+└────────────────────┘
+
+  Index: ai_batches_status_idx (status). Single-user, so no user_id (like chat_sessions).
+  Articles point back through articles.enrich_batch_id (loose ref, no FK).
+  Migration: 0025_enrichment_state.sql. Written by the enrichment batch path (Session 5);
+  see docs/modules/article-enrichment.md §2.5, §4.3.
 ```
 
 ### FTS5 Virtual Table
@@ -401,27 +445,27 @@ Using a simplified SM-2 algorithm:
 
 **API surface** (64 route files under `src/app/api/`). This is an index, not the contract — per-route request/response shapes live in the module spec listed for each group, which is the source of truth:
 
-| Route group                                                                                                                     | Purpose                                                | Contract (docs/modules/)                                                        |
-| ------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------ | ------------------------------------------------------------------------------- |
-| `/api/articles` + `[id]`, `[id]/original`, `[id]/images/[name]`, `[id]/reanchor-highlights`, `parse`                            | Article CRUD, original view, PDF images, reanchor      | `data-layer.md`, `article-parser.md`, `pdf-import.md`, `highlight-anchoring.md` |
-| `/api/highlights` + `[id]`, `bulk-delete`, `bulk-tag`                                                                           | Highlight CRUD + bulk ops                              | `data-layer.md`, `highlight-library.md`                                         |
-| `/api/sources` + `[id]`, `/api/tags` + `[id]`                                                                                   | Source and tag CRUD                                    | `data-layer.md`                                                                 |
-| `/api/review`                                                                                                                   | Daily review queue + actions                           | `daily-review.md`                                                               |
-| `/api/feeds/poll`                                                                                                               | Manual RSS poll trigger                                | `rss-engine.md`                                                                 |
-| `/api/ai/summarize`, `tag`, `explain`, `clean`, `revert`, `index`, `index/backfill`                                             | AI features (summaries, tagging, cleanup, indexing)    | `ai-features.md`, `content-pipeline.md`, `knowledge-chat.md`                    |
-| `/api/chat` + `[id]`, `[id]/file`, `lint`                                                                                       | Knowledge chat sessions + draft lint                   | `knowledge-chat.md`                                                             |
-| `/api/theses` + `[id]`, `[id]/highlights(/[highlightId])`, `[id]/research(/[researchId])`, `[id]/suggest-highlights`, `suggest` | Thesis tracker                                         | `thesis-tracker.md`                                                             |
-| `/api/drafts` + `[id]`, `[id]/generate`                                                                                         | Content template drafts                                | `content-templates.md`                                                          |
-| `/api/tts/[articleId]`, `cache`, `voices`                                                                                       | Text-to-speech synthesis + cache                       | `text-to-speech-immersion-reading.md`                                           |
-| `/api/usage/summary`, `breakdown`, `budget`, `estimate`, `top-calls`, `runs/[runId]`                                            | AI usage tracking                                      | `ai-usage.md`                                                                   |
-| `/api/voice/profile`, `profile/extract`, `samples` + `[id]`                                                                     | Voice profile                                          | `voice-profile.md`                                                              |
-| `/api/newsletters` + `[id]`, `poll`                                                                                             | Newsletter sender approval + IMAP poll                 | `newsletter-ingestion.md`                                                       |
-| `/api/settings` + `audit`, `test`, `test-imap`                                                                                  | Settings CRUD, audit log, key/IMAP tests               | `auth.md` (settings storage), feature specs for individual keys                 |
-| `/api/auth/login`, `logout`                                                                                                     | Session auth                                           | `auth.md`                                                                       |
-| `/api/upload`                                                                                                                   | PDF upload                                             | `pdf-import.md`                                                                 |
-| `/api/import/readwise`                                                                                                          | Readwise CSV import                                    | `content-pipeline.md`, ADR-002                                                  |
-| `/api/search`                                                                                                                   | Global FTS5 search (articles/highlights/theses/drafts) | `global-search.md`                                                              |
-| `/api/health`                                                                                                                   | Health check                                           | —                                                                               |
+| Route group                                                                                                                     | Purpose                                                   | Contract (docs/modules/)                                                        |
+| ------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------- | ------------------------------------------------------------------------------- |
+| `/api/articles` + `[id]`, `[id]/original`, `[id]/images/[name]`, `[id]/reanchor-highlights`, `[id]/enrich`, `parse`             | Article CRUD, original view, PDF images, reanchor, enrich | `data-layer.md`, `article-parser.md`, `pdf-import.md`, `highlight-anchoring.md` |
+| `/api/highlights` + `[id]`, `bulk-delete`, `bulk-tag`                                                                           | Highlight CRUD + bulk ops                                 | `data-layer.md`, `highlight-library.md`                                         |
+| `/api/sources` + `[id]`, `/api/tags` + `[id]`                                                                                   | Source and tag CRUD                                       | `data-layer.md`                                                                 |
+| `/api/review`                                                                                                                   | Daily review queue + actions                              | `daily-review.md`                                                               |
+| `/api/feeds/poll`                                                                                                               | Manual RSS poll trigger                                   | `rss-engine.md`                                                                 |
+| `/api/ai/summarize`, `tag`, `explain`, `clean`, `revert`, `index`, `index/backfill`                                             | AI features (summaries, tagging, cleanup, indexing)       | `ai-features.md`, `content-pipeline.md`, `knowledge-chat.md`                    |
+| `/api/chat` + `[id]`, `[id]/file`, `lint`                                                                                       | Knowledge chat sessions + draft lint                      | `knowledge-chat.md`                                                             |
+| `/api/theses` + `[id]`, `[id]/highlights(/[highlightId])`, `[id]/research(/[researchId])`, `[id]/suggest-highlights`, `suggest` | Thesis tracker                                            | `thesis-tracker.md`                                                             |
+| `/api/drafts` + `[id]`, `[id]/generate`                                                                                         | Content template drafts                                   | `content-templates.md`                                                          |
+| `/api/tts/[articleId]`, `cache`, `voices`                                                                                       | Text-to-speech synthesis + cache                          | `text-to-speech-immersion-reading.md`                                           |
+| `/api/usage/summary`, `breakdown`, `budget`, `estimate`, `top-calls`, `runs/[runId]`                                            | AI usage tracking                                         | `ai-usage.md`                                                                   |
+| `/api/voice/profile`, `profile/extract`, `samples` + `[id]`                                                                     | Voice profile                                             | `voice-profile.md`                                                              |
+| `/api/newsletters` + `[id]`, `poll`                                                                                             | Newsletter sender approval + IMAP poll                    | `newsletter-ingestion.md`                                                       |
+| `/api/settings` + `audit`, `test`, `test-imap`                                                                                  | Settings CRUD, audit log, key/IMAP tests                  | `auth.md` (settings storage), feature specs for individual keys                 |
+| `/api/auth/login`, `logout`                                                                                                     | Session auth                                              | `auth.md`                                                                       |
+| `/api/upload`                                                                                                                   | PDF upload                                                | `pdf-import.md`                                                                 |
+| `/api/import/readwise`                                                                                                          | Readwise CSV import                                       | `content-pipeline.md`, ADR-002                                                  |
+| `/api/search`                                                                                                                   | Global FTS5 search (articles/highlights/theses/drafts)    | `global-search.md`                                                              |
+| `/api/health`                                                                                                                   | Health check                                              | —                                                                               |
 
 ### Module 2: Article Parser
 

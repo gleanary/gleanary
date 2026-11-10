@@ -1,0 +1,42 @@
+{
+  "id": "msg_tool_test_123",
+  "type": "message",
+  "role": "assistant",
+  "content": [
+    {
+      "type": "tool_use",
+      "id": "toolu_test_01",
+      "name": "record_enrichment",
+      "input": {
+        "summary": {
+          "bottom_line": "Unit tests catch regressions cheaply when they isolate pure logic from I/O.",
+          "key_points": [
+            "Pure functions are the cheapest code to test and the first to extract",
+            "Integration tests cover the seams between modules, not the modules themselves",
+            "End-to-end tests are reserved for the three critical user journeys"
+          ],
+          "whats_new": "Argues that most suites over-invest in end-to-end coverage and under-invest in extraction.",
+          "caveats": "Based on the author's experience at two companies; no measurements are given.",
+          "read_in_full_if": "You maintain a slow end-to-end suite and want a migration plan."
+        },
+        "tags": ["testing", "software-engineering"],
+        "index": {
+          "topics": ["software testing", "unit testing", "integration testing", "test pyramid"],
+          "entities": ["Vitest", "Playwright"],
+          "arguments_for": ["Unit tests give the fastest feedback per dollar"],
+          "arguments_against": ["End-to-end suites are slow and flaky"],
+          "related_concepts": ["continuous integration", "refactoring", "pyramide des tests"]
+        }
+      }
+    }
+  ],
+  "model": "claude-sonnet-5",
+  "stop_reason": "tool_use",
+  "stop_sequence": null,
+  "usage": {
+    "input_tokens": 1843,
+    "output_tokens": 412,
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 0
+  }
+}

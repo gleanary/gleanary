@@ -12,8 +12,8 @@
  * Historical entries (features: []) are kept so computeCost can price old ai_usage rows.
  */
 
-/** Rough chars-to-tokens ratio (4 chars ≈ 1 token) */
-const CHARS_PER_TOKEN = 4;
+/** Rough chars-to-tokens ratio (4 chars ≈ 1 token). Also the enrichment input budget unit. */
+export const CHARS_PER_TOKEN = 4;
 
 /** Fraction of context window reserved for retrieved knowledge-base context */
 const CONTEXT_FRACTION = 0.4;
@@ -49,6 +49,13 @@ interface ClaudeModelSpec {
   readonly pricing: TokenPricing;
   /** Selector membership. Empty array = historical entry (pricing only, not in UI). */
   readonly features: ReadonlyArray<'chat' | 'draft'>;
+  /**
+   * Whether the model accepts a forced `tool_choice: { type: 'tool' }` together with
+   * `thinking: { type: 'disabled' }`, which every enrichment request sends. Sonnet 5.5,
+   * Opus 5.5 and Fable 5.1 reject both with a 400 (on Batches and count_tokens too):
+   * give them `false` when they join the registry. Drives ENRICH_MODEL_IDS.
+   */
+  readonly forcedToolUse: boolean;
 }
 
 // Prices per million tokens, in USD. Source: https://www.anthropic.com/pricing
@@ -62,6 +69,7 @@ const ALL_CLAUDE_MODELS = [
     contextWindow: 200_000,
     pricing: { input: 1.0, output: 5.0, cacheRead: 0.1, cacheWrite: 1.25 },
     features: ['chat', 'draft'],
+    forcedToolUse: true,
   },
   {
     id: 'claude-sonnet-4-6',
@@ -69,6 +77,7 @@ const ALL_CLAUDE_MODELS = [
     contextWindow: 1_000_000,
     pricing: { input: 3.0, output: 15.0, cacheRead: 0.3, cacheWrite: 3.75 },
     features: ['chat', 'draft'],
+    forcedToolUse: true,
   },
   {
     // 'claude-sonnet-5' is the full dateless API id, no apiId needed.
@@ -79,6 +88,7 @@ const ALL_CLAUDE_MODELS = [
     contextWindow: 1_000_000,
     pricing: { input: 2.0, output: 10.0, cacheRead: 0.2, cacheWrite: 2.5 },
     features: ['chat', 'draft'],
+    forcedToolUse: true,
   },
   {
     id: 'claude-opus-4-8',
@@ -86,6 +96,7 @@ const ALL_CLAUDE_MODELS = [
     contextWindow: 1_000_000,
     pricing: { input: 5.0, output: 25.0, cacheRead: 0.5, cacheWrite: 6.25 },
     features: ['chat', 'draft'],
+    forcedToolUse: true,
   },
   // ── Historical (pricing only — for cost records on old ai_usage rows) ────
   {
@@ -94,6 +105,7 @@ const ALL_CLAUDE_MODELS = [
     contextWindow: 1_000_000,
     pricing: { input: 5.0, output: 25.0, cacheRead: 0.5, cacheWrite: 6.25 },
     features: [],
+    forcedToolUse: true,
   },
   {
     id: 'claude-opus-4-6',
@@ -101,6 +113,7 @@ const ALL_CLAUDE_MODELS = [
     contextWindow: 1_000_000,
     pricing: { input: 5.0, output: 25.0, cacheRead: 0.5, cacheWrite: 6.25 },
     features: [],
+    forcedToolUse: true,
   },
   {
     id: 'claude-sonnet-4',
@@ -108,6 +121,7 @@ const ALL_CLAUDE_MODELS = [
     contextWindow: 200_000,
     pricing: { input: 3.0, output: 15.0, cacheRead: 0.3, cacheWrite: 3.75 },
     features: [],
+    forcedToolUse: true,
   },
 ] as const satisfies readonly ClaudeModelSpec[];
 
@@ -161,6 +175,22 @@ export const DEFAULT_FEATURE_MODEL = 'claude-sonnet-4-6';
 /** Model used for utility calls: keyword extraction, chat title generation, lint, ai-clean fallback */
 export const UTILITY_MODEL = 'claude-haiku-4-5-20251001';
 
+/**
+ * Default model for article enrichment (summary + tags + concept index, one forced-tool call).
+ * Separate from DEFAULT_FEATURE_MODEL on purpose: changing that one would move every other AI
+ * feature too. Reference this constant, never the literal id.
+ */
+export const DEFAULT_ENRICH_MODEL = 'claude-sonnet-5';
+
+/**
+ * API ids selectable for enrichment: chat-selectable registry models that accept forced tool
+ * use (see `forcedToolUse`). The `enrich_*model*` validators, the policy fallback chain and the
+ * settings selects all use this list, never ANTHROPIC_MODELS directly.
+ */
+export const ENRICH_MODEL_IDS = ALL_CLAUDE_MODELS.filter(
+  (m) => m.forcedToolUse && m.features.some((f) => f === 'chat'),
+).map((m) => ('apiId' in m ? m.apiId : m.id)) as unknown as readonly [string, ...string[]];
+
 export interface ModelBudget {
   /** Max chars of retrieved context to include (~40% of context window) */
   contextBudgetChars: number;
@@ -170,6 +200,21 @@ export interface ModelBudget {
   maxResponseTokens: number;
 }
 
+/** Context window assumed for a model id outside the registry. */
+const FALLBACK_CONTEXT_WINDOW = 200_000;
+
+/**
+ * Context window of a registry model, by API id or normalized id.
+ * @param modelId - Anthropic model ID (API call form or normalized)
+ * @returns The context window in tokens, 200k when the id is not recognized
+ */
+export function getContextWindow(modelId: string): number {
+  const model = ALL_CLAUDE_MODELS.find(
+    (m) => ('apiId' in m ? m.apiId : m.id) === modelId || m.id === modelId,
+  );
+  return model?.contextWindow ?? FALLBACK_CONTEXT_WINDOW;
+}
+
 /**
  * Returns token/char budgets for a given model based on its context window.
  * Falls back to 200k window size if the model ID is not recognized.
@@ -177,10 +222,7 @@ export interface ModelBudget {
  * @returns Budget values scaled to the model's context window
  */
 export function getModelBudget(modelId: string): ModelBudget {
-  const model = ALL_CLAUDE_MODELS.find(
-    (m) => ('apiId' in m ? m.apiId : m.id) === modelId || m.id === modelId,
-  );
-  const contextWindow = model?.contextWindow ?? 200_000;
+  const contextWindow = getContextWindow(modelId);
 
   return {
     contextBudgetChars: Math.floor(contextWindow * CONTEXT_FRACTION * CHARS_PER_TOKEN),

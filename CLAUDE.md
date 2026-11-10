@@ -199,7 +199,7 @@ export async function POST(req: NextRequest) {
 ```
 
 - **Validation**: use Zod schemas for all request body validation
-- **Status codes**: 200 (success), 201 (created), 400 (bad request), 404 (not found), 409 (conflict/duplicate), 422 (validation), 500 (server error), 503 (unavailable)
+- **Status codes**: 200 (success), 201 (created), 400 (bad request), 404 (not found), 409 (conflict/duplicate), 422 (validation), 500 (server error), 502 (upstream returned unusable output, e.g. an invalid enrichment payload), 503 (unavailable)
 
 ### Database
 
@@ -336,6 +336,7 @@ npx playwright test <file> # Specific E2E
 | 20  | Robust Highlight Anchoring               | `docs/modules/highlight-anchoring.md`              | Done        |
 | 21  | Authentication                           | `docs/modules/auth.md`                             | Done        |
 | 22  | Context Panel                            | `docs/modules/context-panel.md`                    | Done        |
+| 23  | Article Enrichment                       | `docs/modules/article-enrichment.md`               | Partial     |
 | —   | Content Pipeline (cross-cutting)         | `docs/modules/content-pipeline.md`                 | Done        |
 
 Claude Code updates the status column as modules are completed.

@@ -12,7 +12,7 @@ import {
   chatSessions,
 } from '@/db/schema';
 import { NotFoundError, ValidationError } from '@/lib/errors';
-import { normalizeTagName } from '@/lib/ai';
+import { normalizeTagName } from '@/lib/enrichment-core';
 import type {
   SingletonSourceType,
   SourceType,

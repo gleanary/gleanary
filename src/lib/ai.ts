@@ -8,8 +8,16 @@ import { ExternalServiceError, ValidationError } from '@/lib/errors';
 import { getConfig } from '@/lib/settings';
 import { trackAiCall } from '@/lib/ai-usage';
 import { DEFAULT_FEATURE_MODEL } from '@/lib/models';
-import type { ThesisSuggestion, HighlightSuggestion, ThesisHighlightRole } from '@/types';
-import type { TrackingContext } from '@/lib/ai-usage';
+import type {
+  ThesisSuggestion,
+  HighlightSuggestion,
+  ThesisHighlightRole,
+  EnrichRequestParams,
+  ToolCallResult,
+} from '@/types';
+import type { TrackingContext, UsageData } from '@/lib/ai-usage';
+
+import { normalizeTagName } from '@/lib/enrichment-core';
 
 /** Maximum content length sent to Claude (chars). ~100K chars ≈ ~25K tokens. */
 export const MAX_CONTENT_LENGTH = 100_000;
@@ -178,15 +186,6 @@ export function truncateContent(content: string, limit = MAX_CONTENT_LENGTH): st
   if (content.length <= limit) return content;
   const suffix = '\n\n[Content truncated]';
   return content.slice(0, limit - suffix.length) + suffix;
-}
-
-/**
- * Normalizes a tag name for case-insensitive matching: trimmed and lower-cased.
- * @param name - A tag name as suggested or stored
- * @returns The match key ('' for a blank name)
- */
-export function normalizeTagName(name: string): string {
-  return name.trim().toLowerCase();
 }
 
 /**
@@ -487,14 +486,7 @@ async function callClaudeBase(
         .join('');
       return {
         result: { text, stopReason: response.stop_reason },
-        usage: {
-          model,
-          inputTokens: response.usage.input_tokens,
-          outputTokens: response.usage.output_tokens,
-          cacheReadTokens: response.usage.cache_read_input_tokens ?? 0,
-          cacheWriteTokens: response.usage.cache_creation_input_tokens ?? 0,
-          webSearchCount: response.usage.server_tool_use?.web_search_requests ?? 0,
-        },
+        usage: usageOf(model, response.usage),
       };
     });
   } catch (error) {
@@ -565,6 +557,67 @@ export async function callClaude(
   return text;
 }
 
+/** Token usage of a completed message, in the shape `trackAiCall` records. */
+function usageOf(model: string, usage: Anthropic.Message['usage']): UsageData {
+  return {
+    model,
+    inputTokens: usage.input_tokens,
+    outputTokens: usage.output_tokens,
+    cacheReadTokens: usage.cache_read_input_tokens ?? 0,
+    cacheWriteTokens: usage.cache_creation_input_tokens ?? 0,
+    webSearchCount: usage.server_tool_use?.web_search_requests ?? 0,
+  };
+}
+
+/**
+ * Sends a forced tool-use request (article enrichment) and returns the input of the first
+ * `tool_use` block named by `params.tool_choice`, or null when the response has none.
+ * The request params come from the enrichment core's shared helper and are passed through
+ * unchanged, so the live path can't drift from the batch path. Any completed response
+ * returns normally (so `trackAiCall` records its real token counts); the caller checks the
+ * stop reason and the payload. Only SDK and network errors, timeouts included, become a 503.
+ * @param params - Request built by `buildEnrichRequestParams`
+ * @param ctx - Tracking context (feature, resource)
+ * @param options - Per-request timeout in ms (scaled with the input by the caller)
+ * @returns The tool input (or null) and the stop reason
+ * @throws ExternalServiceError (503) when the SDK call fails
+ */
+export async function callClaudeTool(
+  params: EnrichRequestParams,
+  ctx: TrackingContext,
+  options: { timeoutMs: number },
+): Promise<ToolCallResult> {
+  const client = getClient();
+  try {
+    return await trackAiCall({ ...ctx, model: params.model }, async () => {
+      const response = await client.messages.create(params, {
+        timeout: options.timeoutMs,
+        // The SDK default (2) combined with the scaled timeout would let one request hang
+        // for about 15 minutes and re-send the full input each time. 0 under test, where
+        // getClient() also disables retries, so a mocked 5xx is not retried.
+        maxRetries: process.env.NODE_ENV === 'test' ? 0 : 1,
+      });
+      const block = response.content.find(
+        (b): b is Anthropic.ToolUseBlock =>
+          b.type === 'tool_use' && b.name === params.tool_choice.name,
+      );
+      return {
+        result: { input: block ? block.input : null, stopReason: response.stop_reason },
+        usage: usageOf(params.model, response.usage),
+      };
+    });
+  } catch (error) {
+    logger.error(
+      { err: error, event: 'ai_tool_call_failed', feature: ctx.feature },
+      'Claude tool call failed',
+    );
+    throw new ExternalServiceError(
+      'Claude API',
+      error instanceof Error ? error.message : 'Unknown error',
+    );
+  }
+}
+
 /** Parameters for streaming Claude calls */
 export interface StreamParams {
   /** System instructions */
@@ -632,14 +685,7 @@ export async function callClaudeStreaming(params: StreamParams): Promise<StreamR
 
       return {
         result: streamResult,
-        usage: {
-          model: params.model,
-          inputTokens: finalMessage.usage.input_tokens,
-          outputTokens: finalMessage.usage.output_tokens,
-          cacheReadTokens: finalMessage.usage.cache_read_input_tokens ?? 0,
-          cacheWriteTokens: finalMessage.usage.cache_creation_input_tokens ?? 0,
-          webSearchCount: finalMessage.usage.server_tool_use?.web_search_requests ?? 0,
-        },
+        usage: usageOf(params.model, finalMessage.usage),
       };
     });
   } catch (error) {

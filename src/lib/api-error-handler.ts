@@ -1,7 +1,13 @@
 import 'server-only';
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
-import { DuplicateError, ExternalServiceError, NotFoundError, ValidationError } from '@/lib/errors';
+import {
+  ConflictError,
+  DuplicateError,
+  ExternalServiceError,
+  NotFoundError,
+  ValidationError,
+} from '@/lib/errors';
 import { logger } from '@/lib/logger';
 
 /**
@@ -23,7 +29,7 @@ export function handleApiError(error: unknown, route: string): NextResponse {
   if (error instanceof NotFoundError) {
     return NextResponse.json({ error: error.message }, { status: 404 });
   }
-  if (error instanceof DuplicateError) {
+  if (error instanceof DuplicateError || error instanceof ConflictError) {
     return NextResponse.json({ error: error.message }, { status: 409 });
   }
   if (error instanceof ExternalServiceError) {

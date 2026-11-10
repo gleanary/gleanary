@@ -83,6 +83,19 @@ export const articles = sqliteTable(
     aiIndex: text('ai_index'),
     ttsParagraph: integer('tts_paragraph'),
     ttsTimeOffset: real('tts_time_offset'),
+    // Article enrichment state (docs/modules/article-enrichment.md §2.1, §4.2).
+    // Keep the enum in sync with ENRICH_STATUSES in src/types/index.ts.
+    enrichStatus: text('enrich_status', {
+      enum: ['none', 'queued', 'running', 'batched', 'done', 'failed'],
+    })
+      .notNull()
+      .default('none'),
+    enrichAttempts: integer('enrich_attempts').notNull().default(0),
+    /** Null on legacy rows migrated to `done` from an existing `ai_summary`. */
+    enrichedAt: text('enriched_at'),
+    enrichTruncated: integer('enrich_truncated', { mode: 'boolean' }).notNull().default(false),
+    /** Loose ref to ai_batches.id (same pattern as ai_usage.resource_id); no FK, no rebuild. */
+    enrichBatchId: integer('enrich_batch_id'),
     publishedAt: text('published_at'),
     savedAt: text('saved_at')
       .notNull()
@@ -99,6 +112,7 @@ export const articles = sqliteTable(
     index('articles_status_idx').on(table.status),
     index('articles_saved_at_idx').on(table.savedAt),
     index('articles_source_idx').on(table.sourceId),
+    index('articles_enrich_status_idx').on(table.enrichStatus),
   ],
 );
 
@@ -402,6 +416,8 @@ export const aiUsage = sqliteTable(
         'lint_gaps',
         'thesis_suggest',
         'highlight_suggest',
+        'article_enrich',
+        'article_enrich_batch',
       ],
     }).notNull(),
 
@@ -432,4 +448,30 @@ export const aiUsage = sqliteTable(
     index('ai_usage_feature_idx').on(table.feature),
     index('ai_usage_run_idx').on(table.runId),
   ],
+);
+
+// --- AI Batches (Anthropic Message Batches submitted for article enrichment) ---
+// docs/modules/article-enrichment.md §4.3. Single-user, so no user_id (like chat_sessions).
+
+export const aiBatches = sqliteTable(
+  'ai_batches',
+  {
+    id: integer('id').primaryKey({ autoIncrement: true }),
+    anthropicBatchId: text('anthropic_batch_id').notNull().unique(),
+    purpose: text('purpose', { enum: ['article_enrich'] })
+      .notNull()
+      .default('article_enrich'),
+    status: text('status', { enum: ['in_progress', 'ended', 'processed', 'failed'] }).notNull(),
+    requestCount: integer('request_count').notNull(),
+    succeededCount: integer('succeeded_count'),
+    /** errored + expired + canceled */
+    erroredCount: integer('errored_count'),
+    submittedAt: text('submitted_at')
+      .notNull()
+      .default(sql`(datetime('now'))`),
+    endedAt: text('ended_at'),
+    processedAt: text('processed_at'),
+    error: text('error'),
+  },
+  (table) => [index('ai_batches_status_idx').on(table.status)],
 );

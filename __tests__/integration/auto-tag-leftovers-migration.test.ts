@@ -6,9 +6,9 @@ import os from 'os';
 import path from 'path';
 
 import * as schema from '@/db/schema';
-import { articles, highlights, highlightTags, tags } from '@/db/schema';
+import { highlights, highlightTags, tags } from '@/db/schema';
 import { runMigrations } from '../../scripts/migrate-runner.mjs';
-import { migrationsBefore, silentLog } from './setup';
+import { insertRawRow, migrationsBefore, silentLog } from './setup';
 
 const ROOT = path.resolve(__dirname, '..', '..');
 const DRIZZLE = path.join(ROOT, 'drizzle');
@@ -38,25 +38,17 @@ describe(`migration ${MIGRATION}`, () => {
       sqlite.prepare(`INSERT INTO sources (type, name) VALUES ('manual', 'Seed')`).run()
         .lastInsertRowid,
     );
-    const [tagged] = db
-      .insert(articles)
-      .values([
-        {
-          url: 'https://example.com/tagged',
-          title: 'Tagged',
-          aiTags: JSON.stringify(['AI', ' Rust ', 'Kept-Linked']),
-          sourceId,
-        },
-        {
-          url: 'https://example.com/malformed',
-          title: 'Malformed',
-          aiTags: 'not json',
-          sourceId,
-        },
-        { url: 'https://example.com/untagged', title: 'Untagged', aiTags: null, sourceId },
-      ])
-      .returning({ id: articles.id })
-      .all();
+    const article = (url: string, title: string, ai_tags: string | null) =>
+      insertRawRow(sqlite, 'articles', { source_id: sourceId, url, title, ai_tags });
+    const tagged = {
+      id: article(
+        'https://example.com/tagged',
+        'Tagged',
+        JSON.stringify(['AI', ' Rust ', 'Kept-Linked']),
+      ),
+    };
+    article('https://example.com/malformed', 'Malformed', 'not json');
+    article('https://example.com/untagged', 'Untagged', null);
     const tagIds = Object.fromEntries(
       db
         .insert(tags)

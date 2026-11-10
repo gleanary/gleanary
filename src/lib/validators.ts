@@ -13,8 +13,15 @@ import {
   DRAFT_STATUSES,
   TEMPLATE_IDS,
   SEARCH_ENTITY_TYPES,
+  ENRICH_MODES,
+  ENRICH_POLICY_SOURCE_TYPES,
 } from '@/types';
-import { ANTHROPIC_MODELS, DEFAULT_CHAT_MODEL, DRAFT_MODEL_IDS } from '@/lib/models';
+import {
+  ANTHROPIC_MODELS,
+  DEFAULT_CHAT_MODEL,
+  DRAFT_MODEL_IDS,
+  ENRICH_MODEL_IDS,
+} from '@/lib/models';
 import { MODEL_PRICING } from '@/lib/pricing';
 import type { RouteContext } from '@/types';
 import { ENCRYPTED_KEYS } from '@/lib/settings-schema';
@@ -388,7 +395,37 @@ export const updateNewsletterSchema = z.object({
   isBlocked: z.boolean(),
 });
 
+/**
+ * Reads a request body that may be absent: a blank body (after trimming) is `{}`, anything
+ * else is parsed as JSON (malformed JSON throws a SyntaxError, which `handleApiError` maps to
+ * 400). For routes whose every field is optional, such as poll-all and enrich.
+ * @param req - The incoming request
+ * @returns The parsed body, to validate with a Zod schema
+ */
+export async function readOptionalJsonBody(req: Request): Promise<unknown> {
+  const text = (await req.text()).trim();
+  return text ? JSON.parse(text) : {};
+}
+
+// --- Article enrichment ---
+
+/** Validates POST /api/articles/[id]/enrich request body (an empty body is `{}`) */
+export const enrichArticleSchema = z.object({
+  force: z.boolean().optional(),
+});
+
 // --- Settings ---
+
+/** Enrichment model: an eligible registry API id (docs/modules/article-enrichment.md §2.2). */
+const enrichModelEnum = z.enum(ENRICH_MODEL_IDS);
+
+/** Enrichment per-source settings: mode per type, model per type ('' inherits the default). */
+const enrichPerSourceValidators: Record<string, z.ZodType> = Object.fromEntries(
+  ENRICH_POLICY_SOURCE_TYPES.flatMap((type) => [
+    [`enrich_mode_${type}`, z.enum(ENRICH_MODES)],
+    [`enrich_model_${type}`, z.union([z.literal(''), enrichModelEnum])],
+  ]),
+);
 
 /** Per-key value validation for known settings */
 const settingValueValidators: Partial<Record<string, z.ZodType>> = {
@@ -396,6 +433,14 @@ const settingValueValidators: Partial<Record<string, z.ZodType>> = {
   daily_review_batch_size: z.coerce.number().int().min(5).max(50).transform(String),
   rss_poll_interval: z.coerce.number().int().min(5).max(1440).transform(String),
   appearance_mode: z.enum(APPEARANCE_MODES),
+  // Article enrichment (§4.4)
+  enrich_default_model: enrichModelEnum,
+  enrich_language: z.string().regex(/^[a-z]{2}$/, 'Expected a two-letter ISO 639-1 code'),
+  ...enrichPerSourceValidators,
+  enrich_batch_min_articles: z.coerce.number().int().min(1).max(500).transform(String),
+  enrich_batch_max_age_days: z.coerce.number().int().min(1).max(30).transform(String),
+  enrich_bulk_threshold: z.coerce.number().int().min(1).max(1000).transform(String),
+  enrich_max_input_tokens: z.coerce.number().int().min(10_000).max(500_000).transform(String),
 };
 
 /**
