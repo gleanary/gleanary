@@ -71,14 +71,13 @@ const ALL_CLAUDE_MODELS = [
     features: ['chat', 'draft'],
   },
   {
-    // 'claude-sonnet-5' is the full dateless API id — no apiId needed.
-    // Standard pricing entered deliberately: Anthropic's intro pricing ($2/$10 through
-    // 2026-08-31) is not modeled because computeCost prices rows at read time, so the
-    // rate card must reflect the steady-state price, not a temporary promotion.
+    // 'claude-sonnet-5' is the full dateless API id, no apiId needed.
+    // $2/$10 is the permanent price since 2026-08-10 (the earlier intro pricing
+    // became the standard rate).
     id: 'claude-sonnet-5',
     name: 'Sonnet 5',
     contextWindow: 1_000_000,
-    pricing: { input: 3.0, output: 15.0, cacheRead: 0.3, cacheWrite: 3.75 },
+    pricing: { input: 2.0, output: 10.0, cacheRead: 0.2, cacheWrite: 2.5 },
     features: ['chat', 'draft'],
   },
   {
