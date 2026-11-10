@@ -72,7 +72,19 @@ function maxInputTokensSetting(): number {
     : Number(SETTINGS_SCHEMA.enrich_max_input_tokens.defaultValue);
 }
 
-function toView(article: Article): EnrichedArticleView {
+/** The columns `toView` reads; also what the success `UPDATE` returns. */
+const VIEW_COLUMNS = {
+  id: articles.id,
+  aiSummary: articles.aiSummary,
+  aiTags: articles.aiTags,
+  enrichStatus: articles.enrichStatus,
+  enrichedAt: articles.enrichedAt,
+  enrichTruncated: articles.enrichTruncated,
+};
+
+type ViewRow = Pick<Article, keyof typeof VIEW_COLUMNS>;
+
+function toView(article: ViewRow): EnrichedArticleView {
   return {
     id: article.id,
     aiSummary: article.aiSummary,
@@ -121,14 +133,25 @@ function prepareRun(
   id: number,
   options: { force: boolean; manual: boolean },
 ): { cached: EnrichResult } | { input: RunInput } {
+  // Only the columns the steps read: never content_html, and the two content columns only
+  // because better-sqlite3 has no lazy column load (the cached path pays for them too).
   const loaded = db
-    .select({ article: articles, sourceType: sources.type })
+    .select({
+      ...VIEW_COLUMNS,
+      title: articles.title,
+      author: articles.author,
+      siteName: articles.siteName,
+      status: articles.status,
+      contentMarkdown: articles.contentMarkdown,
+      contentText: articles.contentText,
+      sourceType: sources.type,
+    })
     .from(articles)
     .innerJoin(sources, eq(sources.id, articles.sourceId))
     .where(eq(articles.id, id))
     .get();
   if (!loaded) throw new NotFoundError('Article', id);
-  const { article, sourceType } = loaded;
+  const { sourceType, ...article } = loaded;
 
   if (article.status === 'pending_review') {
     throw new ConflictError('Article is waiting for sender approval');
@@ -206,7 +229,7 @@ async function runEnrichment(input: RunInput): Promise<EnrichResult> {
     .where(eq(articles.id, id))
     .run();
 
-  let updated: Article | undefined;
+  let updated: ViewRow | undefined;
   try {
     model = resolveEnrichPolicy(input.sourceType).model;
     const language = getConfig('enrich_language') || 'en';
@@ -259,7 +282,7 @@ async function runEnrichment(input: RunInput): Promise<EnrichResult> {
         enrichAttempts: 0,
       })
       .where(eq(articles.id, id))
-      .returning()
+      .returning(VIEW_COLUMNS)
       .get();
   } catch (error) {
     const attempts = input.wasDone

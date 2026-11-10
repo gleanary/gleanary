@@ -222,19 +222,30 @@ export function truncateToBudget(content: string, budgetChars: number): Truncati
 
   const window = content.slice(0, budgetChars);
   const minCut = Math.floor(budgetChars * CUT_SEARCH_FRACTION);
-  const cut = [
+  const finders = [
     () => window.lastIndexOf('\n\n'),
     () => window.lastIndexOf('\n'),
     () => window.search(/\s\S*$/), // the last whitespace
-  ]
-    .map((find) => find())
-    .find((index) => index >= minCut);
-  const text = (cut === undefined ? window : window.slice(0, cut)).trimEnd();
+  ];
+  let cut = budgetChars;
+  for (const find of finders) {
+    const index = find();
+    if (index >= minCut) {
+      cut = index;
+      break;
+    }
+  }
+  const text = window.slice(0, cut).trimEnd();
   const pct = Math.round((text.length / content.length) * 100);
   return { text, truncated: true, coveragePct: Math.min(99, Math.max(1, pct)) };
 }
 
 // --- Request building ---
+
+/** Collapses every line break (with its surrounding whitespace) into one space and trims. */
+function flattenLine(value: string | null): string {
+  return (value ?? '').replace(/\s*[\n\r\u2028\u2029]+\s*/g, ' ').trim();
+}
 
 /** Article fields and settings the user message is built from. */
 export interface EnrichMessageInput {
@@ -254,7 +265,8 @@ export interface EnrichMessageInput {
 
 /**
  * Builds the user message of §2.3. The coverage and language lines are exact strings the
- * prompt refers to.
+ * prompt refers to, so the title, author and site name are flattened to one line each: a
+ * line break inside an extracted title must not forge a header line.
  * @param input - Article fields, settings and the fitted content
  * @returns The user message
  */
@@ -266,9 +278,9 @@ export function buildEnrichUserMessage(input: EnrichMessageInput): string {
   const languageName = LANGUAGE_NAMES[input.language];
   const language = languageName ? `${languageName} (${input.language})` : input.language;
   return [
-    `Title: ${input.title}`,
-    `Author: ${input.author || 'unknown'}`,
-    `Site: ${input.siteName || 'unknown'}`,
+    `Title: ${flattenLine(input.title)}`,
+    `Author: ${flattenLine(input.author) || 'unknown'}`,
+    `Site: ${flattenLine(input.siteName) || 'unknown'}`,
     `Source type: ${input.sourceType}`,
     `Coverage: ${coverage}`,
     `Summary language: ${language}`,
@@ -454,13 +466,13 @@ export const enrichmentResultSchema: z.ZodType<EnrichmentPayload, unknown> = z.p
 
 /**
  * Escapes a plain-text value for the summary markdown: newlines become spaces, and the
- * characters that could add emphasis, links, headings or nested lists are backslash-escaped,
- * so a value renders literally through `renderMarkdown()`.
+ * characters that could add emphasis, links, headings, nested lists or inline HTML (`<`, `&`:
+ * `marked` passes raw HTML and entities through) are backslash-escaped, so a value renders
+ * literally through `renderMarkdown()`. Bare URLs still autolink (GFM), which is wanted.
  */
 function escapeMarkdownValue(value: string): string {
-  const flat = value.replace(/\s*\n+\s*/g, ' ').trim();
-  return flat
-    .replace(/[\\*_`~[\]]/g, (char) => `\\${char}`)
+  return flattenLine(value)
+    .replace(/[\\*_`~[\]<&]/g, (char) => `\\${char}`)
     .replace(/^([#>+-])/, '\\$1')
     .replace(/^(\d+)([.)])/, '$1\\$2');
 }
@@ -537,12 +549,7 @@ const INDEX_LINES: ReadonlyArray<[string, keyof EnrichmentIndexPayload]> = [
  */
 export function formatIndexText(index: EnrichmentIndexPayload): string {
   return INDEX_LINES.map(([header, field]) => {
-    const items = (index[field] ?? []).map((item) =>
-      item
-        .replace(/\s*\n+\s*/g, ' ')
-        .replace(/,/g, ';')
-        .trim(),
-    );
+    const items = (index[field] ?? []).map((item) => flattenLine(item).replace(/,/g, ';'));
     return `${header}: ${items.join(', ')}`;
   }).join('\n');
 }

@@ -104,6 +104,8 @@ Article content:
 {content_markdown ?? content_text, truncated to the input budget}
 ```
 
+`title`, `author` and `siteName` are flattened to one line each (line breaks become a space) before they are spliced in: the header lines are the ones the prompt trusts, and an extracted title must not be able to add a second `Coverage:` or `Summary language:` line.
+
 **Output**: forced tool use. `tool_choice: { type: 'tool', name: 'record_enrichment' }`. This works the same in live calls and in batches. Not every model accepts it (Sonnet 5.5, Opus 5.5 and Fable 5.1 return a 400), which is why the selectable models are limited to `ENRICH_MODEL_IDS` (§2.2).
 
 ```jsonc

@@ -13,9 +13,10 @@ const eslintConfig = defineConfig([
     'drizzle/**',
     'playwright-report/**',
     // Local-only trees: vitest coverage output and git worktrees under .claude/ (each a
-    // full checkout with its own node_modules), neither of which exists in CI.
+    // full checkout with its own node_modules), neither of which exists in CI. The tracked
+    // .claude/workflows/*.js scripts stay linted.
     'coverage/**',
-    '.claude/**',
+    '.claude/worktrees/**',
   ]),
   {
     rules: {
